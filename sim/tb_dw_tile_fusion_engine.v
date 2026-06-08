@@ -5,6 +5,7 @@ module tb_dw_tile_fusion_engine;
     localparam MAX_CIN = 128;
     localparam MAX_IN_H = 17;
     localparam MAX_IN_W = 17;
+    localparam DW_LANES = 16;
 
     reg clk;
     reg rst_n;
@@ -25,10 +26,10 @@ module tb_dw_tile_fusion_engine;
     reg signed [31:0] activation_min;
     reg signed [31:0] activation_max;
 
-    wire buf_wr_en;
+    wire [DW_LANES-1:0] buf_wr_en_vec;
     wire [5:0] buf_wr_pixel_idx;
-    wire [6:0] buf_wr_channel_idx;
-    wire signed [7:0] buf_wr_data_int8;
+    wire [6:0] buf_wr_channel_base;
+    wire signed [(DW_LANES*8)-1:0] buf_wr_data_vec;
     reg rd_en;
     reg [5:0] rd_pixel_base;
     reg [6:0] rd_channel_idx;
@@ -61,7 +62,7 @@ module tb_dw_tile_fusion_engine;
         .MAX_CIN(MAX_CIN),
         .MAX_IN_H(MAX_IN_H),
         .MAX_IN_W(MAX_IN_W),
-        .DW_LANES(16)
+        .DW_LANES(DW_LANES)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -81,19 +82,21 @@ module tb_dw_tile_fusion_engine;
         .dw_output_zero_point(dw_output_zero_point),
         .activation_min(activation_min),
         .activation_max(activation_max),
-        .buf_wr_en(buf_wr_en),
+        .buf_wr_en_vec(buf_wr_en_vec),
         .buf_wr_pixel_idx(buf_wr_pixel_idx),
-        .buf_wr_channel_idx(buf_wr_channel_idx),
-        .buf_wr_data_int8(buf_wr_data_int8)
+        .buf_wr_channel_base(buf_wr_channel_base),
+        .buf_wr_data_vec(buf_wr_data_vec)
     );
 
-    dw_tile_buffer u_tile_buffer (
+    dw_tile_buffer #(
+        .WRITE_LANES(DW_LANES)
+    ) u_tile_buffer (
         .clk(clk),
         .rst_n(rst_n),
-        .wr_en(buf_wr_en),
+        .wr_en_vec(buf_wr_en_vec),
         .wr_pixel_idx(buf_wr_pixel_idx),
-        .wr_channel_idx(buf_wr_channel_idx),
-        .wr_data_int8(buf_wr_data_int8),
+        .wr_channel_base(buf_wr_channel_base),
+        .wr_data_vec(buf_wr_data_vec),
         .rd_en(rd_en),
         .rd_pixel_base(rd_pixel_base),
         .rd_channel_idx(rd_channel_idx),

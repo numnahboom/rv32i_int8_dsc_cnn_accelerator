@@ -1,14 +1,16 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-module dw_tile_buffer (
+module dw_tile_buffer #(
+    parameter WRITE_LANES = 16
+) (
     input  wire              clk,
     input  wire              rst_n,
 
-    input  wire              wr_en,
+    input  wire [WRITE_LANES-1:0] wr_en_vec,
     input  wire [5:0]        wr_pixel_idx,
-    input  wire [6:0]        wr_channel_idx,
-    input  wire signed [7:0] wr_data_int8,
+    input  wire [6:0]        wr_channel_base,
+    input  wire signed [(WRITE_LANES*8)-1:0] wr_data_vec,
 
     input  wire              rd_en,
     input  wire [5:0]        rd_pixel_base,
@@ -18,10 +20,9 @@ module dw_tile_buffer (
     reg signed [7:0] mem [0:8191];
     integer i;
     integer init_i;
+    integer wr_lane;
     integer rd_pixel;
-
-    wire [12:0] wr_addr;
-    assign wr_addr = {wr_pixel_idx, 7'b0} + {6'b0, wr_channel_idx};
+    integer wr_channel;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -32,9 +33,15 @@ module dw_tile_buffer (
             end
             /* verilator lint_on BLKSEQ */
         end else begin
-            if (wr_en) begin
-                mem[wr_addr] <= wr_data_int8;
+            /* verilator lint_off BLKSEQ */
+            for (wr_lane = 0; wr_lane < WRITE_LANES; wr_lane = wr_lane + 1) begin
+                wr_channel = wr_channel_base + wr_lane;
+                if (wr_en_vec[wr_lane] && wr_channel < 128) begin
+                    mem[{wr_pixel_idx, 7'b0} + wr_channel[6:0]] <=
+                        wr_data_vec[(wr_lane*8) +: 8];
+                end
             end
+            /* verilator lint_on BLKSEQ */
             if (rd_en) begin
                 /* verilator lint_off BLKSEQ */
                 for (i = 0; i < 8; i = i + 1) begin

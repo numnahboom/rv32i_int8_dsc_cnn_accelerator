@@ -51,15 +51,16 @@ module ds_block_tile_engine #(
     localparam ST_PW_WAIT = 4'd6;
     localparam ST_WRITE = 4'd7;
     localparam ST_DONE = 4'd8;
+    localparam DW_LANES = 16;
 
     reg [3:0] state;
     reg dw_start;
     wire dw_busy;
     wire dw_done;
-    wire dw_buf_wr_en;
+    wire [DW_LANES-1:0] dw_buf_wr_en_vec;
     wire [5:0] dw_buf_wr_pixel_idx;
-    wire [6:0] dw_buf_wr_channel_idx;
-    wire signed [7:0] dw_buf_wr_data_int8;
+    wire [6:0] dw_buf_wr_channel_base;
+    wire signed [(DW_LANES*8)-1:0] dw_buf_wr_data_vec;
 
     reg buf_rd_en;
     reg [5:0] buf_rd_pixel_base;
@@ -94,7 +95,7 @@ module ds_block_tile_engine #(
         .MAX_CIN(MAX_CIN),
         .MAX_IN_H(MAX_IN_H),
         .MAX_IN_W(MAX_IN_W),
-        .DW_LANES(16)
+        .DW_LANES(DW_LANES)
     ) u_dw_engine (
         .clk(clk),
         .rst_n(rst_n),
@@ -114,19 +115,21 @@ module ds_block_tile_engine #(
         .dw_output_zero_point(dw_output_zero_point),
         .activation_min(dw_activation_min),
         .activation_max(dw_activation_max),
-        .buf_wr_en(dw_buf_wr_en),
+        .buf_wr_en_vec(dw_buf_wr_en_vec),
         .buf_wr_pixel_idx(dw_buf_wr_pixel_idx),
-        .buf_wr_channel_idx(dw_buf_wr_channel_idx),
-        .buf_wr_data_int8(dw_buf_wr_data_int8)
+        .buf_wr_channel_base(dw_buf_wr_channel_base),
+        .buf_wr_data_vec(dw_buf_wr_data_vec)
     );
 
-    dw_tile_buffer u_dw_tile_buffer (
+    dw_tile_buffer #(
+        .WRITE_LANES(DW_LANES)
+    ) u_dw_tile_buffer (
         .clk(clk),
         .rst_n(rst_n),
-        .wr_en(dw_buf_wr_en),
+        .wr_en_vec(dw_buf_wr_en_vec),
         .wr_pixel_idx(dw_buf_wr_pixel_idx),
-        .wr_channel_idx(dw_buf_wr_channel_idx),
-        .wr_data_int8(dw_buf_wr_data_int8),
+        .wr_channel_base(dw_buf_wr_channel_base),
+        .wr_data_vec(dw_buf_wr_data_vec),
         .rd_en(buf_rd_en),
         .rd_pixel_base(buf_rd_pixel_base),
         .rd_channel_idx(buf_rd_channel_idx),

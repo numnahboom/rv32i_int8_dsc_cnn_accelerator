@@ -27,10 +27,10 @@ module dw_tile_fusion_engine #(
     input  wire signed [31:0]                activation_min,
     input  wire signed [31:0]                activation_max,
 
-    output reg                               buf_wr_en,
+    output reg  [DW_LANES-1:0]               buf_wr_en_vec,
     output reg  [5:0]                        buf_wr_pixel_idx,
-    output reg  [6:0]                        buf_wr_channel_idx,
-    output reg  signed [7:0]                 buf_wr_data_int8
+    output reg  [6:0]                        buf_wr_channel_base,
+    output reg  signed [(DW_LANES*8)-1:0]    buf_wr_data_vec
 );
     localparam ST_IDLE = 3'd0;
     localparam ST_MAC_START = 3'd1;
@@ -41,7 +41,6 @@ module dw_tile_fusion_engine #(
     reg [2:0] state;
     reg [5:0] pixel_idx;
     reg [7:0] ch_base;
-    reg [4:0] write_lane;
     reg mac_start;
     reg [DW_LANES-1:0] lane_active;
     reg signed [(DW_LANES*9*8)-1:0] mac_window_vec;
@@ -63,6 +62,7 @@ module dw_tile_fusion_engine #(
     integer channel_idx;
     integer input_bit_base;
     integer weight_bit_base;
+    integer write_i;
 
     assign out_pixels = out_h * out_w;
 
@@ -190,17 +190,17 @@ module dw_tile_fusion_engine #(
             done <= 1'b0;
             pixel_idx <= 6'd0;
             ch_base <= 8'd0;
-            write_lane <= 5'd0;
             mac_start <= 1'b0;
             mac_acc_latched <= {(DW_LANES*32){1'b0}};
-            buf_wr_en <= 1'b0;
+            buf_wr_en_vec <= {DW_LANES{1'b0}};
             buf_wr_pixel_idx <= 6'd0;
-            buf_wr_channel_idx <= 7'd0;
-            buf_wr_data_int8 <= 8'sd0;
+            buf_wr_channel_base <= 7'd0;
+            buf_wr_data_vec <= {(DW_LANES*8){1'b0}};
         end else begin
             done <= 1'b0;
             mac_start <= 1'b0;
-            buf_wr_en <= 1'b0;
+            buf_wr_en_vec <= {DW_LANES{1'b0}};
+            buf_wr_data_vec <= {(DW_LANES*8){1'b0}};
 
             case (state)
                 ST_IDLE: begin
@@ -209,7 +209,6 @@ module dw_tile_fusion_engine #(
                         busy <= 1'b1;
                         pixel_idx <= 6'd0;
                         ch_base <= 8'd0;
-                        write_lane <= 5'd0;
                         state <= ST_MAC_START;
                     end
                 end
@@ -222,38 +221,36 @@ module dw_tile_fusion_engine #(
                 ST_MAC_WAIT: begin
                     if (mac_valid) begin
                         mac_acc_latched <= mac_acc_vec;
-                        write_lane <= 5'd0;
                         state <= ST_WRITE;
                     end
                 end
 
                 ST_WRITE: begin
-                    if ((ch_base + write_lane) < channels && write_lane < DW_LANES) begin
-                        buf_wr_en <= 1'b1;
-                        buf_wr_pixel_idx <= pixel_idx;
-                        buf_wr_channel_idx <= ch_base[6:0] + {2'b00, write_lane};
-                        buf_wr_data_int8 <= requant_dw(
-                            mac_acc_latched[(write_lane*32) +: 32],
-                            ch_base + write_lane
-                        );
+                    buf_wr_pixel_idx <= pixel_idx;
+                    buf_wr_channel_base <= ch_base[6:0];
+                    /* verilator lint_off BLKSEQ */
+                    for (write_i = 0; write_i < DW_LANES; write_i = write_i + 1) begin
+                        if ((ch_base + write_i) < channels) begin
+                            buf_wr_en_vec[write_i] <= 1'b1;
+                            buf_wr_data_vec[(write_i*8) +: 8] <= requant_dw(
+                                mac_acc_latched[(write_i*32) +: 32],
+                                ch_base + write_i
+                            );
+                        end
                     end
+                    /* verilator lint_on BLKSEQ */
 
-                    if ((write_lane == (DW_LANES - 1)) || ((ch_base + write_lane + 1) >= channels)) begin
-                        write_lane <= 5'd0;
-                        if ((ch_base + DW_LANES) >= channels) begin
-                            ch_base <= 8'd0;
-                            if (({8'd0, pixel_idx} + 14'd1) >= out_pixels) begin
-                                state <= ST_DONE;
-                            end else begin
-                                pixel_idx <= pixel_idx + 6'd1;
-                                state <= ST_MAC_START;
-                            end
+                    if ((ch_base + DW_LANES) >= channels) begin
+                        ch_base <= 8'd0;
+                        if (({8'd0, pixel_idx} + 14'd1) >= out_pixels) begin
+                            state <= ST_DONE;
                         end else begin
-                            ch_base <= ch_base + DW_LANES;
+                            pixel_idx <= pixel_idx + 6'd1;
                             state <= ST_MAC_START;
                         end
                     end else begin
-                        write_lane <= write_lane + 5'd1;
+                        ch_base <= ch_base + DW_LANES;
+                        state <= ST_MAC_START;
                     end
                 end
 

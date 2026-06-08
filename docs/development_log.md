@@ -233,3 +233,53 @@ git commit -m "描述本阶段可验证改动"
 ```
 
 - 提交前至少跑本阶段相关 smoke；涉及公共接口时跑 `scripts/run_all_sims.sh` 的 `SIM_ONLY` 或 `SIM_FROM/SIM_TO` 切片。
+
+## 2026-06-08：DW tile buffer 多 lane 写入优化
+
+目标：
+
+- 回应 DW/PW 吞吐分析中的一个实际瓶颈：`dw_mac_lanes` 每 3 cycle 产出最多 16 个 channel 的 DW 结果，但旧版 `dw_tile_buffer` 每 cycle 只能写 1 个 int8，导致 DW 阶段额外花 `pixel_count * Cin` 个周期把结果逐字节搬进 tile buffer。
+
+实现：
+
+- `dw_tile_fusion_engine.v` 将原来的单点写接口改为 lane vector 写接口：
+  - `buf_wr_en_vec[15:0]`
+  - `buf_wr_pixel_idx`
+  - `buf_wr_channel_base`
+  - `buf_wr_data_vec[16*8-1:0]`
+- `dw_tile_buffer.v` 增加 `WRITE_LANES` 参数，默认 16，并在同一 cycle 写入 `channel_base + lane` 对应的多个 channel。
+- `ds_block_tile_engine.v` 与 `tb_dw_tile_fusion_engine.v` 同步接入新接口。
+
+验证：
+
+- `./scripts/run_sim.sh tb_dw_tile_fusion_engine` PASS：
+  - `cases=3`
+  - `checks=832`
+- `./scripts/run_sim.sh tb_ds_block_tile_engine` PASS：
+  - `cases=3`
+  - `checks=1792`
+- `./scripts/run_sim.sh tb_cnn_top_sram_tiled_dsblock_datapath` PASS：
+  - `cases=1`
+  - `checks=480`
+- `./scripts/run_sim.sh tb_cnn_top_fullnet_sram_datapath` PASS：
+  - `hw_cycles=1033722`
+  - `checks=10`
+  - `errors=0`
+- `./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS：
+  - `cycles=1033722`
+  - `status=0fc5fa82`
+  - `start_count=1`
+  - `stat_count=1`
+  - `argmax=0`
+
+效果：
+
+- 旧 fullnet SRAM datapath smoke 记录约为 `1085562` cycles。
+- 本次优化后同类 fullnet SRAM datapath smoke 为 `1033722` cycles。
+- smoke case 下降约 `51840` cycles，约 `4.8%`，符合“去掉 DW tile buffer 单字节写入等待”的预期。
+
+保留问题：
+
+- 当前 `dw_tile_buffer` 的多 lane 写是行为级 RTL，适合验证吞吐与功能，但直接综合可能推导出多写口寄存器堆，资源不经济。
+- 后续真正 FPGA 化时建议把 DW tile buffer 改成 channel-banked SRAM/BRAM：例如 16 个 bank，每个 lane 写对应 bank，PW 读取时再按 channel/pixel 组织读口。
+- `ProjectRecreat/rtl/cnn/requant_activation_unit.v` 中的 16x16 partial product/pipeline 思路有参考价值，但接口、握手和现有 Project requant 不一致，本轮未迁移。
