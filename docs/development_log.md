@@ -283,3 +283,54 @@ git commit -m "描述本阶段可验证改动"
 - 当前 `dw_tile_buffer` 的多 lane 写是行为级 RTL，适合验证吞吐与功能，但直接综合可能推导出多写口寄存器堆，资源不经济。
 - 后续真正 FPGA 化时建议把 DW tile buffer 改成 channel-banked SRAM/BRAM：例如 16 个 bank，每个 lane 写对应 bank，PW 读取时再按 channel/pixel 组织读口。
 - `ProjectRecreat/rtl/cnn/requant_activation_unit.v` 中的 16x16 partial product/pipeline 思路有参考价值，但接口、握手和现有 Project requant 不一致，本轮未迁移。
+
+## 2026-06-08：DW tile buffer 改为 channel-banked 结构
+
+目标：
+
+- 收掉上一阶段留下的综合风险：16-lane 写接口如果仍落在单个大 `mem[0:8191]` 行为数组上，综合工具可能无法推导经济的 SRAM/BRAM 结构。
+- 保持外部接口与已验证调度完全不变，只调整 `dw_tile_buffer.v` 内部存储组织。
+
+实现：
+
+- `dw_tile_buffer.v` 内部从单数组改为 16 个 bank：
+  - `BANKS = 16`
+  - `BANK_DEPTH = 512`
+  - 总容量仍为 `16 * 512 = 8192` bytes
+- 写地址映射：
+  - `bank = channel[3:0]`
+  - `addr = {pixel_idx, channel[6:4]}`
+  - 对连续 16 channel 的 lane vector 写入，每个 lane 正好落入不同 bank。
+- 读地址映射：
+  - PW 每次读取同一 channel 的 8 个 pixel。
+  - `bank = rd_channel_idx[3:0]`
+  - 每个 pixel 读同一 bank 中的 `{pixel, rd_channel_idx[6:4]}`。
+- SRAM 内容不再在 reset 中逐项清零；只复位 `rd_data_vector`。仿真初值保留在 `ifndef SYNTHESIS` initial block 中，降低综合时被 reset loop 推成 FF 的风险。
+- `python/resource_estimate.py` 同步更新 DW tile buffer 说明为 `banked BRAM/LUTRAM intended`。
+
+验证：
+
+- `./scripts/run_sim.sh tb_dw_tile_fusion_engine` PASS：
+  - `cases=3`
+  - `checks=832`
+- `./scripts/run_sim.sh tb_ds_block_tile_engine` PASS：
+  - `cases=3`
+  - `checks=1792`
+- `./scripts/run_sim.sh tb_cnn_top_sram_tiled_dsblock_datapath` PASS：
+  - `cases=1`
+  - `checks=480`
+- `./scripts/run_sim.sh tb_cnn_top_fullnet_sram_datapath` PASS：
+  - `hw_cycles=1033722`
+  - `checks=10`
+  - `errors=0`
+- `./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS：
+  - `cycles=1033722`
+  - `status=0fc5fa82`
+  - `start_count=1`
+  - `stat_count=1`
+  - `argmax=0`
+
+保留问题：
+
+- 该结构已经比单大数组多写口更接近硬件实现，但是否映射为目标 FPGA 的最佳 BRAM/LUTRAM 仍需 Vivado/Yosys 综合确认。
+- 后续可按目标器件添加局部 memory style pragma，或把每个 bank 拆成显式小 SRAM wrapper。

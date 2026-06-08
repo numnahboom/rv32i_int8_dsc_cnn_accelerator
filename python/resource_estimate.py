@@ -47,7 +47,7 @@ def memory_items() -> list[MemoryItem]:
     return [
         MemoryItem("Feature SRAM A", 32 * 1024, "activation", "BRAM/SRAM intended", "1RW bank"),
         MemoryItem("Feature SRAM B", 32 * 1024, "activation", "BRAM/SRAM intended", "1RW bank"),
-        MemoryItem("DW tile buffer", 64 * 128, "activation", "BRAM/LUTRAM intended", "8KB tile fusion buffer"),
+        MemoryItem("DW tile buffer", 64 * 128, "activation", "banked BRAM/LUTRAM intended", "16 channel banks, 512 B each"),
         MemoryItem("Runner DS input tile", 17 * 17 * 128, "activation", "packed reg today", "largest halo tile"),
         MemoryItem("Runner PW weight cache", 256 * 128, "weight", "packed reg today", "max full PW layer cache"),
         MemoryItem("Runner output tile buffer", 64 * 256, "activation", "reg array today", "8x8 spatial tile x max Cout"),
@@ -182,7 +182,7 @@ def make_report() -> str:
     lines.append("Per the current project direction, this report records but does not modify:")
     lines.append("")
     lines.append("- width reduction / pipelining of requant multipliers")
-    lines.append("- banking or packing changes for DW tile buffer")
+    lines.append("- vendor-specific BRAM mapping pragmas for the banked DW tile buffer")
     lines.append("- PW weight tile cache reduction")
     lines.append("- channel-tiled DS input buffering")
     lines.append("")
