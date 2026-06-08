@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RISCV_PREFIX="${RISCV_PREFIX:-riscv64-unknown-elf}"
 OUT_DIR="$ROOT/build/firmware"
 EXTRA_CFLAGS="${EXTRA_CFLAGS:-}"
+MODEL_INCLUDE_DIR="${MODEL_INCLUDE_DIR:-$ROOT/sw/model}"
 
 mkdir -p "$OUT_DIR"
 
@@ -16,6 +17,7 @@ mkdir -p "$OUT_DIR"
   -nostartfiles \
   -T "$ROOT/sw/firmware/linker.ld" \
   -I "$ROOT/sw/firmware" \
+  -I "$MODEL_INCLUDE_DIR" \
   -I "$ROOT/sw/model" \
   "$ROOT/sw/firmware/startup.S" \
   "$ROOT/sw/firmware/main.c" \

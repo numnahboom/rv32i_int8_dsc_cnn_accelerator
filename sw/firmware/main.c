@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include "cnn_accel.h"
-#include "../model/model_desc.h"
+#include "model_desc.h"
 
 volatile int cnn_demo_prediction;
 volatile uint32_t cnn_demo_status;

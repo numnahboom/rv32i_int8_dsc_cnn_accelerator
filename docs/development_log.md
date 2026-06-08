@@ -408,3 +408,49 @@ CPU 联合仿真：
 
 - `int8_eval_acc=0.484375` 只是 64 张 eval 样本的抽样结果，不是完整 test set int8 accuracy。
 - 当前 PTQ 仍较朴素，若要稳定超过 50%，后续可加入 calibration/QAT 或更长训练。
+
+## 2026-06-08：CPU+RTL fullnet 多样本功能仿真
+
+目标：
+
+- 将“RTL logits 与 Python int8 golden 逐元素一致”的验证从单个 firmware sample 扩展到多个 CIFAR-10 eval sample。
+- 保持默认 `sw/model` 不被测试过程污染；多样本测试使用 `build/multi_sample_rtl` 下的临时 model headers、vectors 和 logs。
+
+实现：
+
+- `sw/firmware/main.c` 从 `#include "../model/model_desc.h"` 改为 `#include "model_desc.h"`。
+- `scripts/build_firmware.sh` 增加 `MODEL_INCLUDE_DIR`，允许 firmware 使用临时模型 header 目录。
+- `sim/tb_npc_rv_core_cnn_top_fullnet.v` 增加 plusargs：
+  - `+expected_logits_hex=...`
+  - `+expected_argmax_hex=...`
+- `scripts/run_sim.sh` 增加 `RUN_ARGS` 透传给 Verilated binary。
+- `quantize_export.py` 增加 `--sample-index`，可从 checkpoint 保存的 eval subset 中选择不同输入样本。
+- 新增 `scripts/run_multi_sample_rtl.sh`：
+  - 默认 `SAMPLES=3`
+  - 每个样本导出临时 int8 payload/header/expected。
+  - 首个样本编译 `tb_npc_rv_core_cnn_top_fullnet`，后续样本复用 Verilator binary，只重建 firmware ROM。
+  - 输出 `build/multi_sample_rtl/summary.csv`。
+
+运行命令：
+
+```bash
+SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
+```
+
+验证结果：
+
+| sample_index | label | expected_argmax | rtl_argmax | cycles | status | result |
+| ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 0 | 3 | 3 | 3 | 1033722 | 0fc5fa82 | PASS |
+| 1 | 8 | 8 | 8 | 1033722 | 0fc5fa82 | PASS |
+| 2 | 8 | 8 | 8 | 1033722 | 0fc5fa82 | PASS |
+
+结论：
+
+- 3 个 eval 样本的 CPU custom instruction -> CNN fullnet -> logits writeback 路径均通过。
+- 每个样本的 RTL logits 与对应 Python int8 golden 逐元素完全一致。
+
+补充：
+
+- `accuracy_samples=256` 的 Python int8 golden 抽样结果为 `int8_eval_acc=0.464844`。
+- float checkpoint 全 test eval accuracy 仍为 `0.503700`。

@@ -36,4 +36,4 @@ verilator \
   --top-module "$TOP" \
   --Mdir "$OBJ_DIR"
 
-"$OBJ_DIR/V$TOP"
+"$OBJ_DIR/V$TOP" ${RUN_ARGS:-}

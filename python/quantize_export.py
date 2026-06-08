@@ -248,13 +248,31 @@ def run_exported_int8_model(image_u8: np.ndarray, params: dict[str, Any]) -> tup
 
 
 def export_torch_quantized_model(args: argparse.Namespace, ckpt: dict[str, Any]) -> None:
-    sample = np.asarray(ckpt.get("sample_image_uint8"), dtype=np.uint8)
+    eval_images_for_sample = ckpt.get("eval_images_uint8")
+    eval_labels_for_sample = ckpt.get("eval_labels")
+    selected_sample_index = -1
+    selected_sample_label = -1
+
+    if args.sample_index >= 0 and eval_images_for_sample is not None:
+        eval_images_arr = np.asarray(eval_images_for_sample, dtype=np.uint8)
+        selected_sample_index = int(args.sample_index) % int(eval_images_arr.shape[0])
+        sample = eval_images_arr[selected_sample_index]
+        if eval_labels_for_sample is not None:
+            labels_arr = np.asarray(eval_labels_for_sample, dtype=np.int64)
+            selected_sample_label = int(labels_arr[selected_sample_index])
+    else:
+        sample = np.asarray(ckpt.get("sample_image_uint8"), dtype=np.uint8)
+        if "sample_label" in ckpt:
+            selected_sample_label = int(ckpt["sample_label"])
+
     if sample.shape != (32, 32, 3):
         sample, _ = load_checkpoint_sample(args.ckpt, args.seed)
 
     params: dict[str, Any] = {
         "checkpoint_backend": np.asarray(str(ckpt.get("backend", "torch_edgedscnet_c10_quantized"))),
         "checkpoint_eval_acc": np.asarray(float(ckpt.get("eval_acc", -1.0)), dtype=np.float32),
+        "selected_sample_index": np.asarray(selected_sample_index, dtype=np.int32),
+        "selected_sample_label": np.asarray(selected_sample_label, dtype=np.int32),
         "input_image_uint8": sample,
         "input_image_i8": np.asarray(i8_image_from_uint8(sample), dtype=np.int8),
         "input_zero_point": np.asarray(0, dtype=np.int32),
@@ -373,6 +391,8 @@ def export_torch_quantized_model(args: argparse.Namespace, ckpt: dict[str, Any])
         f.write(f"checkpoint={args.ckpt}\n")
         f.write(f"checkpoint_backend={params['checkpoint_backend']}\n")
         f.write(f"checkpoint_eval_acc={float(params['checkpoint_eval_acc']):.6f}\n")
+        f.write(f"selected_sample_index={int(params['selected_sample_index'])}\n")
+        f.write(f"selected_sample_label={int(params['selected_sample_label'])}\n")
         f.write(f"int8_eval_samples={int(params['int8_eval_samples'])}\n")
         f.write(f"int8_eval_acc={float(params['int8_eval_acc']):.6f}\n")
         f.write(f"seed={args.seed}\n")
@@ -383,12 +403,14 @@ def export_torch_quantized_model(args: argparse.Namespace, ckpt: dict[str, Any])
     print(f"wrote {args.vectors / 'expected_logits.hex'}")
     print(
         "torch_quant argmax={argmax} logits={logits} checkpoint_eval_acc={eval_acc:.3f} "
-        "int8_eval_acc={int8_acc:.3f} samples={samples}".format(
+        "int8_eval_acc={int8_acc:.3f} samples={samples} sample_index={sample_index} label={label}".format(
             argmax=argmax,
             logits=logits,
             eval_acc=float(params["checkpoint_eval_acc"]),
             int8_acc=float(params["int8_eval_acc"]),
             samples=int(params["int8_eval_samples"]),
+            sample_index=int(params["selected_sample_index"]),
+            label=int(params["selected_sample_label"]),
         )
     )
 
@@ -588,6 +610,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="optional number of saved eval images to run through the int8 golden model",
+    )
+    parser.add_argument(
+        "--sample-index",
+        type=int,
+        default=-1,
+        help="optional eval subset index to export as the single firmware/RTL input image",
     )
     return parser.parse_args()
 

@@ -50,6 +50,8 @@ module tb_npc_rv_core_cnn_top_fullnet;
     reg [7:0] expected_logits [0:MAX_LOGITS-1];
     reg [7:0] captured_logits [0:MAX_LOGITS-1];
     reg [31:0] expected_argmax_mem [0:0];
+    reg [8*256-1:0] expected_logits_path;
+    reg [8*256-1:0] expected_argmax_path;
 
     integer i;
     integer timeout;
@@ -251,9 +253,16 @@ module tb_npc_rv_core_cnn_top_fullnet;
         end
         expected_argmax_mem[0] = 32'd0;
 
+        expected_logits_path = "tests/vectors/training_smoke/expected_fullnet_logits.hex";
+        expected_argmax_path = "tests/vectors/training_smoke/expected_argmax.hex";
+        if (!$value$plusargs("expected_logits_hex=%s", expected_logits_path)) begin
+        end
+        if (!$value$plusargs("expected_argmax_hex=%s", expected_argmax_path)) begin
+        end
+
         $readmemh("build/firmware/rom.hex", rom);
-        $readmemh("tests/vectors/training_smoke/expected_fullnet_logits.hex", expected_logits);
-        $readmemh("tests/vectors/training_smoke/expected_argmax.hex", expected_argmax_mem);
+        $readmemh(expected_logits_path, expected_logits);
+        $readmemh(expected_argmax_path, expected_argmax_mem);
 
         rst = 1'b1;
         mem_resp_valid = 1'b0;

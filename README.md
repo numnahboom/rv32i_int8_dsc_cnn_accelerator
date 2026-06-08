@@ -358,3 +358,11 @@ SIM_ONLY=tb_npc_rv_core_cnn_top_fullnet ./scripts/run_all_sims.sh
 - CPU 联合仿真：`./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS
 - 联合仿真结果：`cycles=1033722`、`status=0fc5fa82`、`start_count=1`、`stat_count=1`、`argmax=4`
 - 验收重点：RTL logits 与 Python int8 golden 逐元素完全一致。
+
+多样本 RTL 功能仿真可运行：
+
+```bash
+SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
+```
+
+当前 sample `0,1,2` 均 PASS，`expected_argmax == rtl_argmax`，每个样本的 RTL logits 与对应 Python int8 golden 逐元素完全一致。
