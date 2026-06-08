@@ -1,0 +1,23 @@
+default: Vsoc_top
+include Vsoc_top.mk
+
+COMPILE.cc = $(OBJCACHE) $(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c
+
+CPPFLAGS += -MMD -MP
+CPPFLAGS += -DVL_DEBUG=1
+
+CPPFLAGS += -Wno-deprecated
+
+ifeq ($(CFG_WITH_CCWARN),yes) 
+  USER_CPPFLAGS_WALL += -W -Werror -Wall
+endif
+
+OPT_SLOW =
+OPT_FAST = -Os -fstrict-aliasing
+#OPT_FAST = -O
+#OPT_FAST =
+
+DEPS := $(wildcard *.d)
+ifneq ($(DEPS),)
+  include $(DEPS)
+endif

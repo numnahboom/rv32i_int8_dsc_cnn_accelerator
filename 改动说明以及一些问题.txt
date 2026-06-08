@@ -1,0 +1,4 @@
+对requant_activation_unit.v中的round函数中对负数的操作做了修改。
+另外我注意到你对product做了右移31位操作，猜测是采用Q31定点数乘子，那么第二次缩放应该支持左移。
+dw相关模块是否需要引入ready/valid信号？
+我看到很多模块中使用了round_shift与saturate_clamp的功能，但都是通过模块内函数实现，common中的两个模块是否多余？
