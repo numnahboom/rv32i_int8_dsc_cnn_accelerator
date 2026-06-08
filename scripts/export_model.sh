@@ -37,12 +37,15 @@ cd "$ROOT"
   --epochs "${EPOCHS:-1}" \
   --max-samples "${MAX_SAMPLES:-256}" \
   --eval-samples "${EVAL_SAMPLES:-128}" \
-  --batch-size "${BATCH_SIZE:-64}"
+  --batch-size "${BATCH_SIZE:-64}" \
+  --lr "${LR:-1e-2}" \
+  --device "${DEVICE:-cpu}"
 
 "$PYTHON_BIN" python/quantize_export.py \
   --ckpt "$(to_python_path "$CKPT")" \
   --out "$(to_python_path "$EXPORT_DIR")" \
-  --vectors "$(to_python_path "$VECTOR_DIR")"
+  --vectors "$(to_python_path "$VECTOR_DIR")" \
+  --accuracy-samples "${ACCURACY_SAMPLES:-0}"
 
 "$PYTHON_BIN" python/export_firmware_headers.py \
   --npz "$(to_python_path "$EXPORT_DIR/edgedscnet_c10_int8_smoke.npz")" \

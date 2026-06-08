@@ -346,3 +346,15 @@ SIM_ONLY=tb_npc_rv_core_cnn_top_fullnet ./scripts/run_all_sims.sh
 ```
 
 当前该用例 PASS，记录结果为 `cycles=1085562`、`status=10907a82`、`start_count=1`、`stat_count=1`、`argmax=0`。原始 `D:\Stuff\npc` 工程未被修改，后续 CPU/SoC 接线应以 `Project/rtl/npc` 副本为修改对象。
+
+## 当前训练 checkpoint 验证
+
+当前 `sw/model` 已更新为 PyTorch/CUDA 训练 10 epoch 后导出的 int8 checkpoint：
+
+- float CIFAR-10 eval accuracy：`0.503700`
+- int8 golden 抽样 accuracy：`0.484375`，`64` samples
+- sample golden logits：`[-65, -69, 13, 4, 39, 17, 24, 22, -112, -85]`
+- sample argmax：`4`
+- CPU 联合仿真：`./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS
+- 联合仿真结果：`cycles=1033722`、`status=0fc5fa82`、`start_count=1`、`stat_count=1`、`argmax=4`
+- 验收重点：RTL logits 与 Python int8 golden 逐元素完全一致。

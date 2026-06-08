@@ -149,6 +149,8 @@ def train_numpy_smoke(args: argparse.Namespace) -> dict[str, Any]:
         linear_bias=bias,
         sample_image_uint8=train_images[0],
         sample_label=np.asarray(train_labels[0], dtype=np.int64),
+        eval_images_uint8=test_images,
+        eval_labels=test_labels,
     )
     print(f"wrote {args.out}")
     return {"backend": "numpy_softmax", "eval_acc": eval_acc}
@@ -272,6 +274,8 @@ def train_torch(args: argparse.Namespace) -> dict[str, Any]:
             "model_state": model.cpu().state_dict(),
             "sample_image_uint8": train_images[0],
             "sample_label": int(train_labels[0]),
+            "eval_images_uint8": test_images,
+            "eval_labels": test_labels,
         },
         args.out,
     )

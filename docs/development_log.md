@@ -334,3 +334,77 @@ git commit -m "描述本阶段可验证改动"
 
 - 该结构已经比单大数组多写口更接近硬件实现，但是否映射为目标 FPGA 的最佳 BRAM/LUTRAM 仍需 Vivado/Yosys 综合确认。
 - 后续可按目标器件添加局部 memory style pragma，或把每个 bank 拆成显式小 SRAM wrapper。
+
+## 2026-06-08：约 50% CIFAR-10 checkpoint 的 CPU 到 CNN 完整推理验证
+
+目标：
+
+- 不追求高精度训练，先得到一个约 50% CIFAR-10 top-1 的 EdgeDSCNet-C10 checkpoint。
+- 使用该 checkpoint 导出 int8 参数、firmware headers 和 golden logits。
+- 通过 NPC `rv_core` custom instruction 启动 `cnn_top`，完成 Stem -> DSBlock1..6 -> GAP -> FC 的完整推理。
+- 重点验收：RTL 功能仿真输出与 Python int8 golden 完全一致。
+
+实现：
+
+- `train_edgedscnet_c10.py` 的 torch checkpoint 额外保存 eval subset，便于导出阶段做 int8 抽样评估。
+- `quantize_export.py` 增加 torch checkpoint 导出路径：
+  - 从 `model_state` 读取真实 Stem/DW/PW/FC 权重。
+  - 使用 per-output-channel symmetric int8 weight quantization。
+  - 根据 `input_scale * weight_scale / output_scale` 生成硬件 Q31 multiplier/shift。
+  - 输出字段名保持兼容 `export_firmware_headers.py` 和现有 firmware。
+- ReLU6 量化范围从 `[0,48]` 改为 `[0,127]`：
+  - `scale = 6 / 127`
+  - `activation_min = 0`
+  - `activation_max = 127`
+  - 这仍表示 quantized ReLU6，只是用满 int8 正区间，提高量化精度。
+- `export_model.sh` 增加：
+  - `LR`
+  - `DEVICE`
+  - `ACCURACY_SAMPLES`
+
+训练与导出命令：
+
+```bash
+PYTHON=/mnt/d/Software/anaconda/python.exe \
+CKPT=/mnt/d/Stuff/Project/build/model/edgedscnet_c10_torch_cifar10.npz \
+EPOCHS=10 \
+MAX_SAMPLES=50000 \
+EVAL_SAMPLES=10000 \
+BATCH_SIZE=256 \
+LR=0.001 \
+DEVICE=cuda \
+ACCURACY_SAMPLES=0 \
+./scripts/export_model.sh
+```
+
+训练结果：
+
+- float checkpoint eval accuracy：`0.503700`
+- int8 golden 抽样评估：
+  - `accuracy_samples=64`
+  - `int8_eval_acc=0.484375`
+
+当前 sample golden：
+
+- logits：`[-65, -69, 13, 4, 39, 17, 24, 22, -112, -85]`
+- argmax：`4`
+
+CPU 联合仿真：
+
+- `./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS：
+  - `cycles=1033722`
+  - `status=0fc5fa82`
+  - `start_count=1`
+  - `stat_count=1`
+  - `argmax=4`
+
+结论：
+
+- 当前约 50% 训练 checkpoint 已能导出为 int8 模型。
+- CPU custom instruction -> `cnn_top` -> logits writeback -> CPU/stat/argmax 的完整路径通过。
+- RTL logits 与 Python int8 golden 逐元素完全一致。
+
+保留问题：
+
+- `int8_eval_acc=0.484375` 只是 64 张 eval 样本的抽样结果，不是完整 test set int8 accuracy。
+- 当前 PTQ 仍较朴素，若要稳定超过 50%，后续可加入 calibration/QAT 或更长训练。

@@ -21,7 +21,7 @@
 
 #define MODEL_SRAM_BASE 0u
 #define MODEL_RELU_MIN  0
-#define MODEL_RELU_MAX  48
+#define MODEL_RELU_MAX  127
 
 typedef struct {
     uint32_t op_type;
