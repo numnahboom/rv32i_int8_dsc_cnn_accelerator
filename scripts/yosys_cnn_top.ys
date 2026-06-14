@@ -1,0 +1,36 @@
+read_verilog -sv rtl/common/round_shift.v
+read_verilog -sv rtl/common/saturate_int8.v
+read_verilog -sv rtl/cnn/requant_activation_unit.v
+read_verilog -sv rtl/cnn/systolic_pe.v
+read_verilog -sv rtl/cnn/pw_systolic_array_8x8.v
+read_verilog -sv rtl/cnn/dw_line_buffer.v
+read_verilog -sv rtl/cnn/dw_window_generator.v
+read_verilog -sv rtl/cnn/dw_mac_lanes.v
+read_verilog -sv rtl/cnn/dw_tile_buffer.v
+read_verilog -sv rtl/cnn/dw_tile_fusion_engine.v
+read_verilog -sv rtl/cnn/ds_block_tile_engine.v
+read_verilog -sv rtl/cnn/conv3x3_stem_engine.v
+read_verilog -sv rtl/cnn/gap_unit.v
+read_verilog -sv rtl/cnn/fc_unit.v
+read_verilog -sv rtl/cnn/tile_scheduler.v
+read_verilog -sv rtl/cnn/feature_sram_bank.v
+read_verilog -sv rtl/cnn/feature_sram_pingpong.v
+read_verilog -sv rtl/cnn/status_counter.v
+read_verilog -sv rtl/cnn/descriptor_fetch.v
+read_verilog -sv rtl/cnn/cnn_layer_runner.v
+read_verilog -sv rtl/cnn/cnn_top_ctrl.v
+read_verilog -sv rtl/cnn/cnn_top.v
+
+hierarchy -check -top cnn_top
+proc
+opt
+fsm
+opt
+memory -nomap
+opt
+stat -top cnn_top
+synth -top cnn_top
+opt
+tee -o build/reports/yosys_cnn_top_stat.txt stat -top cnn_top
+write_json build/reports/cnn_top_yosys.json
+

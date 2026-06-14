@@ -454,3 +454,36 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 
 - `accuracy_samples=256` 的 Python int8 golden 抽样结果为 `int8_eval_acc=0.464844`。
 - float checkpoint 全 test eval accuracy 仍为 `0.503700`。
+## 2026-06-14: 架构图、验证闭环图、PPT 与综合脚本整理
+
+目标:
+- 为项目答辩/汇报补充架构图和验证闭环图。
+- 准备一份不超过 8 页的项目 PPT，本次采用 6 页结构。
+- 尝试获取真实综合报告，并在工具不可用时留下可复现实验脚本。
+- 单独整理“已知限制与后续优化”，保留后续可手动优化的方向。
+
+实现:
+- 新增 `docs/architecture_diagrams.md`:
+  - 包含 CPU/custom instruction/cnn_top/descriptor/SRAM ping-pong/DW tile buffer/PW array 的 Mermaid 架构图。
+  - 包含从 PyTorch 到 firmware/CPU 联合仿真的验证闭环图。
+- 新增 `docs/known_limits_next_steps.md`:
+  - 记录当前 word-per-int8 memory layout、单时钟、SRAM inference、requant 乘法器、PW broadcast fanout 等限制。
+  - 给出综合确认、BRAM 推断、requant 流水化、PW 控制复制、packed NHWC loader、QAT/calibration 等后续优化。
+- 新增 `scripts/yosys_cnn_top.ys` 和 `scripts/run_synthesis_yosys.sh`:
+  - 目标 top 为 `cnn_top`。
+  - 覆盖 common/cnn RTL 文件。
+  - 生成 `build/reports/synthesis_initial.md`、`yosys_cnn_top.log`、`yosys_cnn_top_stat.txt`、`cnn_top_yosys.json`。
+- 新增 `scripts/make_project_ppt.py`:
+  - 直接使用 Python 标准库生成可编辑 OpenXML PPTX。
+  - PPT 固定 6 页: 问题、架构、数据流、验证、结果、限制。
+
+遇到的问题:
+- Windows PATH 与 WSL PATH 中均未找到 `yosys` / `vivado`，因此本机无法产出真实 post-synthesis 资源数字。
+- 已生成可复现 Yosys 脚本，后续安装 Yosys 后运行 `./scripts/run_synthesis_yosys.sh` 即可补齐真实综合结果。
+- 本机未安装 `python-pptx`，Presentations runtime 的 artifact-tool 也不可用，因此 PPT 使用标准 OpenXML 生成器作为后备方案。
+
+保留优化点:
+- 真实 FPGA synthesis 后确认 `feature_sram_bank`、`dw_tile_buffer` 等是否推断为 BRAM/LUTRAM，而不是 FF。
+- 根据 timing report 判断是否需要给 PW array 输入/控制广播加寄存复制。
+- 根据 DSP 使用率决定 requant multiplier 是保持流水化、共享化，还是改 vendor DSP primitive。
+- packed NHWC byte layout 和 burst-friendly loader 仍是后续 memory pass。
