@@ -41,6 +41,7 @@ Therefore these are synthesis utilization results only. They are not timing clos
 
 ## Artifacts
 
+- `docs/synthesis_verification_report.md`
 - `docs/synthesis_vivado_initial.md`
 - `docs/synthesis_vivado_requant_activation_unit.md`
 - `docs/synthesis_vivado_pw_systolic_array_8x8.md`
@@ -57,4 +58,3 @@ Therefore these are synthesis utilization results only. They are not timing clos
 2. Decide whether `feature_sram_bank` should be BRAM or LUTRAM, then force or wrap accordingly.
 3. Consider `(* use_dsp = "yes" *)` only if PW/DW should intentionally consume DSPs; current Vivado mapping keeps int8 MACs in LUTs.
 4. Re-run `cnn_top` after memory refactoring.
-

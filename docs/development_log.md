@@ -536,3 +536,19 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 - 优先重写 `dw_tile_buffer` 为显式 banking，避免 3D RAM。
 - 再决定 `feature_sram_bank` 用 BRAM wrapper 还是 LUTRAM。
 - 对 PW/DW 是否强制 DSP 映射要结合 DSP 预算决定；当前 LUT 映射会占用较多 LUT，但节省 DSP。
+
+## 2026-06-14: 综合验证总报告整理
+
+目标:
+- 将 Yosys 尝试、Vivado full-top 尝试、代表模块 OOC 综合结果、静态估算对照和后续修复计划整理成单一交付文档。
+
+实现:
+- 新增 `docs/synthesis_verification_report.md`。
+- 报告明确区分:
+  - 已完成的代表模块 Vivado synthesis。
+  - `cnn_top` full synthesis 的真实阻塞点。
+  - 当前 K26 part 无法输出 timing summary 的限制。
+  - memory inference、requant DSP、PW/DW LUT 映射的后续优化优先级。
+
+结论:
+- 当前综合验证的核心发现不是算术模块不可综合，而是 memory/buffer 写法需要进入 FPGA memory pass。
