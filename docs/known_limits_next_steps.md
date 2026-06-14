@@ -10,6 +10,7 @@
 - The current PW array is an 8x8 broadcast-style MAC array. It is simple and correct, but may need control/data register replication for high FPGA frequency.
 - Requant uses wide signed multiplication. It is bit-exact with Python golden, but resource sharing or deeper pipelining may be needed after timing closure.
 - Feature SRAM and tile buffers are modeled as RTL arrays/wrappers. FPGA BRAM inference must be confirmed by a real synthesis tool.
+- Vivado 2021.2 confirms this is currently a real issue: `dw_tile_buffer`'s 3D RAM pattern is unsupported and `feature_sram_bank` maps to LUTRAM rather than BRAM in the first K26 OOC run.
 - Model accuracy is good enough for functional validation, not final ML quality. The current trained checkpoint is around 50% float accuracy and below that for sampled int8 PTQ.
 - Resource numbers in `resource_estimate.md` are static estimates, not post-synthesis implementation results.
 
@@ -28,4 +29,3 @@
 8. Add more realistic CPU memory stalls and accelerator memory contention tests.
 9. Train a stronger checkpoint with calibration or QAT, then regenerate firmware headers.
 10. Consider an async `acc_clk` only after single-clock timing reports prove the accelerator limits CPU frequency.
-

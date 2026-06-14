@@ -6,12 +6,14 @@
 
 ## Status
 
-`yosys` and `vivado` were checked on this machine before reporting:
+`yosys` was checked on this machine before reporting:
 
-- Windows PATH: `yosys` not found, `vivado` not found.
-- WSL PATH: `yosys: command not found`, `vivado: command not found`.
+- Windows PATH: `yosys` not found.
+- WSL PATH: `yosys: command not found`.
 
-Therefore no post-synthesis cell/resource/timing numbers were produced on this machine.
+Therefore no Yosys cell/resource/timing numbers were produced on this machine.
+
+Vivado 2021.2 was later found at `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`. See `docs/synthesis_vivado_summary.md` for the Vivado run results.
 
 This is a real tool-run attempt, not a fabricated synthesis result. Install Yosys, then rerun:
 
@@ -37,4 +39,3 @@ If the first real synthesis fails, likely fixes are:
 - Add memory inference pragmas or wrappers for SRAM-like arrays.
 - Split very large buffers before `synth` if Yosys maps them into registers.
 - Run vendor Vivado synthesis for final LUT/FF/BRAM/DSP/timing numbers.
-

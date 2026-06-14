@@ -292,15 +292,15 @@ def slide_verification() -> SlideBuilder:
 
 def slide_results() -> SlideBuilder:
     s = SlideBuilder()
-    title(s, "结果、综合状态与限制", "功能闭环已跑通；真实综合工具本机未安装，已补可复现实验脚本")
+    title(s, "结果、Vivado 综合与限制", "功能闭环已跑通；Vivado 2021.2 已给出代表模块资源趋势")
     s.box_text(0.75, 1.3, 2.15, 0.82, "1,085,562\nhardware cycles", "EAF6EF", "A6D7B8", 18, "14532D", True)
     s.box_text(3.2, 1.3, 2.15, 0.82, "100%\nlogit match", "EAF0FF", "B7C9FF", 18, "1D3D8F", True)
     s.box_text(5.65, 1.3, 2.15, 0.82, "341M\nRV32I estimate", "FFF5E6", "FFD89B", 18, "7A4100", True)
     s.box_text(8.1, 1.3, 2.15, 0.82, "314x\nspeedup estimate", "FDF2FA", "FCCEEE", 18, "851651", True)
-    s.text(0.86, 2.65, 5.5, 1.6, "真实综合尝试\n• Windows PATH: Yosys/Vivado not found\n• WSL: yosys/vivado command not found\n• 已新增 scripts/run_synthesis_yosys.sh\n• 报告: build/reports/synthesis_initial.md", size=17, color="344054")
-    s.text(7.0, 2.65, 4.95, 1.6, "当前限制\n• word-per-int8 仿真内存格式\n• SRAM/BRAM inference 待综合确认\n• 单时钟，未做 CDC\n• 约 50% checkpoint 用于功能验证", size=17, color="344054")
+    s.text(0.86, 2.55, 5.95, 1.55, "Vivado 2021.2 / K26 OOC\n• requant: 494 LUT, 294 FF, 10 DSP\n• PW 8x8: 5957 LUT, 4098 FF, 0 DSP\n• DW lanes: 9759 LUT, 3367 FF, 0 DSP\n• SRAM bank: 6791 LUT, 0 BRAM", size=15, color="344054")
+    s.text(7.15, 2.55, 4.85, 1.55, "full cnn_top synthesis\n• 启动成功并进入 layer_runner\n• 卡在 dw_tile_buffer\n• Vivado: 3D RAM pattern unsupported\n• 当前首要任务是显式 banking / RAM wrapper", size=15, color="344054")
     s.rect(0.75, 5.15, 11.5, 0.02, fill="D0D5DD", line=None)
-    s.text(0.9, 5.55, 11.1, 0.75, "下一步: 跑真实 FPGA synthesis，确认 BRAM/DSP/timing；再做 requant 流水化、PW 控制复制、packed NHWC loader、QAT/calibration。", size=19, color="101828", bold=True, align="ctr")
+    s.text(0.9, 5.55, 11.1, 0.75, "下一步: 重写 DW tile buffer / SRAM bank 以获得 BRAM-friendly top synthesis，再做 timing closure、requant 复用、PW 控制复制。", size=18, color="101828", bold=True, align="ctr")
     return s
 
 
@@ -418,4 +418,3 @@ def write_pptx() -> None:
 
 if __name__ == "__main__":
     write_pptx()
-

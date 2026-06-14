@@ -487,3 +487,52 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 - 根据 timing report 判断是否需要给 PW array 输入/控制广播加寄存复制。
 - 根据 DSP 使用率决定 requant multiplier 是保持流水化、共享化，还是改 vendor DSP primitive。
 - packed NHWC byte layout 和 burst-friendly loader 仍是后续 memory pass。
+
+## 2026-06-14: Vivado 2021.2 初步综合
+
+目标:
+- 使用本机已安装的 Vivado 2021.2 获取真实 synthesis 结果。
+- 若 full top 尚不能完成，至少用代表性子模块验证资源映射趋势。
+
+工具:
+- Vivado path: `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`
+- Windows/WSL PATH 均未配置 Vivado，需要脚本显式传入路径。
+- 当前 Vivado 安装只包含 K26 parts:
+  - `xck26-sfvc784-2LV-c`
+  - `xck26-sfvc784-2LVI-i`
+
+实现:
+- 新增/更新 `scripts/run_synthesis_vivado.ps1` 和 `scripts/vivado_cnn_top_synth.tcl`。
+- 支持 `-Top <module>` 做 out-of-context synthesis。
+- Vivado console 输出保存到 `build/reports/vivado_<top>/vivado_console.txt`，正式报告保存到 `docs/synthesis_vivado_<top>.md`。
+
+full `cnn_top` 尝试:
+- Vivado 成功启动并进入 `cnn_layer_runner` 子模块综合。
+- 在 `dw_tile_buffer` 处出现真实 warning:
+
+```text
+WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is not supported. This will most likely be implemented in registers
+```
+
+- 之后运行超过 30 分钟无进一步日志进展，手动停止。
+- 结论: 当前 full top 的首要综合 blocker 是 `dw_tile_buffer` 的 RAM 写法不适合 Vivado BRAM 推断。
+
+代表模块 OOC 综合结果:
+
+| Module | CLB LUTs | CLB Registers | BRAM Tiles | DSPs |
+| --- | ---: | ---: | ---: | ---: |
+| `requant_activation_unit` | 494 | 294 | 0 | 10 |
+| `pw_systolic_array_8x8` | 5957 | 4098 | 0 | 0 |
+| `dw_mac_lanes` | 9759 | 3367 | 0 | 0 |
+| `feature_sram_bank` | 6791 | 9 | 0 | 0 |
+
+补充观察:
+- `requant_activation_unit` 的 Q31 multiply 确实消耗 DSP48E2，当前一个 requant 单元约 10 DSP。
+- `pw_systolic_array_8x8` 和 `dw_mac_lanes` 当前 int8 multiply 被 Vivado 映射到 LUT/CARRY，而不是 DSP。
+- `feature_sram_bank` 没有推断 BRAM，报告显示 5120 LUT 为 distributed RAM。
+- K26 part library 在当前安装下无法跑 timing summary，Vivado 报 `Cannot run timing on a non-timing device`，因此本次只有 utilization，没有 timing closure。
+
+保留优化点:
+- 优先重写 `dw_tile_buffer` 为显式 banking，避免 3D RAM。
+- 再决定 `feature_sram_bank` 用 BRAM wrapper 还是 LUTRAM。
+- 对 PW/DW 是否强制 DSP 映射要结合 DSP 预算决定；当前 LUT 映射会占用较多 LUT，但节省 DSP。
