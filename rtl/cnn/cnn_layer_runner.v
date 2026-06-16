@@ -76,6 +76,7 @@ module cnn_layer_runner #(
     localparam ST_TILED_ADVANCE       = 5'd19;
     localparam ST_TILED_NEXT_WAIT     = 5'd20;
     localparam ST_TILED_START_WAIT    = 5'd21;
+    localparam OUT_BUFFER_ADDR_WIDTH  = 14;
 
     reg [4:0] state;
     reg [31:0] op_type_reg;
@@ -139,7 +140,11 @@ module cnn_layer_runner #(
     reg [(10*8)-1:0] fc_shift;
     wire signed [(10*8)-1:0] fc_logits;
 
-    reg signed [7:0] out_buffer [0:(64*MAX_COUT)-1];
+    wire out_buffer_wr_en;
+    wire [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_wr_addr;
+    wire signed [7:0] out_buffer_wr_data;
+    reg  [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_rd_addr;
+    wire signed [7:0] out_buffer_rd_data;
 
     reg stem_start;
     wire stem_busy;
@@ -217,8 +222,6 @@ module cnn_layer_runner #(
     wire [3:0] stem_engine_out_w;
     wire [3:0] ds_engine_out_h;
     wire [3:0] ds_engine_out_w;
-
-    integer clear_i;
 
     assign desc_word0  = desc_words[(0*32) +: 32];
     assign desc_word1  = desc_words[(1*32) +: 32];
@@ -363,6 +366,24 @@ module cnn_layer_runner #(
         .activation_max(pw_activation_max_reg),
         .logits(fc_logits)
     );
+
+    cnn_out_buffer #(
+        .DEPTH(64*MAX_COUT),
+        .ADDR_WIDTH(OUT_BUFFER_ADDR_WIDTH)
+    ) u_out_buffer (
+        .clk(clk),
+        .wr_en(out_buffer_wr_en),
+        .wr_addr(out_buffer_wr_addr),
+        .wr_data(out_buffer_wr_data),
+        .rd_addr(out_buffer_rd_addr),
+        .rd_data(out_buffer_rd_data)
+    );
+
+    assign out_buffer_wr_en = stem_out_wr_en || ds_out_wr_en;
+    assign out_buffer_wr_addr = stem_out_wr_en ?
+        ((stem_out_wr_pixel_idx * MAX_COUT) + stem_out_wr_channel_idx) :
+        ((ds_out_wr_pixel_idx * MAX_COUT) + ds_out_wr_channel_idx);
+    assign out_buffer_wr_data = stem_out_wr_en ? stem_out_wr_data_int8 : ds_out_wr_data_int8;
 
     function [3:0] calc_out_dim;
         input [15:0] in_dim;
@@ -547,17 +568,14 @@ module cnn_layer_runner #(
     function [7:0] output_byte_for;
         input [31:0] op_type;
         input [31:0] idx;
-        integer buf_idx;
         begin
             output_byte_for = 8'd0;
             case (op_type)
                 OP_CONV3X3_STEM: begin
-                    buf_idx = buffer_index_from_linear(idx, 16'd16);
-                    output_byte_for = out_buffer[buf_idx];
+                    output_byte_for = out_buffer_rd_data;
                 end
                 OP_DS_BLOCK: begin
-                    buf_idx = buffer_index_from_linear(idx, out_c_reg);
-                    output_byte_for = out_buffer[buf_idx];
+                    output_byte_for = out_buffer_rd_data;
                 end
                 OP_GAP: begin
                     output_byte_for = gap_out[(idx*8) +: 8];
@@ -571,6 +589,21 @@ module cnn_layer_runner #(
             endcase
         end
     endfunction
+
+    always @(*) begin
+        out_buffer_rd_addr = {OUT_BUFFER_ADDR_WIDTH{1'b0}};
+        case (op_type_reg)
+            OP_CONV3X3_STEM: begin
+                out_buffer_rd_addr = buffer_index_from_linear(store_idx, 16'd16);
+            end
+            OP_DS_BLOCK: begin
+                out_buffer_rd_addr = buffer_index_from_linear(store_idx, out_c_reg);
+            end
+            default: begin
+                out_buffer_rd_addr = {OUT_BUFFER_ADDR_WIDTH{1'b0}};
+            end
+        endcase
+    end
 
     function [SRAM_ADDR_WIDTH-1:0] sram_addr_for_index;
         input [31:0] base_addr;
@@ -848,15 +881,6 @@ module cnn_layer_runner #(
     /* verilator lint_on BLKSEQ */
 
     always @(posedge clk) begin
-        if (stem_out_wr_en) begin
-            out_buffer[(stem_out_wr_pixel_idx * MAX_COUT) + stem_out_wr_channel_idx] <= stem_out_wr_data_int8;
-        end
-        if (ds_out_wr_en) begin
-            out_buffer[(ds_out_wr_pixel_idx * MAX_COUT) + ds_out_wr_channel_idx] <= ds_out_wr_data_int8;
-        end
-    end
-
-    always @(posedge clk) begin
         if (!rst_n) begin
             state <= ST_IDLE;
             busy <= 1'b0;
@@ -917,6 +941,7 @@ module cnn_layer_runner #(
             pw_activation_min_reg <= -32'sd128;
             pw_activation_max_reg <= 32'sd127;
             flags_reg <= 32'd0;
+`ifndef SYNTHESIS
             stem_input_tile <= 2400'sd0;
             stem_weight <= 3456'sd0;
             stem_bias <= 512'sd0;
@@ -937,6 +962,7 @@ module cnn_layer_runner #(
             fc_bias <= 320'sd0;
             fc_multiplier <= 320'sd0;
             fc_shift <= 80'd0;
+`endif
         end else begin
             done <= 1'b0;
             stem_start <= 1'b0;
@@ -986,6 +1012,7 @@ module cnn_layer_runner #(
                 end
 
                 ST_VALIDATE: begin
+`ifndef SYNTHESIS
                     stem_input_tile <= 2400'sd0;
                     stem_weight <= 3456'sd0;
                     stem_bias <= 512'sd0;
@@ -1006,11 +1033,7 @@ module cnn_layer_runner #(
                     fc_bias <= 320'sd0;
                     fc_multiplier <= 320'sd0;
                     fc_shift <= 80'd0;
-                    /* verilator lint_off BLKSEQ */
-                    for (clear_i = 0; clear_i < (64*MAX_COUT); clear_i = clear_i + 1) begin
-                        out_buffer[clear_i] = 8'sd0;
-                    end
-                    /* verilator lint_on BLKSEQ */
+`endif
 
                     if (flags_reg[FLAG_SKIP_EXEC]) begin
                         state <= ST_DONE;
@@ -1364,6 +1387,39 @@ module cnn_layer_runner #(
             endcase
         end
     end
+endmodule
+
+module cnn_out_buffer #(
+    parameter DEPTH = 16384,
+    parameter ADDR_WIDTH = 14
+) (
+    input  wire                      clk,
+    input  wire                      wr_en,
+    input  wire [ADDR_WIDTH-1:0]     wr_addr,
+    input  wire signed [7:0]         wr_data,
+    input  wire [ADDR_WIDTH-1:0]     rd_addr,
+    output wire signed [7:0]         rd_data
+);
+    (* ram_style = "distributed" *) reg signed [7:0] mem [0:DEPTH-1];
+
+`ifndef SYNTHESIS
+    integer init_i;
+    initial begin
+        /* verilator lint_off BLKSEQ */
+        for (init_i = 0; init_i < DEPTH; init_i = init_i + 1) begin
+            mem[init_i] = 8'sd0;
+        end
+        /* verilator lint_on BLKSEQ */
+    end
+`endif
+
+    always @(posedge clk) begin
+        if (wr_en) begin
+            mem[wr_addr] <= wr_data;
+        end
+    end
+
+    assign rd_data = mem[rd_addr];
 endmodule
 
 `default_nettype wire

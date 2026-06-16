@@ -78,7 +78,7 @@ foreach f $rtl_files {
 }
 
 set synth_result [catch {
-    synth_design -top $top_name -part $part_name -flatten_hierarchy rebuilt -mode out_of_context
+    synth_design -top $top_name -part $part_name -flatten_hierarchy none -mode out_of_context -directive RuntimeOptimized
 } synth_msg]
 
 if {$synth_result != 0} {

@@ -1,40 +1,40 @@
-# Vivado cnn_top Synthesis Attempt
+# Vivado Initial Synthesis Report
 
-- Date: 2026-06-14
+- Date: 2026-06-16
 - Tool: Vivado 2021.2
 - Top module: `cnn_top`
-- Installed part used: `xck26-sfvc784-2LV-c`
-- Status: stopped after a long-running synthesis attempt
+- Part: `xck26-sfvc784-2LV-c`
+- Clock constraint: 10.000 ns
+- Status: INCOMPLETE
 
 ## Result
 
-Vivado successfully started `cnn_top` synthesis and progressed through:
+`cnn_top` no longer stops at the original `dw_tile_buffer` 3D RAM pattern. Vivado front-end synthesis reaches the complete hierarchy, including `cnn_layer_runner`, `dw_tile_fusion_engine`, and `ds_block_tile_engine`.
 
-- `cnn_top`
-- `cnn_top_ctrl`
-- `descriptor_fetch`
-- `cnn_layer_runner`
-- `conv3x3_stem_engine`
-- `ds_block_tile_engine`
-- `dw_tile_fusion_engine`
-- `dw_mac_lanes`
+The local full-top OOC run did not finish within the 1 hour run limit. The latest log shows large-pin-count warnings from the remaining simulation-oriented packed payload buffers in `cnn_layer_runner` and from the current synthesis-proof staging logic in the DW/DSBlock engines.
 
-It then reached `dw_tile_buffer` and emitted:
+## Current Evidence
+
+The following OOC module syntheses pass with Vivado 2021.2:
+
+| Top | Status | LUT primitive cells | FF/latch primitive cells | DSP primitive cells |
+| --- | --- | ---: | ---: | ---: |
+| `dw_tile_buffer` | PASSED | 50272 | 64 | 0 |
+| `dw_tile_fusion_engine` | PASSED | 307455 | 296388 | 10 |
+| `ds_block_tile_engine` | PASSED | 645195 | 565654 | 20 |
+
+These numbers are intentionally not optimized. They prove Vivado accepts the RTL after the staging/banking fixes.
+
+## Remaining Full-Top Blocker
+
+Full `cnn_top` still needs a memory/interface pass:
+
+- Replace `cnn_layer_runner` packed vectors such as `ds_input_tile` and `pw_weight` with SRAM/loader interfaces.
+- Keep current DW/DSBlock staging only as a temporary synthesis-proof fallback.
+- Re-run full top after payload storage is no longer represented as huge packed vectors.
+
+Timing reports still fail on the installed K26 part with:
 
 ```text
-WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is not supported. This will most likely be implemented in registers
+ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 ```
-
-After more than 30 minutes with no further log progress, the Vivado process was stopped manually. This is a real synthesis attempt and a useful result: the full top cannot yet be treated as a clean FPGA synthesis target because `dw_tile_buffer` is not written in a BRAM-friendly form.
-
-## Implication
-
-Before expecting meaningful full-accelerator LUT/FF/BRAM/DSP numbers, the buffer/SRAM structures should be rewritten or wrapped so Vivado infers BRAM/LUTRAM intentionally:
-
-- Replace multidimensional RAM arrays with explicit bank modules or vendor RAM wrappers.
-- Split `dw_tile_buffer` into pixel/channel banks with one read/write access per physical memory per cycle.
-- Add RAM style attributes only after the access pattern is compatible with the intended RAM primitive.
-- Re-run `scripts/run_synthesis_vivado.ps1 -Top cnn_top`.
-
-See `docs/synthesis_vivado_summary.md` for successful Vivado OOC synthesis of representative submodules.
-

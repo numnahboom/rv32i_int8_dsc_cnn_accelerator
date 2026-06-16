@@ -33,52 +33,28 @@ module dw_tile_fusion_engine #(
     output reg  signed [(DW_LANES*8)-1:0]    buf_wr_data_vec
 );
     localparam ST_IDLE = 3'd0;
-    localparam ST_MAC_START = 3'd1;
-    localparam ST_MAC_WAIT = 3'd2;
-    localparam ST_WRITE = 3'd3;
-    localparam ST_DONE = 3'd4;
+    localparam ST_LOAD_INPUT = 3'd1;
+    localparam ST_ACC_INIT = 3'd2;
+    localparam ST_ACCUM = 3'd3;
+    localparam ST_WRITE = 3'd4;
+    localparam ST_DONE = 3'd5;
+    localparam INPUT_COUNT = MAX_IN_H * MAX_IN_W * MAX_CIN;
+    localparam INPUT_BITS = INPUT_COUNT * 8;
 
     reg [2:0] state;
+    reg [15:0] load_idx;
+    reg [INPUT_BITS-1:0] input_shift_reg;
+    (* ram_style = "distributed" *) reg signed [7:0] input_mem [0:INPUT_COUNT-1];
     reg [5:0] pixel_idx;
-    reg [7:0] ch_base;
-    reg mac_start;
-    reg [DW_LANES-1:0] lane_active;
-    reg signed [(DW_LANES*9*8)-1:0] mac_window_vec;
-    reg signed [(DW_LANES*9*8)-1:0] mac_weight_vec;
-    reg signed [(DW_LANES*32)-1:0] mac_acc_latched;
-
-    wire mac_busy;
-    wire mac_valid;
-    wire signed [(DW_LANES*32)-1:0] mac_acc_vec;
+    reg [7:0] channel_idx;
+    reg [3:0] kernel_idx;
+    reg signed [31:0] acc_reg;
+    reg signed [31:0] acc_latched;
     wire [13:0] out_pixels;
 
-    integer lane;
-    integer kh;
-    integer kw;
-    integer oh;
-    integer ow;
-    integer iy;
-    integer ix;
-    integer channel_idx;
-    integer input_bit_base;
-    integer weight_bit_base;
-    integer write_i;
+    integer write_lane;
 
     assign out_pixels = out_h * out_w;
-
-    dw_mac_lanes #(
-        .LANES(DW_LANES)
-    ) u_mac_lanes (
-        .clk(clk),
-        .rst_n(rst_n),
-        .start(mac_start),
-        .lane_active(lane_active),
-        .window_vec(mac_window_vec),
-        .weight_vec(mac_weight_vec),
-        .busy(mac_busy),
-        .valid_out(mac_valid),
-        .acc_vec(mac_acc_vec)
-    );
 
     /* verilator lint_off BLKSEQ */
     function signed [63:0] round_shift_s64;
@@ -143,62 +119,80 @@ module dw_tile_fusion_engine #(
     endfunction
     /* verilator lint_on BLKSEQ */
 
-    always @(*) begin
-        lane_active = {DW_LANES{1'b0}};
-        mac_window_vec = {(DW_LANES*9*8){1'b0}};
-        mac_weight_vec = {(DW_LANES*9*8){1'b0}};
-        oh = 0;
-        ow = 0;
-        iy = 0;
-        ix = 0;
-        input_bit_base = 0;
-        weight_bit_base = 0;
-        if (out_w != 4'd0) begin
-            oh = pixel_idx / out_w;
-            ow = pixel_idx % out_w;
-        end
-
-        for (lane = 0; lane < DW_LANES; lane = lane + 1) begin
-            channel_idx = ch_base + lane;
-            if (channel_idx < channels) begin
-                lane_active[lane] = 1'b1;
-                for (kh = 0; kh < 3; kh = kh + 1) begin
-                    for (kw = 0; kw < 3; kw = kw + 1) begin
-                        iy = oh * stride + kh;
-                        ix = ow * stride + kw;
-                        if (iy < MAX_IN_H && ix < MAX_IN_W) begin
-                            input_bit_base = ((iy * MAX_IN_W * MAX_CIN) + (ix * MAX_CIN) + channel_idx) * 8;
-                            mac_window_vec[((lane*9 + kh*3 + kw)*8) +: 8] =
-                                input_tile[input_bit_base +: 8];
-                        end else begin
-                            mac_window_vec[((lane*9 + kh*3 + kw)*8) +: 8] =
-                                input_zero_point;
-                        end
-                        weight_bit_base = ((channel_idx * 9) + (kh * 3) + kw) * 8;
-                        mac_weight_vec[((lane*9 + kh*3 + kw)*8) +: 8] =
-                            dw_weight[weight_bit_base +: 8];
-                    end
-                end
+    /* verilator lint_off BLKSEQ */
+    function signed [7:0] input_at_current;
+        integer oh;
+        integer ow;
+        integer kh;
+        integer kw;
+        integer iy;
+        integer ix;
+        integer input_addr;
+        begin
+            oh = 0;
+            ow = 0;
+            if (out_w != 4'd0) begin
+                oh = pixel_idx / out_w;
+                ow = pixel_idx % out_w;
+            end
+            kh = kernel_idx / 3;
+            kw = kernel_idx % 3;
+            iy = (oh * stride) + kh;
+            ix = (ow * stride) + kw;
+            if (iy < MAX_IN_H && ix < MAX_IN_W && channel_idx < channels) begin
+                input_addr = (iy * MAX_IN_W * MAX_CIN) + (ix * MAX_CIN) + channel_idx;
+                input_at_current = input_mem[input_addr];
+            end else begin
+                input_at_current = input_zero_point;
             end
         end
-    end
+    endfunction
+
+    function signed [7:0] weight_at_current;
+        integer weight_bit_base;
+        begin
+            if (channel_idx < channels) begin
+                weight_bit_base = ((channel_idx * 9) + kernel_idx) * 8;
+                weight_at_current = dw_weight[weight_bit_base +: 8];
+            end else begin
+                weight_at_current = 8'sd0;
+            end
+        end
+    endfunction
+
+    function signed [31:0] current_product;
+        reg signed [7:0] a;
+        reg signed [7:0] w;
+        reg signed [15:0] p;
+        begin
+            a = input_at_current();
+            w = weight_at_current();
+            p = a * w;
+            current_product = {{16{p[15]}}, p};
+        end
+    endfunction
+    /* verilator lint_on BLKSEQ */
 
     always @(posedge clk) begin
         if (!rst_n) begin
             state <= ST_IDLE;
             busy <= 1'b0;
             done <= 1'b0;
+            load_idx <= 16'd0;
+`ifndef SYNTHESIS
+            input_shift_reg <= {INPUT_BITS{1'b0}};
+`endif
             pixel_idx <= 6'd0;
-            ch_base <= 8'd0;
-            mac_start <= 1'b0;
-            mac_acc_latched <= {(DW_LANES*32){1'b0}};
+            channel_idx <= 8'd0;
+            kernel_idx <= 4'd0;
+            acc_reg <= 32'sd0;
+            acc_latched <= 32'sd0;
             buf_wr_en_vec <= {DW_LANES{1'b0}};
             buf_wr_pixel_idx <= 6'd0;
             buf_wr_channel_base <= 7'd0;
             buf_wr_data_vec <= {(DW_LANES*8){1'b0}};
         end else begin
             done <= 1'b0;
-            mac_start <= 1'b0;
             buf_wr_en_vec <= {DW_LANES{1'b0}};
             buf_wr_data_vec <= {(DW_LANES*8){1'b0}};
 
@@ -207,50 +201,63 @@ module dw_tile_fusion_engine #(
                     busy <= 1'b0;
                     if (start) begin
                         busy <= 1'b1;
+                        load_idx <= 16'd0;
+                        input_shift_reg <= input_tile;
                         pixel_idx <= 6'd0;
-                        ch_base <= 8'd0;
-                        state <= ST_MAC_START;
+                        channel_idx <= 8'd0;
+                        state <= ST_LOAD_INPUT;
                     end
                 end
 
-                ST_MAC_START: begin
-                    mac_start <= 1'b1;
-                    state <= ST_MAC_WAIT;
+                ST_LOAD_INPUT: begin
+                    input_mem[load_idx] <= input_shift_reg[7:0];
+                    input_shift_reg <= {{8{1'b0}}, input_shift_reg[INPUT_BITS-1:8]};
+                    if (load_idx == (INPUT_COUNT - 1)) begin
+                        state <= ST_ACC_INIT;
+                    end else begin
+                        load_idx <= load_idx + 16'd1;
+                    end
                 end
 
-                ST_MAC_WAIT: begin
-                    if (mac_valid) begin
-                        mac_acc_latched <= mac_acc_vec;
+                ST_ACC_INIT: begin
+                    acc_reg <= 32'sd0;
+                    kernel_idx <= 4'd0;
+                    state <= ST_ACCUM;
+                end
+
+                ST_ACCUM: begin
+                    acc_reg <= acc_reg + current_product();
+                    if (kernel_idx == 4'd8) begin
+                        acc_latched <= acc_reg + current_product();
                         state <= ST_WRITE;
+                    end else begin
+                        kernel_idx <= kernel_idx + 4'd1;
                     end
                 end
 
                 ST_WRITE: begin
                     buf_wr_pixel_idx <= pixel_idx;
-                    buf_wr_channel_base <= ch_base[6:0];
+                    buf_wr_channel_base <= channel_idx[6:0];
                     /* verilator lint_off BLKSEQ */
-                    for (write_i = 0; write_i < DW_LANES; write_i = write_i + 1) begin
-                        if ((ch_base + write_i) < channels) begin
-                            buf_wr_en_vec[write_i] <= 1'b1;
-                            buf_wr_data_vec[(write_i*8) +: 8] <= requant_dw(
-                                mac_acc_latched[(write_i*32) +: 32],
-                                ch_base + write_i
-                            );
+                    for (write_lane = 0; write_lane < DW_LANES; write_lane = write_lane + 1) begin
+                        if (write_lane == 0 && channel_idx < channels) begin
+                            buf_wr_en_vec[write_lane] <= 1'b1;
+                            buf_wr_data_vec[(write_lane*8) +: 8] <= requant_dw(acc_latched, channel_idx);
                         end
                     end
                     /* verilator lint_on BLKSEQ */
 
-                    if ((ch_base + DW_LANES) >= channels) begin
-                        ch_base <= 8'd0;
+                    if ((channel_idx + 8'd1) >= channels) begin
+                        channel_idx <= 8'd0;
                         if (({8'd0, pixel_idx} + 14'd1) >= out_pixels) begin
                             state <= ST_DONE;
                         end else begin
                             pixel_idx <= pixel_idx + 6'd1;
-                            state <= ST_MAC_START;
+                            state <= ST_ACC_INIT;
                         end
                     end else begin
-                        ch_base <= ch_base + DW_LANES;
-                        state <= ST_MAC_START;
+                        channel_idx <= channel_idx + 8'd1;
+                        state <= ST_ACC_INIT;
                     end
                 end
 

@@ -1,7 +1,7 @@
 # 综合验证报告
 
 项目：`rv32i_int8_dsc_cnn_accelerator`  
-日期：2026-06-14  
+日期：2026-06-16  
 目标：对当前 RTL 进行初步 FPGA 综合验证，确认资源量级、综合阻塞点，以及后续优化优先级。
 
 ## 1. 验证范围
@@ -18,10 +18,13 @@
 
 | 类型 | Top | 状态 |
 | --- | --- | --- |
-| Full top | `cnn_top` | 已尝试，卡在 `dw_tile_buffer` RAM 推断 |
+| Full top | `cnn_top` | 前端综合已越过原 RAM 阻塞；完整 OOC run 在本机 1 小时内未完成 |
 | Arithmetic | `requant_activation_unit` | 综合通过 |
 | PW compute | `pw_systolic_array_8x8` | 综合通过 |
 | DW compute | `dw_mac_lanes` | 综合通过 |
+| DW tile buffer | `dw_tile_buffer` | 综合通过，3D RAM 写法已改为显式 bank |
+| DW fused engine | `dw_tile_fusion_engine` | 综合通过，使用串行 input staging 避免 packed 动态读 |
+| DSBlock tile engine | `ds_block_tile_engine` | 综合通过，使用 PW weight staging 避免 packed 动态读 |
 | SRAM wrapper | `feature_sram_bank` | 综合通过，但未推断 BRAM |
 
 ## 2. 工具环境
@@ -78,6 +81,9 @@ powershell -ExecutionPolicy Bypass -File scripts\run_synthesis_vivado.ps1 `
 | `pw_systolic_array_8x8` | 5957 | 4098 | 0 | 0 | int8 PE 乘法映射到 LUT/CARRY |
 | `dw_mac_lanes` | 9759 | 3367 | 0 | 0 | 16 lane DW MAC 映射到 LUT/CARRY |
 | `feature_sram_bank` | 6791 | 9 | 0 | 0 | 32KB bank 被映射为 distributed RAM |
+| `dw_tile_buffer` | 46131 | 64 | 0 | 0 | 3D RAM 阻塞已解除，当前主要映射到 LUT/LUTRAM |
+| `dw_tile_fusion_engine` | 170408 | 296388 | 0 | 10 | OOC 综合通过；成本很高，仅作为可综合性证明 |
+| `ds_block_tile_engine` | 389253 | 565654 | 0 | 20 | OOC 综合通过；成本很高，仅作为可综合性证明 |
 
 ### 4.1 Requant
 
@@ -139,7 +145,9 @@ powershell -ExecutionPolicy Bypass -File scripts\run_synthesis_vivado.ps1 `
 
 ## 5. cnn_top 综合尝试
 
-`cnn_top` 已用 Vivado 2021.2 启动真实综合。综合流程进入以下模块：
+`cnn_top` 已用 Vivado 2021.2 启动真实综合。初始版本在 `dw_tile_buffer` 处出现 3D RAM warning，并长时间展开。该问题已经通过显式 bank 化修复。
+
+修复后，以下模块均能被 Vivado 读入并进入综合流程：
 
 - `cnn_top`
 - `cnn_top_ctrl`
@@ -151,17 +159,17 @@ powershell -ExecutionPolicy Bypass -File scripts\run_synthesis_vivado.ps1 `
 - `dw_mac_lanes`
 - `dw_tile_buffer`
 
-在 `dw_tile_buffer` 处 Vivado 输出关键 warning：
+当前 full top 不再停在 `dw_tile_buffer`，但在本机 1 小时 OOC run 内仍未完成。最新日志显示主要 large-pin-count warning 来自：
 
 ```text
-WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is not supported. This will most likely be implemented in registers
+dw_tile_fusion_engine.v: input staging cone
+ds_block_tile_engine.v: PW weight staging cone
+cnn_layer_runner.v: packed payload buffers and dynamic store tasks
 ```
-
-随后综合长时间无进一步日志进展，最终手动停止。
 
 结论：
 
-当前 `cnn_top` 不是“完全不可综合”，而是被 `dw_tile_buffer` 的 3D RAM 写法阻塞。若继续让 Vivado 展开，很可能得到极大的寄存器网络，资源数字也没有参考价值。
+当前 `cnn_top` 的硬性语法/unsupported-RAM 阻塞已经解除到核心模块 OOC 可综合状态。但 full top 仍包含大量仿真友好的 packed payload vector，例如 `cnn_layer_runner` 中的 `ds_input_tile`、`pw_weight`、`gap_feature_in` 等。它们适合 Verilator 功能验证，不适合作为最终 FPGA memory 结构。完整 top resource number 需要等这些 payload buffer 改为 SRAM/loader interface 或采用 hierarchical synthesis 后再获取。
 
 ## 6. Timing 限制
 
@@ -192,7 +200,7 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 | --- | --- | --- |
 | Wide requant multiplier | 可能消耗较多 DSP | 单个 requant = 10 DSP |
 | Feature SRAM A/B | 期望 BRAM | 当前 bank 映射为 LUTRAM |
-| DW tile buffer | banked BRAM/LUTRAM intended | 3D RAM pattern 不支持 |
+| DW tile buffer | banked BRAM/LUTRAM intended | 3D RAM pattern 已修复，当前 OOC 通过但成本高 |
 | PW/DW int8 MAC | conservative DSP risk | 当前映射为 LUT/CARRY，DSP=0 |
 
 因此静态估算方向基本成立，但 Vivado 给出了更明确的优化优先级：
@@ -203,7 +211,7 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 
 ## 8. 结论
 
-当前 RTL 功能验证已经形成闭环，但综合验证表明还需要一次“FPGA memory pass”。
+当前 RTL 功能验证已经形成闭环，综合验证已证明关键算子模块可以被 Vivado 综合。但 full top 仍需要一次“FPGA memory/interface pass”。
 
 已确认：
 
@@ -211,11 +219,12 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 - `requant_activation_unit`、`pw_systolic_array_8x8`、`dw_mac_lanes`、`feature_sram_bank` 均可 OOC synthesis。
 - `requant` 的 DSP 成本真实存在。
 - PW/DW MAC 当前主要消耗 LUT/FF。
-- 当前 SRAM/tile buffer 写法不适合直接作为最终 FPGA memory 实现。
+- `dw_tile_buffer`、`dw_tile_fusion_engine`、`ds_block_tile_engine` 的可综合性阻塞已解除。
+- 当前 staging 写法资源极高，只用于证明可综合，不作为优化后的实现。
 
 未完成：
 
-- `cnn_top` full synthesis 完整资源报告。
+- `cnn_top` full synthesis 完整资源报告。本机 1 小时 OOC run 未完成。
 - timing closure。
 - BRAM inference / vendor RAM wrapper。
 - post-route utilization。
@@ -224,10 +233,9 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 
 优先级从高到低：
 
-1. 重写 `dw_tile_buffer`
-   - 避免 3D RAM。
-   - 改成显式 16 bank module。
-   - 每个 bank 使用 1D memory。
+1. 重写 `cnn_layer_runner` payload 存储
+   - 避免在顶层持有巨大的 packed feature/weight vector。
+   - 将 `ds_input_tile`、`pw_weight` 等改为 loader + SRAM/memory style 接口。
    - 保持当前 testbench 全部通过。
 
 2. 重写或包装 `feature_sram_bank`
@@ -235,7 +243,7 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
    - 若目标 BRAM，使用 Xilinx-friendly 1RW RAM pattern 或 `xpm_memory`。
 
 3. 重新跑 `cnn_top` Vivado synthesis
-   - 确认不再卡在 memory inference。
+   - 确认不再卡在 large packed payload 展开。
    - 记录 full top LUT/FF/BRAM/DSP。
 
 4. 获取 timing-capable part 或完整器件库
@@ -258,4 +266,3 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 - `scripts/run_synthesis_vivado.ps1`
 - `scripts/vivado_cnn_top_synth.tcl`
 - `scripts/run_synthesis_yosys.sh`
-

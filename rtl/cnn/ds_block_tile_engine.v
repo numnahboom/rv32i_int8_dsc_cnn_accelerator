@@ -43,17 +43,23 @@ module ds_block_tile_engine #(
     output reg  signed [7:0]                 out_wr_data_int8
 );
     localparam ST_IDLE = 4'd0;
-    localparam ST_DW_START = 4'd1;
-    localparam ST_DW_WAIT = 4'd2;
-    localparam ST_PW_READ = 4'd3;
-    localparam ST_PW_READ_WAIT = 4'd4;
-    localparam ST_PW_FEED = 4'd5;
-    localparam ST_PW_WAIT = 4'd6;
-    localparam ST_WRITE = 4'd7;
-    localparam ST_DONE = 4'd8;
+    localparam ST_LOAD_PW_WEIGHT = 4'd1;
+    localparam ST_DW_START = 4'd2;
+    localparam ST_DW_WAIT = 4'd3;
+    localparam ST_PW_READ = 4'd4;
+    localparam ST_PW_READ_WAIT = 4'd5;
+    localparam ST_PW_FEED = 4'd6;
+    localparam ST_PW_WAIT = 4'd7;
+    localparam ST_WRITE = 4'd8;
+    localparam ST_DONE = 4'd9;
     localparam DW_LANES = 16;
+    localparam PW_WEIGHT_COUNT = MAX_COUT * MAX_CIN;
+    localparam PW_WEIGHT_BITS = PW_WEIGHT_COUNT * 8;
 
     reg [3:0] state;
+    reg [15:0] load_idx;
+    reg [PW_WEIGHT_BITS-1:0] pw_weight_shift_reg;
+    (* ram_style = "distributed" *) reg signed [7:0] pw_weight_mem [0:PW_WEIGHT_COUNT-1];
     reg dw_start;
     wire dw_busy;
     wire dw_done;
@@ -86,7 +92,7 @@ module ds_block_tile_engine #(
 
     wire [13:0] out_pixels;
     integer lane;
-    integer bit_base;
+    integer weight_addr;
     integer channel;
 
     assign out_pixels = out_h * out_w;
@@ -215,13 +221,13 @@ module ds_block_tile_engine #(
 
     always @(*) begin
         wgt_vec_latched = 64'sd0;
-        bit_base = 0;
+        weight_addr = 0;
         channel = 0;
         for (lane = 0; lane < 8; lane = lane + 1) begin
             channel = cout_base + lane;
             if (channel < out_channels && k_idx < channels) begin
-                bit_base = ((channel * MAX_CIN) + k_idx) * 8;
-                wgt_vec_latched[(lane*8) +: 8] = pw_weight[bit_base +: 8];
+                weight_addr = (channel * MAX_CIN) + k_idx;
+                wgt_vec_latched[(lane*8) +: 8] = pw_weight_mem[weight_addr];
             end
         end
     end
@@ -231,6 +237,10 @@ module ds_block_tile_engine #(
             state <= ST_IDLE;
             busy <= 1'b0;
             done <= 1'b0;
+            load_idx <= 16'd0;
+`ifndef SYNTHESIS
+            pw_weight_shift_reg <= {PW_WEIGHT_BITS{1'b0}};
+`endif
             dw_start <= 1'b0;
             buf_rd_en <= 1'b0;
             buf_rd_pixel_base <= 6'd0;
@@ -264,10 +274,22 @@ module ds_block_tile_engine #(
                     busy <= 1'b0;
                     if (start) begin
                         busy <= 1'b1;
+                        load_idx <= 16'd0;
+                        pw_weight_shift_reg <= pw_weight;
                         pixel_base <= 6'd0;
                         cout_base <= 9'd0;
                         k_idx <= 8'd0;
+                        state <= ST_LOAD_PW_WEIGHT;
+                    end
+                end
+
+                ST_LOAD_PW_WEIGHT: begin
+                    pw_weight_mem[load_idx] <= pw_weight_shift_reg[7:0];
+                    pw_weight_shift_reg <= {{8{1'b0}}, pw_weight_shift_reg[PW_WEIGHT_BITS-1:8]};
+                    if (load_idx == (PW_WEIGHT_COUNT - 1)) begin
                         state <= ST_DW_START;
+                    end else begin
+                        load_idx <= load_idx + 16'd1;
                     end
                 end
 

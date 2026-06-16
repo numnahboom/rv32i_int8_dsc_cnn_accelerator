@@ -552,3 +552,27 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 
 结论:
 - 当前综合验证的核心发现不是算术模块不可综合，而是 memory/buffer 写法需要进入 FPGA memory pass。
+
+## 2026-06-16: 可综合性优先修复
+
+目标:
+- 暂时不优化综合成本，只清除 Vivado 不能接受或容易崩溃的 RTL 写法。
+- 尽量得到真实 OOC synthesis 证据，并记录 full top 仍未完成的原因。
+
+实现:
+- `dw_tile_buffer.v` 从 3D RAM 改为显式 128 个 1D bank，解除 Vivado `3D RAM ... unsupported` 阻塞。
+- `cnn_layer_runner.v` 将 `out_buffer` 改为单写口、异步读的 1D memory 子模块，避免 131072 bit memory 被迫 dissolve。
+- `dw_tile_fusion_engine.v` 将 DW 输入 tile 从 packed dynamic part-select 改为启动时串行 staging 到 byte memory。
+- `ds_block_tile_engine.v` 将 PW weight 从 packed dynamic part-select 改为启动时串行 staging 到 byte memory。
+- Vivado 脚本改为 `-flatten_hierarchy none -directive RuntimeOptimized`，用于保层级、优先完成综合。
+
+验证:
+- `dw_tile_buffer` OOC synthesis PASS。
+- `dw_tile_fusion_engine` OOC synthesis PASS，约 307k LUT primitive cells、296k FF/latch、10 DSP。
+- `ds_block_tile_engine` OOC synthesis PASS，约 645k LUT primitive cells、566k FF/latch、20 DSP。
+- full `cnn_top` OOC synthesis 在本机 1 小时内未完成；日志显示剩余主要问题是 `cnn_layer_runner` 的 packed payload buffer 造成超大 netlist。
+
+保留问题:
+- 当前 staging 实现只用于证明可综合，资源成本非常高。
+- `cnn_layer_runner` 仍需从 packed vector buffer 改成 SRAM/loader interface，之后再跑 full top synthesis。
+- WSL/Windows Verilator 当前不可用，因此这轮未能重跑功能仿真；需要恢复 Verilator 后回归 DW/DSBlock/fullnet。
