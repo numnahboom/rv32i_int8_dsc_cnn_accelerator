@@ -501,16 +501,27 @@ endmodule
 - ILA 能抓到一次完整 start -> layer progression -> done。
 - UART/寄存器读数与 ILA 观察一致。
 
-## 5. 对你目前代码水平的估计
+## 5. 贡献边界与对你目前代码水平的估计
 
-基于当前项目规模和已有代码，我对你当前水平的估计是：
+先明确项目贡献边界，避免后续汇报时把代码作者、架构设计和工程判断混在一起：
 
-你已经具备“中级偏上”的 RTL/SoC 项目实现能力，能做出非平凡的模块划分、testbench、Python golden、custom instruction bridge 和 CNN datapath。但你正在跨入更难的一层：从“功能仿真正确”走向“FPGA synthesis/implementation 友好”。
+- RV32I 五级流水线处理器是你完全手写的部分，这是最能代表你独立 RTL 实现能力的代码资产。
+- CNN 加速器的总体架构、模块划分、DW/PW 吞吐权衡、tile fusion 方向、验证目标，是你与 GPT/Codex 共同讨论形成的。
+- CNN 加速器的大部分 RTL、Python 工具、testbench、firmware glue 和文档实现主要由 Codex 生成，因此不能简单把这些代码量当作你的手写代码水平证明。
+- 你对项目的真实贡献更适合表述为：自研 RV32I CPU + AI 协作完成 CNN accelerator 架构探索、RTL 原型生成、功能验证闭环和综合问题定位。
+
+基于这个更准确的边界，我对你当前水平的估计是：
+
+你已经具备较扎实的 RV32I/RTL 基础和系统级理解能力，能够独立完成处理器级 RTL，并能围绕 CNN 加速器提出关键架构问题，例如 DW/PW 吞吐不匹配、PW 是否需要反压 DW、buffer 面积与性能权衡、requant 乘法器成本、PW fanout、CPU 与 accelerator 频率关系等。这说明你不是只在“调用生成代码”，而是在主动判断架构取舍。
+
+但就 CNN 加速器 RTL 的逐模块实现而言，由于大部分代码由 Codex 写成，你目前更需要补强的是“读懂、审查、修改、收敛 AI 生成 RTL”的能力，而不是直接声称自己已经独立实现了完整 CNN accelerator。这个说法更稳，也更符合项目事实。
 
 你已经掌握或正在掌握的能力：
 
-- 能读懂并修改 Verilog RTL。
-- 能围绕模块写 testbench。
+- 能独立手写 RV32I 处理器 RTL。
+- 能读懂并修改 Verilog RTL，尤其是 CPU/流水线/控制通路相关逻辑。
+- 能识别 AI 生成 RTL 中的工程问题，例如 packed vector、动态 part-select、过大 staging、BRAM 推断失败。
+- 能围绕模块理解 testbench 与 golden model 的对应关系。
 - 能理解 int8 quantization、bias、multiplier、shift、ReLU6。
 - 能使用 Python golden model 对 RTL 做逐元素比较。
 - 能用 Vivado 观察资源报告。
@@ -519,29 +530,42 @@ endmodule
 
 目前最需要补强的能力：
 
-1. FPGA-friendly memory inference
+1. AI 生成 RTL 的审查与重构能力
+   - 不要把 Codex 生成的 RTL 默认视为最终结构。
+   - 先判断它是“仿真友好”还是“综合友好”。
+   - 对每个大模块画出寄存器、memory、FSM、组合路径。
+   - 能主动把不合理的大 packed vector 改成 memory/interface。
+
+2. FPGA-friendly memory inference
    - 少用巨大 packed vector。
    - 少用动态 part-select。
    - 多用 1D memory + address generator。
    - 接受同步读 1 cycle latency。
 
-2. 面向综合的微结构意识
+3. 面向综合的微结构意识
    - Verilator 能跑不代表 Vivado 容易综合。
    - 大 mux、宽 bus、隐式多端口 memory 都会变得很贵。
    - 一定要边写 RTL 边做 OOC synthesis。
 
-3. timing-driven design
+4. timing-driven design
    - 不只是功能正确，还要关注 critical path、fanout、register boundary。
    - combinational function 写得太大，综合器会生成很长路径。
 
-4. 层级化验证
+5. 层级化验证
    - 每改一个模块，先跑模块 TB，再跑上层 TB。
    - 每个模块保留 Python golden 或局部 reference。
 
-5. 资源/性能 trade-off
+6. 资源/性能 trade-off
    - 不是所有并行都值得。
    - 不是所有 buffer 都该省。
    - 要用表格和数据决定 DW lanes、PW array、requant lanes、buffer banks。
+
+更适合在简历/答辩中使用的表述：
+
+- “本人独立实现 RV32I 五级流水线处理器。”
+- “在 CNN 加速器部分，本人主导需求拆解、架构取舍、吞吐与 buffer 权衡分析，并借助 Codex 生成 RTL 原型。”
+- “本人负责阅读、验证、综合问题定位与后续 FPGA-friendly 重构。”
+- “项目重点不宣称 CNN accelerator 全部 RTL 手写，而强调 CPU/accelerator 协同设计、验证闭环和综合收敛能力。”
 
 ## 6. 你接下来实现时的详细指导
 
