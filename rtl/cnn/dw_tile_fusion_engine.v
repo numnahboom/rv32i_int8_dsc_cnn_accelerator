@@ -50,14 +50,26 @@ module dw_tile_fusion_engine #(
     reg [3:0] kernel_idx;
     reg signed [31:0] acc_reg;
     reg signed [31:0] acc_latched;
+    reg signed [7:0] current_act;
+    reg signed [7:0] current_weight;
+    reg signed [15:0] current_product_s16;
+    reg signed [31:0] current_product_value;
     wire [13:0] out_pixels;
 
     integer write_lane;
+    integer calc_oh;
+    integer calc_ow;
+    integer calc_kh;
+    integer calc_kw;
+    integer calc_iy;
+    integer calc_ix;
+    integer calc_input_addr;
+    integer calc_weight_bit_base;
 
     assign out_pixels = out_h * out_w;
 
     /* verilator lint_off BLKSEQ */
-    function signed [63:0] round_shift_s64;
+    function automatic signed [63:0] round_shift_s64;
         input signed [63:0] value;
         input        [5:0]  shift_amount;
         reg signed [63:0] abs_value;
@@ -81,7 +93,7 @@ module dw_tile_fusion_engine #(
     /* verilator lint_on BLKSEQ */
 
     /* verilator lint_off BLKSEQ */
-    function signed [7:0] requant_dw;
+    function automatic signed [7:0] requant_dw;
         input signed [31:0] acc;
         input integer channel;
         reg signed [63:0] x;
@@ -119,59 +131,43 @@ module dw_tile_fusion_engine #(
     endfunction
     /* verilator lint_on BLKSEQ */
 
-    /* verilator lint_off BLKSEQ */
-    function signed [7:0] input_at_current;
-        integer oh;
-        integer ow;
-        integer kh;
-        integer kw;
-        integer iy;
-        integer ix;
-        integer input_addr;
-        begin
-            oh = 0;
-            ow = 0;
-            if (out_w != 4'd0) begin
-                oh = pixel_idx / out_w;
-                ow = pixel_idx % out_w;
-            end
-            kh = kernel_idx / 3;
-            kw = kernel_idx % 3;
-            iy = (oh * stride) + kh;
-            ix = (ow * stride) + kw;
-            if (iy < MAX_IN_H && ix < MAX_IN_W && channel_idx < channels) begin
-                input_addr = (iy * MAX_IN_W * MAX_CIN) + (ix * MAX_CIN) + channel_idx;
-                input_at_current = input_mem[input_addr];
-            end else begin
-                input_at_current = input_zero_point;
-            end
-        end
-    endfunction
+    always @(*) begin
+        current_act = input_zero_point;
+        current_weight = 8'sd0;
+        current_product_s16 = 16'sd0;
+        current_product_value = 32'sd0;
+        calc_oh = 0;
+        calc_ow = 0;
+        calc_kh = 0;
+        calc_kw = 0;
+        calc_iy = 0;
+        calc_ix = 0;
+        calc_input_addr = 0;
+        calc_weight_bit_base = 0;
 
-    function signed [7:0] weight_at_current;
-        integer weight_bit_base;
-        begin
-            if (channel_idx < channels) begin
-                weight_bit_base = ((channel_idx * 9) + kernel_idx) * 8;
-                weight_at_current = dw_weight[weight_bit_base +: 8];
-            end else begin
-                weight_at_current = 8'sd0;
-            end
+        if (out_w != 4'd0) begin
+            calc_oh = pixel_idx / out_w;
+            calc_ow = pixel_idx % out_w;
         end
-    endfunction
+        calc_kh = kernel_idx / 3;
+        calc_kw = kernel_idx % 3;
+        calc_iy = (calc_oh * stride) + calc_kh;
+        calc_ix = (calc_ow * stride) + calc_kw;
 
-    function signed [31:0] current_product;
-        reg signed [7:0] a;
-        reg signed [7:0] w;
-        reg signed [15:0] p;
-        begin
-            a = input_at_current();
-            w = weight_at_current();
-            p = a * w;
-            current_product = {{16{p[15]}}, p};
+        if (calc_iy < MAX_IN_H && calc_ix < MAX_IN_W && channel_idx < channels) begin
+            calc_input_addr =
+                (calc_iy * MAX_IN_W * MAX_CIN) +
+                (calc_ix * MAX_CIN) +
+                channel_idx;
+            current_act = input_mem[calc_input_addr];
+
+            calc_weight_bit_base = ((channel_idx * 9) + kernel_idx) * 8;
+            current_weight = dw_weight[calc_weight_bit_base +: 8];
         end
-    endfunction
-    /* verilator lint_on BLKSEQ */
+
+        current_product_s16 = current_act * current_weight;
+        current_product_value = {{16{current_product_s16[15]}}, current_product_s16};
+    end
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -226,9 +222,9 @@ module dw_tile_fusion_engine #(
                 end
 
                 ST_ACCUM: begin
-                    acc_reg <= acc_reg + current_product();
+                    acc_reg <= acc_reg + current_product_value;
                     if (kernel_idx == 4'd8) begin
-                        acc_latched <= acc_reg + current_product();
+                        acc_latched <= acc_reg + current_product_value;
                         state <= ST_WRITE;
                     end else begin
                         kernel_idx <= kernel_idx + 4'd1;

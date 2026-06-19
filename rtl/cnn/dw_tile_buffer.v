@@ -55,6 +55,13 @@ module dw_tile_buffer #(
         bank_wr_en = {BANK_COUNT{1'b0}};
         bank_wr_addr = {(BANK_COUNT*6){1'b0}};
         bank_wr_data = {(BANK_COUNT*8){1'b0}};
+        bank_rd_addr = {(BANK_COUNT*6){1'b0}};
+        wr_channel = 0;
+        wr_bank_idx = 0;
+        wr_addr = 0;
+        rd_pixel = 0;
+        rd_bank_idx = 0;
+        rd_addr = 0;
 
         /* verilator lint_off BLKSEQ */
         for (wr_lane = 0; wr_lane < WRITE_LANES; wr_lane = wr_lane + 1) begin
@@ -68,7 +75,6 @@ module dw_tile_buffer #(
             end
         end
 
-        bank_rd_addr = {(BANK_COUNT*6){1'b0}};
         for (lane = 0; lane < 8; lane = lane + 1) begin
             rd_pixel = rd_pixel_base + lane;
             if (rd_pixel < 64) begin

@@ -11,7 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    # Cycle-level control models such as DWLineBufferGolden intentionally use
+    # only the Python standard library so RTL vector generation can run in the
+    # minimal WSL simulation environment.
+    np = None  # type: ignore[assignment]
 
 
 INT8_MIN = -128
@@ -26,6 +32,101 @@ class QuantParams:
     output_zero_point: int
     activation_min: int
     activation_max: int
+
+
+@dataclass(frozen=True)
+class DWLineBufferCycle:
+    ready_in: bool
+    window_valid: bool
+    window: tuple[Optional[int], ...]
+
+
+class DWLineBufferGolden:
+    """Cycle-accurate model of rtl/cnn/dw_line_buffer.v.
+
+    ``ready_in`` is evaluated from the state before the active clock edge.
+    ``window_valid`` and ``window`` describe the registered state after that
+    edge. Unknown, not-yet-filled line-memory entries are represented by None.
+    """
+
+    COLS = 32
+    PIXEL_BITS = 128
+    PIXEL_MASK = (1 << PIXEL_BITS) - 1
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        # The RTL resets the output registers, but intentionally does not clear
+        # the distributed line memories.
+        self.row0: list[Optional[int]] = [None] * self.COLS
+        self.row1: list[Optional[int]] = [None] * self.COLS
+        self.row0_cols: list[Optional[int]] = [0, 0, 0]
+        self.row1_cols: list[Optional[int]] = [0, 0, 0]
+        self.row2_cols: list[Optional[int]] = [0, 0, 0]
+        self.window_valid = False
+
+    def step(
+        self,
+        *,
+        valid_in: bool,
+        ready_out: bool,
+        x_idx: int,
+        y_idx: int,
+        pixel_vec_in: int,
+    ) -> DWLineBufferCycle:
+        """Advance one rising clock edge.
+
+        A transfer occurs only when ``valid_in && ready_in``. If an old output
+        is consumed without a replacement input, ``window_valid`` is cleared.
+        If the output is stalled, all memory and window state is held.
+        """
+
+        x_idx = int(x_idx)
+        y_idx = int(y_idx)
+        if not 0 <= x_idx < self.COLS:
+            raise ValueError(f"x_idx must be in [0, {self.COLS - 1}], got {x_idx}")
+        if not 0 <= y_idx < self.COLS:
+            raise ValueError(f"y_idx must be in [0, {self.COLS - 1}], got {y_idx}")
+
+        pixel_vec_in = int(pixel_vec_in) & self.PIXEL_MASK
+        ready_in = (not self.window_valid) or bool(ready_out)
+
+        if ready_in:
+            if valid_in:
+                # Read old memory values first to mirror nonblocking RTL
+                # assignments at the active edge.
+                old_row0 = self.row0[x_idx]
+                old_row1 = self.row1[x_idx]
+
+                self.row0[x_idx] = old_row1
+                self.row1[x_idx] = pixel_vec_in
+
+                self.row0_cols = [
+                    self.row0_cols[1],
+                    self.row0_cols[2],
+                    old_row0,
+                ]
+                self.row1_cols = [
+                    self.row1_cols[1],
+                    self.row1_cols[2],
+                    old_row1,
+                ]
+                self.row2_cols = [
+                    self.row2_cols[1],
+                    self.row2_cols[2],
+                    pixel_vec_in,
+                ]
+                self.window_valid = y_idx >= 2 and x_idx >= 2
+            else:
+                self.window_valid = False
+
+        window = tuple(self.row0_cols + self.row1_cols + self.row2_cols)
+        return DWLineBufferCycle(
+            ready_in=ready_in,
+            window_valid=self.window_valid,
+            window=window,
+        )
 
 
 def _to_i64(x: int | np.integer) -> int:

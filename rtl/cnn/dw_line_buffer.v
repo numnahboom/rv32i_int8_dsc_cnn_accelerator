@@ -2,44 +2,63 @@
 `default_nettype none
 
 module dw_line_buffer (
-    input  wire              clk,
-    input  wire              rst_n,
-    input  wire              valid_in,
-    input  wire [4:0]        x_idx,
-    input  wire signed [7:0] pixel_in,
-    output reg  signed [7:0] row0_data,
-    output reg  signed [7:0] row1_data,
-    output reg  signed [7:0] row2_data
+    input  wire         clk,
+    input  wire         rst_n,
+    input  wire         valid_in,
+    input  wire         ready_out,
+    input  wire [4:0]   x_idx,
+    input  wire [4:0]   y_idx,
+    input  wire [127:0] pixel_vec_in,
+    output wire         ready_in,
+    output reg          window_valid,
+    output reg  [127:0] row0_col0,
+    output reg  [127:0] row0_col1,
+    output reg  [127:0] row0_col2,
+    output reg  [127:0] row1_col0,
+    output reg  [127:0] row1_col1,
+    output reg  [127:0] row1_col2,
+    output reg  [127:0] row2_col0,
+    output reg  [127:0] row2_col1,
+    output reg  [127:0] row2_col2
 );
-    reg signed [7:0] row0 [0:16];
-    reg signed [7:0] row1 [0:16];
-    reg signed [7:0] row2 [0:16];
-    integer i;
+    (* ram_style = "distributed" *) reg [127:0] row0 [0:31];
+    (* ram_style = "distributed" *) reg [127:0] row1 [0:31];
+
+    assign ready_in = !window_valid || ready_out;
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            row0_data <= 8'sd0;
-            row1_data <= 8'sd0;
-            row2_data <= 8'sd0;
-            for (i = 0; i < 17; i = i + 1) begin
-                row0[i] <= 8'sd0;
-                row1[i] <= 8'sd0;
-                row2[i] <= 8'sd0;
-            end
+            window_valid <= 0;
+
+            row0_col0 <= 0;
+            row0_col1 <= 0;
+            row0_col2 <= 0;
+            row1_col0 <= 0;
+            row1_col1 <= 0;
+            row1_col2 <= 0;
+            row2_col0 <= 0;
+            row2_col1 <= 0;
+            row2_col2 <= 0;
         end else begin
-            if (valid_in && x_idx < 17) begin
-                row2[x_idx] <= row1[x_idx];
-                row1[x_idx] <= row0[x_idx];
-                row0[x_idx] <= pixel_in;
-            end
-            if (x_idx < 17) begin
-                row0_data <= row0[x_idx];
-                row1_data <= row1[x_idx];
-                row2_data <= row2[x_idx];
-            end else begin
-                row0_data <= 8'sd0;
-                row1_data <= 8'sd0;
-                row2_data <= 8'sd0;
+            if (ready_in) begin
+                if (valid_in) begin
+                    row0[x_idx] <= row1[x_idx];
+                    row1[x_idx] <= pixel_vec_in;
+
+                    row0_col0 <= row0_col1;
+                    row0_col1 <= row0_col2;
+                    row0_col2 <= row0[x_idx];
+                    row1_col0 <= row1_col1;
+                    row1_col1 <= row1_col2;
+                    row1_col2 <= row1[x_idx];
+                    row2_col0 <= row2_col1;
+                    row2_col1 <= row2_col2;
+                    row2_col2 <= pixel_vec_in;
+
+                    window_valid <= (y_idx >= 2) && (x_idx >= 2);
+                end else begin
+                    window_valid <= 1'b0;
+                end
             end
         end
     end

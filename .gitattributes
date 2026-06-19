@@ -1,0 +1,13 @@
+* text=auto
+
+.gitattributes text eol=lf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.v   text eol=lf
+*.hex text eol=lf
+*.md  text eol=lf
+*.tcl text eol=lf
+*.ys  text eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf

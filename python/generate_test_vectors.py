@@ -7,6 +7,8 @@ import argparse
 import random
 from pathlib import Path
 
+from golden_int8 import DWLineBufferGolden
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -155,6 +157,139 @@ def generate_pw_cases(out_dir: Path) -> Path:
             for m in range(8):
                 for n in range(8):
                     f.write(f"{hex_width(out[m][n], 32)}\n")
+    return path
+
+
+def line_buffer_pixel(y: int, x: int) -> int:
+    """Pack 16 distinguishable int8 channels into one 128-bit pixel."""
+
+    channels = [as_signed(y * 47 + x * 13 + c * 7, 8) for c in range(16)]
+    return pack_i8(channels)
+
+
+def generate_dw_line_buffer_cases(out_dir: Path) -> Path:
+    """Generate cycle-level ready/valid vectors for dw_line_buffer."""
+
+    model = DWLineBufferGolden()
+    coordinates = [(y, x) for y in range(5) for x in range(8)]
+    bubble_before = {5, 13, 25}
+    stall_after = {
+        (2, 2): 2,
+        (3, 5): 3,
+    }
+
+    rows: list[tuple[int, ...]] = []
+    bubble_done: set[int] = set()
+    source_idx = 0
+    stall_remaining = 0
+    cycle = 0
+
+    while source_idx < len(coordinates) or model.window_valid or stall_remaining:
+        ready_out = int(stall_remaining == 0)
+        if stall_remaining:
+            stall_remaining -= 1
+
+        if source_idx < len(coordinates):
+            y_idx, x_idx = coordinates[source_idx]
+            if source_idx in bubble_before and source_idx not in bubble_done:
+                valid_in = 0
+                bubble_done.add(source_idx)
+            else:
+                valid_in = 1
+            pixel_vec = line_buffer_pixel(y_idx, x_idx)
+        else:
+            valid_in = 0
+            x_idx = 0
+            y_idx = 0
+            pixel_vec = 0
+
+        expected = model.step(
+            valid_in=bool(valid_in),
+            ready_out=bool(ready_out),
+            x_idx=x_idx,
+            y_idx=y_idx,
+            pixel_vec_in=pixel_vec,
+        )
+
+        if valid_in and expected.ready_in:
+            accepted_coordinate = (y_idx, x_idx)
+            source_idx += 1
+            if accepted_coordinate in stall_after:
+                stall_remaining = stall_after[accepted_coordinate]
+
+        expected_window = [
+            0 if value is None else int(value)
+            for value in expected.window
+        ]
+        if expected.window_valid and any(value is None for value in expected.window):
+            raise AssertionError(
+                f"valid window contains uninitialized data at cycle {cycle}"
+            )
+
+        rows.append(
+            (
+                valid_in,
+                ready_out,
+                x_idx,
+                y_idx,
+                pixel_vec,
+                int(expected.ready_in),
+                int(expected.window_valid),
+                *expected_window,
+            )
+        )
+        cycle += 1
+        if cycle > 256:
+            raise RuntimeError("line-buffer vector generation did not converge")
+
+    # One final empty cycle verifies that valid stays low once the last window
+    # has been consumed.
+    expected = model.step(
+        valid_in=False,
+        ready_out=True,
+        x_idx=0,
+        y_idx=0,
+        pixel_vec_in=0,
+    )
+    rows.append(
+        (
+            0,
+            1,
+            0,
+            0,
+            0,
+            int(expected.ready_in),
+            int(expected.window_valid),
+            *[0 if value is None else int(value) for value in expected.window],
+        )
+    )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "dw_line_buffer_cases.hex"
+    with path.open("w", encoding="ascii") as f:
+        f.write(f"{len(rows)}\n")
+        for row in rows:
+            (
+                valid_in,
+                ready_out,
+                x_idx,
+                y_idx,
+                pixel_vec,
+                expected_ready_in,
+                expected_window_valid,
+                *expected_window,
+            ) = row
+            fields = [
+                str(valid_in),
+                str(ready_out),
+                str(x_idx),
+                str(y_idx),
+                hex_width(pixel_vec, 128),
+                str(expected_ready_in),
+                str(expected_window_valid),
+            ]
+            fields.extend(hex_width(value, 128) for value in expected_window)
+            f.write(" ".join(fields) + "\n")
     return path
 
 
@@ -3015,6 +3150,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     print(f"wrote {generate_requant_cases(out_dir)}")
     print(f"wrote {generate_pw_cases(out_dir)}")
+    print(f"wrote {generate_dw_line_buffer_cases(out_dir)}")
     print(f"wrote {generate_dw_cases(out_dir)}")
     print(f"wrote {generate_stem_cases(out_dir)}")
     print(f"wrote {generate_gap_cases(out_dir)}")

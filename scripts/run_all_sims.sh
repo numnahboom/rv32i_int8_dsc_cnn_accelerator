@@ -6,6 +6,7 @@ LOG_DIR="${SIM_LOG_DIR:-$ROOT/build/reports/sim_logs}"
 TESTS=(
   tb_requant_activation_unit
   tb_pw_systolic_array_8x8
+  tb_dw_line_buffer
   tb_dw_tile_fusion_engine
   tb_ds_block_tile_engine
   tb_conv3x3_stem_engine

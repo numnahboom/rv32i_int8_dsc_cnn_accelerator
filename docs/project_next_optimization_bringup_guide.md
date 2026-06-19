@@ -939,3 +939,11 @@ PPT 中建议强调：
 ## 11. 一句话总结
 
 当前项目最值得继续投入的方向不是继续堆算力，而是把“功能仿真友好的大 packed buffer”改造成“FPGA 综合友好的 SRAM/loader 数据面”。这一步完成后，full top utilization、timing、power、上板验证和性能对比都会自然变得更有说服力。
+
+## 12. 模块级设计契约
+
+所有自研 RTL 模块的输入、输出、事务边界、memory 容量、读延迟、backpressure、done/valid、边界条件、测试向量和资源期望，统一记录在：
+
+- [`docs/module_design_contracts.md`](module_design_contracts.md)
+
+修改模块接口、流水延迟、buffer 容量或握手语义时，应同步更新该文档和对应 testbench。
