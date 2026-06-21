@@ -249,9 +249,9 @@ EXTRA_CFLAGS="-DCNN_ACCEL_USE_CUSTOM=0" ./scripts/build_firmware.sh
 ## 已实现
 
 - Python: `golden_int8.py`, `generate_test_vectors.py`, `train_edgedscnet_c10.py`, `quantize_export.py`, `export_firmware_headers.py`, `compare_outputs.py`, `inference_accuracy_perf_report.py`, `resource_estimate.py`
-- Common arithmetic: `round_shift.v`, `saturate_int8.v`, `requant_activation_unit.v`
+- Common arithmetic: `round_shift.v`, `saturate_int8.v`, `requant_activation_unit.v`, `requant_activation_pipeline.v`
 - PW: `systolic_pe.v`, `pw_systolic_array_8x8.v`
-- DW: `dw_line_buffer.v`, `dw_window_generator.v`, `dw_mac_lanes.v`, `dw_tile_buffer.v`, `dw_tile_fusion_engine.v`
+- DW: `dw_line_buffer.v`, `dw_window_generator.v`, `dw_mac_lanes.v`, `dw_tile_buffer.v`, `dw_tile_buffer_bram.v`, `dw_tile_fusion_engine.v`, `dw_tile_fusion_engine_new.v`
 - DSBlock integration: `ds_block_tile_engine.v`
 - Stem/GAP/FC: `conv3x3_stem_engine.v`, `gap_unit.v`, `fc_unit.v`
 - Scheduler/SRAM/status: `tile_scheduler.v`, `feature_sram_bank.v`, `feature_sram_pingpong.v`, `status_counter.v`
@@ -262,8 +262,11 @@ EXTRA_CFLAGS="-DCNN_ACCEL_USE_CUSTOM=0" ./scripts/build_firmware.sh
 ## 关键仿真
 
 - `tb_requant_activation_unit`
+- `tb_requant_activation_pipeline`
 - `tb_pw_systolic_array_8x8`
 - `tb_dw_tile_fusion_engine`
+- `tb_dw_tile_fusion_engine_new`
+- `tb_dw_tile_buffer_bram`
 - `tb_ds_block_tile_engine`
 - `tb_conv3x3_stem_engine`
 - `tb_gap_unit`

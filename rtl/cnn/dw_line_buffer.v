@@ -11,6 +11,8 @@ module dw_line_buffer (
     input  wire [127:0] pixel_vec_in,
     output wire         ready_in,
     output reg          window_valid,
+    output reg  [4:0]   window_x_idx,
+    output reg  [4:0]   window_y_idx,
     output reg  [127:0] row0_col0,
     output reg  [127:0] row0_col1,
     output reg  [127:0] row0_col2,
@@ -29,6 +31,8 @@ module dw_line_buffer (
     always @(posedge clk) begin
         if (!rst_n) begin
             window_valid <= 0;
+            window_x_idx <= 5'd0;
+            window_y_idx <= 5'd0;
 
             row0_col0 <= 0;
             row0_col1 <= 0;
@@ -56,6 +60,8 @@ module dw_line_buffer (
                     row2_col2 <= pixel_vec_in;
 
                     window_valid <= (y_idx >= 2) && (x_idx >= 2);
+                    window_x_idx <= x_idx;
+                    window_y_idx <= y_idx;
                 end else begin
                     window_valid <= 1'b0;
                 end

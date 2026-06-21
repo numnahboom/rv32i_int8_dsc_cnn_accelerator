@@ -140,15 +140,15 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 
 ### 5.3 `dw_mac_lanes`
 
-- **输入**：最多 16 lane 的 3x3 activation window、DW weight、`lane_active` 和 `start`。
-- **输出**：每 lane 一个 int32 accumulator、`busy` 和单拍 `valid_out`。
-- **事务边界**：`start && !busy` 的上升沿锁存输入；随后三拍分别计算三行，每行三个乘法；第三个计算拍结束时事务完成。
+- **输入**：最多 16 lane 的 3x3 activation window、DW weight、`lane_active`，以及 `valid_in/ready_in` 输入握手和 `ready_out` 输出反压。
+- **输出**：每 lane 一个 int32 accumulator、`busy` 和保持型 `valid_out`。
+- **事务边界**：`valid_in && ready_in` 的上升沿锁存输入；随后三拍分别计算三行，每行三个乘法；结果通过 `valid_out && ready_out` 完成传输。
 - **内部 memory**：锁存的 window 和 weight 各 `LANES x 9 B`，16 个 int32 accumulator，合计约 800 B 寄存器状态。
 - **读延迟**：从 start 接受沿到 `valid_out` 约三个后续时钟。
-- **Backpressure**：不支持输出反压；busy 时忽略新 start，`valid_out` 只保持一拍。
-- **done/valid**：第三行累加完成时 `valid_out=1` 一拍，同时 `busy=0`。
+- **Backpressure**：支持。计算期间 `ready_in=0`；结果未被接收时 `valid_out` 和 `acc_vec` 保持不变；结果被接收的同一拍允许接受下一笔输入。
+- **done/valid**：没有 `done`；第三行累加完成时 `valid_out=1`、`busy=0`，保持到 `ready_out=1`。
 - **边界条件**：无效 lane 必须由 `lane_active=0` 屏蔽；int32 溢出回绕；输入必须在 start 时完整提供。
-- **测试向量**：当前没有独立 TB，且当前 synthesis-proof DW engine 没有实例化它；需要新增 1/16 lane、负数、inactive lane 和溢出附近测试。
+- **测试向量**：`generate_dw_mac_lanes_cases` 生成 `tests/vectors/dw_mac_lanes_cases.hex`，由 `tb_dw_mac_lanes.v` 验证数学结果、inactive lane、busy 和输出反压。
 - **资源期望**：16 lane x 3 int8 multiplier，共 48 个乘法器，外加 16 个 accumulator。当前 Vivado OOC 约 9759 CLB LUT、3367 register、0 DSP。
 
 ## 6. DW Tile 存储与融合

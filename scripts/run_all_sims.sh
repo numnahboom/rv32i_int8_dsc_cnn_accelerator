@@ -5,9 +5,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${SIM_LOG_DIR:-$ROOT/build/reports/sim_logs}"
 TESTS=(
   tb_requant_activation_unit
+  tb_requant_activation_pipeline
   tb_pw_systolic_array_8x8
   tb_dw_line_buffer
+  tb_dw_mac_lanes
   tb_dw_tile_fusion_engine
+  tb_dw_tile_fusion_engine_new
+  tb_dw_tile_buffer_bram
   tb_ds_block_tile_engine
   tb_conv3x3_stem_engine
   tb_gap_unit

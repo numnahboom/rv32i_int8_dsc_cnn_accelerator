@@ -11,6 +11,8 @@ module tb_dw_line_buffer;
     reg [127:0] pixel_vec_in;
     wire ready_in;
     wire window_valid;
+    wire [4:0] window_x_idx;
+    wire [4:0] window_y_idx;
     wire [127:0] row0_col0;
     wire [127:0] row0_col1;
     wire [127:0] row0_col2;
@@ -38,6 +40,8 @@ module tb_dw_line_buffer;
     reg [127:0] expected_row2_col2;
     reg vec_expected_ready;
     reg vec_expected_valid;
+    reg [4:0] vec_expected_window_x;
+    reg [4:0] vec_expected_window_y;
 
     dw_line_buffer dut (
         .clk(clk),
@@ -49,6 +53,8 @@ module tb_dw_line_buffer;
         .pixel_vec_in(pixel_vec_in),
         .ready_in(ready_in),
         .window_valid(window_valid),
+        .window_x_idx(window_x_idx),
+        .window_y_idx(window_y_idx),
         .row0_col0(row0_col0),
         .row0_col1(row0_col1),
         .row0_col2(row0_col2),
@@ -95,7 +101,7 @@ module tb_dw_line_buffer;
         for (case_idx = 0; case_idx < num_cases; case_idx = case_idx + 1) begin
             scan_count = $fscanf(
                 fd,
-                "%d %d %d %d %h %d %d %h %h %h %h %h %h %h %h %h\n",
+                "%d %d %d %d %h %d %d %d %d %h %h %h %h %h %h %h %h %h\n",
                 valid_in,
                 ready_out,
                 x_idx,
@@ -103,6 +109,8 @@ module tb_dw_line_buffer;
                 pixel_vec_in,
                 vec_expected_ready,
                 vec_expected_valid,
+                vec_expected_window_x,
+                vec_expected_window_y,
                 expected_row0_col0,
                 expected_row0_col1,
                 expected_row0_col2,
@@ -114,7 +122,7 @@ module tb_dw_line_buffer;
                 expected_row2_col2
             );
 
-            if (scan_count != 16) begin
+            if (scan_count != 18) begin
                 $display(
                     "ERROR: failed to read line-buffer cycle=%0d fields=%0d",
                     case_idx,
@@ -138,6 +146,18 @@ module tb_dw_line_buffer;
             end
 
             if (vec_expected_valid) begin
+                if (window_x_idx !== vec_expected_window_x ||
+                    window_y_idx !== vec_expected_window_y) begin
+                    $display(
+                        "Test case %0d: window coordinate mismatch. Expected=(%0d,%0d) Got=(%0d,%0d)",
+                        case_idx,
+                        vec_expected_window_x,
+                        vec_expected_window_y,
+                        window_x_idx,
+                        window_y_idx
+                    );
+                    error_count = error_count + 1;
+                end
                 if (row0_col0 !== expected_row0_col0) begin
                     $display("Test case %0d: row0_col0 mismatch. Expected: %h, Got: %h", case_idx, expected_row0_col0, row0_col0);
                     error_count = error_count + 1;

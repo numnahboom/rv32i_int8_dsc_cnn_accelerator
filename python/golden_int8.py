@@ -38,6 +38,8 @@ class QuantParams:
 class DWLineBufferCycle:
     ready_in: bool
     window_valid: bool
+    window_x_idx: int
+    window_y_idx: int
     window: tuple[Optional[int], ...]
 
 
@@ -65,6 +67,8 @@ class DWLineBufferGolden:
         self.row1_cols: list[Optional[int]] = [0, 0, 0]
         self.row2_cols: list[Optional[int]] = [0, 0, 0]
         self.window_valid = False
+        self.window_x_idx = 0
+        self.window_y_idx = 0
 
     def step(
         self,
@@ -118,6 +122,8 @@ class DWLineBufferGolden:
                     pixel_vec_in,
                 ]
                 self.window_valid = y_idx >= 2 and x_idx >= 2
+                self.window_x_idx = x_idx
+                self.window_y_idx = y_idx
             else:
                 self.window_valid = False
 
@@ -125,6 +131,8 @@ class DWLineBufferGolden:
         return DWLineBufferCycle(
             ready_in=ready_in,
             window_valid=self.window_valid,
+            window_x_idx=self.window_x_idx,
+            window_y_idx=self.window_y_idx,
             window=window,
         )
 

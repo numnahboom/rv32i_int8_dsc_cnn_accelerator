@@ -29,6 +29,7 @@ Numbers below are from `report_utilization` Site Type tables after synthesis.
 | `dw_mac_lanes` | 9759 | 3367 | 0 | 0 | 16 DW lanes mapped to LUT/CARRY |
 | `feature_sram_bank` | 6791 | 9 | 0 | 0 | 5120 LUTs are distributed RAM, not BRAM |
 | `dw_tile_buffer` | 46131 | 64 | 0 | 0 | 3D RAM issue resolved; maps mostly to LUT/LUTRAM |
+| `dw_tile_buffer_bram` | 10 | 1 | 2 | 0 | XPM 1024x64 simple dual port; no LUTRAM |
 | `dw_tile_fusion_engine` | 170408 | 296388 | 0 | 10 | OOC synthesis passes after input staging |
 | `ds_block_tile_engine` | 389253 | 565654 | 0 | 20 | OOC synthesis passes after PW weight staging |
 
@@ -51,6 +52,7 @@ Therefore these are synthesis utilization results only. They are not timing clos
 - `docs/synthesis_vivado_dw_mac_lanes.md`
 - `docs/synthesis_vivado_feature_sram_bank.md`
 - `docs/synthesis_vivado_dw_tile_buffer.md`
+- `docs/synthesis_vivado_dw_tile_buffer_bram.md`
 - `docs/synthesis_vivado_dw_tile_fusion_engine.md`
 - `docs/synthesis_vivado_ds_block_tile_engine.md`
 - `build/reports/vivado_requant_activation_unit/utilization.txt`
@@ -58,12 +60,14 @@ Therefore these are synthesis utilization results only. They are not timing clos
 - `build/reports/vivado_dw_mac_lanes/utilization.txt`
 - `build/reports/vivado_feature_sram_bank/utilization.txt`
 - `build/reports/vivado_dw_tile_buffer/utilization.txt`
+- `build/reports/vivado_dw_tile_buffer_bram/utilization.txt`
 - `build/reports/vivado_dw_tile_fusion_engine/utilization.txt`
 - `build/reports/vivado_ds_block_tile_engine/utilization.txt`
 
 ## Next Synthesis Fixes
 
 1. Replace `cnn_layer_runner` packed payload vectors (`ds_input_tile`, `pw_weight`, etc.) with SRAM/loader style interfaces.
-2. Decide whether `feature_sram_bank` should be BRAM or LUTRAM, then force or wrap accordingly.
-3. Keep the current high-cost staging implementation as a synthesis proof only; optimize DW/DSBlock storage later.
-4. Re-run `cnn_top` after the layer-runner payload buffers are made memory-oriented or after setting up hierarchical synthesis.
+2. Integrate `dw_tile_buffer_bram` into the new streaming DSBlock after its controller is verified.
+3. Decide whether `feature_sram_bank` should be BRAM or LUTRAM, then force or wrap accordingly.
+4. Keep the current high-cost staging implementation as a synthesis proof only; optimize the remaining DW/DSBlock payload paths.
+5. Re-run `cnn_top` after the layer-runner payload buffers are made memory-oriented or after setting up hierarchical synthesis.

@@ -38,6 +38,14 @@ def pack_i8(values: list[int]) -> int:
     return packed
 
 
+def pack_fixed(values: list[int], bits_per_value: int) -> int:
+    packed = 0
+    mask = (1 << bits_per_value) - 1
+    for idx, value in enumerate(values):
+        packed |= (int(value) & mask) << (bits_per_value * idx)
+    return packed
+
+
 def round_shift_away_from_zero(value: int, shift: int) -> int:
     if shift <= 0:
         return int(value)
@@ -235,6 +243,8 @@ def generate_dw_line_buffer_cases(out_dir: Path) -> Path:
                 pixel_vec,
                 int(expected.ready_in),
                 int(expected.window_valid),
+                expected.window_x_idx,
+                expected.window_y_idx,
                 *expected_window,
             )
         )
@@ -260,6 +270,8 @@ def generate_dw_line_buffer_cases(out_dir: Path) -> Path:
             0,
             int(expected.ready_in),
             int(expected.window_valid),
+            expected.window_x_idx,
+            expected.window_y_idx,
             *[0 if value is None else int(value) for value in expected.window],
         )
     )
@@ -277,6 +289,8 @@ def generate_dw_line_buffer_cases(out_dir: Path) -> Path:
                 pixel_vec,
                 expected_ready_in,
                 expected_window_valid,
+                expected_window_x,
+                expected_window_y,
                 *expected_window,
             ) = row
             fields = [
@@ -287,9 +301,92 @@ def generate_dw_line_buffer_cases(out_dir: Path) -> Path:
                 hex_width(pixel_vec, 128),
                 str(expected_ready_in),
                 str(expected_window_valid),
+                str(expected_window_x),
+                str(expected_window_y),
             ]
             fields.extend(hex_width(value, 128) for value in expected_window)
             f.write(" ".join(fields) + "\n")
+    return path
+
+
+def dw_mac_lanes_golden(
+    lane_active: int,
+    window_values: list[int],
+    weight_values: list[int],
+    lanes: int = 16,
+) -> list[int]:
+    expected = [0 for _ in range(lanes)]
+    for lane in range(lanes):
+        if (lane_active >> lane) & 1:
+            total = 0
+            for kernel_idx in range(9):
+                idx = lane * 9 + kernel_idx
+                total += int(window_values[idx]) * int(weight_values[idx])
+            expected[lane] = total
+    return expected
+
+
+def generate_dw_mac_lanes_cases(out_dir: Path) -> Path:
+    rng = random.Random(13579)
+    lane_masks = [0xFFFF, 0x5555, 0x0001, 0xA5A5]
+    stall_cycles = [0, 3, 1, 2]
+    cases = []
+
+    for case_idx, lane_active in enumerate(lane_masks):
+        if case_idx == 3:
+            window_values = [
+                -128 if (idx & 1) else 127
+                for idx in range(16 * 9)
+            ]
+            weight_values = [
+                127 if (idx % 3) else -128
+                for idx in range(16 * 9)
+            ]
+        else:
+            window_values = [
+                rng.randrange(-128, 128)
+                for _ in range(16 * 9)
+            ]
+            weight_values = [
+                rng.randrange(-128, 128)
+                for _ in range(16 * 9)
+            ]
+
+        expected = dw_mac_lanes_golden(
+            lane_active,
+            window_values,
+            weight_values,
+        )
+        cases.append(
+            (
+                lane_active,
+                window_values,
+                weight_values,
+                stall_cycles[case_idx],
+                expected,
+            )
+        )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "dw_mac_lanes_cases.hex"
+    with path.open("w", encoding="ascii") as f:
+        f.write(f"{len(cases)}\n")
+        for lane_active, window_values, weight_values, stall, expected in cases:
+            f.write(
+                " ".join(
+                    [
+                        hex_width(lane_active, 16),
+                        hex_width(pack_i8(window_values), 16 * 9 * 8),
+                        hex_width(pack_i8(weight_values), 16 * 9 * 8),
+                        str(stall),
+                    ]
+                )
+                + "\n"
+            )
+            expected_packed = 0
+            for lane, value in enumerate(expected):
+                expected_packed |= (int(value) & 0xFFFFFFFF) << (lane * 32)
+            f.write(f"{hex_width(expected_packed, 16 * 32)}\n")
     return path
 
 
@@ -463,6 +560,325 @@ def generate_dw_cases(out_dir: Path) -> Path:
             for p in range(out_h * out_w):
                 for c in range(channels):
                     f.write(f"{hex_width(expected[p][c], 8)}\n")
+    return path
+
+
+def generate_dw_stream_engine_cases(out_dir: Path) -> Path:
+    """Generate streaming cases for dw_tile_fusion_engine_new."""
+
+    rng = random.Random(97531)
+    specs = [
+        # out_h, out_w, stride, channel base, border, clamp, stall
+        (3, 4, 1, 0, True, (-128, 127), 50),
+        (3, 3, 2, 16, True, (0, 48), 90),
+        (2, 5, 1, 64, False, (-32, 63), 35),
+    ]
+    cases = []
+
+    for (
+        out_h,
+        out_w,
+        stride,
+        channel_base,
+        padded_border,
+        activation_range,
+        initial_stall_cycles,
+    ) in specs:
+        in_h = (out_h - 1) * stride + 3
+        in_w = (out_w - 1) * stride + 3
+        input_zero_point = rng.randrange(-9, 10)
+        output_zero_point = rng.randrange(-7, 8)
+        activation_min, activation_max = activation_range
+        tile = generate_dw_input(
+            rng,
+            in_h,
+            in_w,
+            16,
+            input_zero_point,
+            padded_border,
+        )
+        weight = [[rng.randrange(-8, 9) for _ in range(9)] for _ in range(16)]
+        bias = [rng.randrange(-2048, 2049) for _ in range(16)]
+        multiplier = [rng.randrange(1 << 28, 1 << 30) for _ in range(16)]
+        shift = [rng.randrange(5, 10) for _ in range(16)]
+        expected_all = depthwise_tile_golden(
+            tile,
+            weight,
+            bias,
+            multiplier,
+            shift,
+            out_h,
+            out_w,
+            16,
+            stride,
+            output_zero_point,
+            activation_min,
+            activation_max,
+        )
+        expected = []
+        for pixel_idx in range(out_h * out_w):
+            for lane in range(16):
+                expected.append(
+                    (
+                        pixel_idx,
+                        channel_base + lane,
+                        expected_all[pixel_idx][lane],
+                    )
+                )
+        cases.append(
+            (
+                out_h,
+                out_w,
+                in_h,
+                in_w,
+                stride,
+                channel_base,
+                output_zero_point,
+                activation_min,
+                activation_max,
+                initial_stall_cycles,
+                tile,
+                weight,
+                bias,
+                multiplier,
+                shift,
+                expected,
+            )
+        )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "dw_stream_engine_cases.hex"
+    with path.open("w", encoding="ascii") as f:
+        f.write(f"{len(cases)}\n")
+        for case in cases:
+            (
+                out_h,
+                out_w,
+                in_h,
+                in_w,
+                stride,
+                channel_base,
+                output_zero_point,
+                activation_min,
+                activation_max,
+                initial_stall_cycles,
+                tile,
+                weight,
+                bias,
+                multiplier,
+                shift,
+                expected,
+            ) = case
+            f.write(
+                " ".join(
+                    [
+                        str(out_h),
+                        str(out_w),
+                        str(in_h),
+                        str(in_w),
+                        str(stride),
+                        str(channel_base),
+                        hex_width(output_zero_point, 32),
+                        hex_width(activation_min, 32),
+                        hex_width(activation_max, 32),
+                        str(initial_stall_cycles),
+                        str(len(expected)),
+                    ]
+                )
+                + "\n"
+            )
+            for y in range(in_h):
+                for x in range(in_w):
+                    f.write(
+                        f"{hex_width(pack_i8(tile[y][x]), 128)}\n"
+                    )
+            f.write(
+                f"{hex_width(pack_i8([v for lane in weight for v in lane]), 16 * 9 * 8)}\n"
+            )
+            f.write(f"{hex_width(pack_fixed(bias, 32), 16 * 32)}\n")
+            f.write(
+                f"{hex_width(pack_fixed(multiplier, 32), 16 * 32)}\n"
+            )
+            f.write(f"{hex_width(pack_fixed(shift, 6), 16 * 6)}\n")
+            for pixel_idx, channel_idx, value in expected:
+                f.write(
+                    f"{pixel_idx} {channel_idx} {hex_width(value, 8)}\n"
+                )
+    return path
+
+
+def generate_dw_tile_buffer_bram_cases(out_dir: Path) -> Path:
+    """Generate cycle-level vectors for the BRAM-oriented DW tile buffer."""
+
+    memory = [0 for _ in range(1024)]
+    rd_data = 0
+    rows: list[tuple[int, ...]] = []
+
+    def step(
+        *,
+        rst_n: int,
+        wr_en: int = 0,
+        wr_pixel_idx: int = 0,
+        wr_channel_idx: int = 0,
+        wr_data: int = 0,
+        rd_en: int = 0,
+        rd_pixel_base: int = 0,
+        rd_channel_idx: int = 0,
+    ) -> None:
+        nonlocal rd_data
+
+        wr_addr = ((wr_pixel_idx >> 3) << 7) | wr_channel_idx
+        rd_addr = ((rd_pixel_base >> 3) << 7) | rd_channel_idx
+
+        if not rst_n:
+            rd_valid = 0
+            rd_data = 0
+        else:
+            rd_valid = int(bool(rd_en))
+            if rd_en:
+                # Read-first semantics for a same-edge write. Tests avoid
+                # same-address collisions, but the model remains explicit.
+                rd_data = memory[rd_addr]
+
+        if wr_en:
+            byte_lane = wr_pixel_idx & 0x7
+            byte_mask = 0xFF << (byte_lane * 8)
+            memory[wr_addr] = (
+                (memory[wr_addr] & ~byte_mask)
+                | ((wr_data & 0xFF) << (byte_lane * 8))
+            )
+
+        rows.append(
+            (
+                rst_n,
+                wr_en,
+                wr_pixel_idx,
+                wr_channel_idx,
+                wr_data,
+                rd_en,
+                rd_pixel_base,
+                rd_channel_idx,
+                rd_valid,
+                rd_data,
+            )
+        )
+
+    # Reset establishes a known output register without clearing memory.
+    for _ in range(4):
+        step(rst_n=0)
+    step(rst_n=1)
+
+    # Initialize every byte of every 64-bit word. This covers all 1024 word
+    # addresses and every byte-enable lane without relying on memory reset.
+    for pixel_group in range(8):
+        for channel in range(128):
+            for byte_lane in range(8):
+                pixel = pixel_group * 8 + byte_lane
+                data = (
+                    pixel_group * 37
+                    + channel * 11
+                    + byte_lane * 53
+                    + 0x29
+                ) & 0xFF
+                step(
+                    rst_n=1,
+                    wr_en=1,
+                    wr_pixel_idx=pixel,
+                    wr_channel_idx=channel,
+                    wr_data=data,
+                )
+
+    # Back-to-back reads verify the complete 1024-word address space.
+    for pixel_group in range(8):
+        for channel in range(128):
+            step(
+                rst_n=1,
+                rd_en=1,
+                rd_pixel_base=pixel_group * 8,
+                rd_channel_idx=channel,
+            )
+    step(rst_n=1)
+
+    # Exercise simultaneous read/write on distinct words.
+    modified_words: list[tuple[int, int]] = []
+    for index in range(64):
+        wr_group = index & 0x7
+        wr_channel = (index * 17 + 3) & 0x7F
+        wr_lane = (index * 5 + 1) & 0x7
+        rd_group = (wr_group + 3) & 0x7
+        rd_channel = (wr_channel + 29) & 0x7F
+        step(
+            rst_n=1,
+            wr_en=1,
+            wr_pixel_idx=wr_group * 8 + wr_lane,
+            wr_channel_idx=wr_channel,
+            wr_data=(0x80 + index * 7) & 0xFF,
+            rd_en=1,
+            rd_pixel_base=rd_group * 8,
+            rd_channel_idx=rd_channel,
+        )
+        modified_words.append((wr_group, wr_channel))
+
+    # Reset the read output, then prove memory contents survive reset.
+    step(rst_n=0)
+    step(rst_n=0)
+    step(rst_n=1)
+
+    seen_words: set[tuple[int, int]] = set()
+    for pixel_group, channel in modified_words:
+        if (pixel_group, channel) in seen_words:
+            continue
+        seen_words.add((pixel_group, channel))
+        step(
+            rst_n=1,
+            rd_en=1,
+            rd_pixel_base=pixel_group * 8,
+            rd_channel_idx=channel,
+        )
+
+    # Explicit final edge: pixel group 7, channel 127.
+    step(
+        rst_n=1,
+        rd_en=1,
+        rd_pixel_base=56,
+        rd_channel_idx=127,
+    )
+    step(rst_n=1)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "dw_tile_buffer_bram_cases.hex"
+    with path.open("w", encoding="ascii") as f:
+        f.write(f"{len(rows)}\n")
+        for row in rows:
+            (
+                rst_n,
+                wr_en,
+                wr_pixel_idx,
+                wr_channel_idx,
+                wr_data,
+                rd_en,
+                rd_pixel_base,
+                rd_channel_idx,
+                expected_rd_valid,
+                expected_rd_data,
+            ) = row
+            f.write(
+                " ".join(
+                    [
+                        str(rst_n),
+                        str(wr_en),
+                        str(wr_pixel_idx),
+                        str(wr_channel_idx),
+                        hex_width(wr_data, 8),
+                        str(rd_en),
+                        str(rd_pixel_base),
+                        str(rd_channel_idx),
+                        str(expected_rd_valid),
+                        hex_width(expected_rd_data, 64),
+                    ]
+                )
+                + "\n"
+            )
     return path
 
 
@@ -3151,7 +3567,10 @@ def main() -> None:
     print(f"wrote {generate_requant_cases(out_dir)}")
     print(f"wrote {generate_pw_cases(out_dir)}")
     print(f"wrote {generate_dw_line_buffer_cases(out_dir)}")
+    print(f"wrote {generate_dw_mac_lanes_cases(out_dir)}")
     print(f"wrote {generate_dw_cases(out_dir)}")
+    print(f"wrote {generate_dw_stream_engine_cases(out_dir)}")
+    print(f"wrote {generate_dw_tile_buffer_bram_cases(out_dir)}")
     print(f"wrote {generate_stem_cases(out_dir)}")
     print(f"wrote {generate_gap_cases(out_dir)}")
     print(f"wrote {generate_fc_cases(out_dir)}")

@@ -1,13 +1,16 @@
 rtl/common/round_shift.v
 rtl/common/saturate_int8.v
 rtl/cnn/requant_activation_unit.v
+rtl/cnn/requant_activation_pipeline.v
 rtl/cnn/systolic_pe.v
 rtl/cnn/pw_systolic_array_8x8.v
 rtl/cnn/dw_line_buffer.v
 rtl/cnn/dw_window_generator.v
 rtl/cnn/dw_mac_lanes.v
 rtl/cnn/dw_tile_buffer.v
+rtl/cnn/dw_tile_buffer_bram.v
 rtl/cnn/dw_tile_fusion_engine.v
+rtl/cnn/dw_tile_fusion_engine_new.v
 rtl/cnn/conv3x3_stem_engine.v
 rtl/cnn/gap_unit.v
 rtl/cnn/fc_unit.v

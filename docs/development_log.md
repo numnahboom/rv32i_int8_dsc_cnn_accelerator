@@ -576,3 +576,52 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 - 当前 staging 实现只用于证明可综合，资源成本非常高。
 - `cnn_layer_runner` 仍需从 packed vector buffer 改成 SRAM/loader interface，之后再跑 full top synthesis。
 - WSL/Windows Verilator 当前不可用，因此这轮未能重跑功能仿真；需要恢复 Verilator 后回归 DW/DSBlock/fullnet。
+
+## 2026-06-21: Streaming DW candidate and BRAM tile buffer
+
+目标:
+- 为后续新 DSBlock 提供可反压、可流水的 DW 数据路径。
+- 将 64 pixel x 128 channel 的 DW tile buffer 从 LUT/LUTRAM 结构改为确定映射到 BRAM 的实现。
+- 保留旧 `dw_tile_fusion_engine` 和 `ds_block_tile_engine`，在新路径完成集成验证前不替换 full-network 路径。
+
+实现:
+- `dw_mac_lanes.v` 改为 `valid/ready` 握手接口，结果在下游反压期间保持稳定。
+- `dw_line_buffer.v` 增加输出 window 的 `x/y` 坐标标签，供 stride 选择和输出 pixel 索引生成。
+- 新增九级流水候选 `requant_activation_pipeline.v`，使用 16-bit partial products 实现 Q31 乘法，并与 Python golden 保持位精确一致。
+- 新增 `dw_tile_fusion_engine_new.v`:
+  - 支持 stride 1/2 和 16-channel tile。
+  - 使用 line buffer、3-cycle MAC、单 requant lane 串行化和 tagged output FIFO。
+  - 输出为带 pixel/channel 索引的 scalar ready/valid stream。
+- 新增 `dw_tile_buffer_bram.v`:
+  - 存储组织为 1024 x 64 bit。
+  - DW 通过 byte enable 写一个 int8。
+  - PW 一拍读取同一 channel 的连续 8 pixels。
+  - Vivado 使用 XPM SDPRAM，Verilator 使用等价行为模型。
+- 增加对应 Python vectors、独立 testbench、回归清单和设计文档。
+
+验证:
+- 定向回归 8/8 PASS：requant、streaming requant、line buffer、MAC lanes、旧/新 DW engine、BRAM tile buffer、旧 DSBlock。
+- 完整 Verilator 回归 34/34 PASS。
+- full-network SRAM datapath:
+  - `hw_cycles=3501306`
+  - `status=0x356cfa82`
+  - logits checks 全部通过。
+- RV32I CPU 联合仿真:
+  - custom start count = 1
+  - stat count = 1
+  - `argmax=4`
+  - CPU、custom instruction、CNN full-network 和 logits writeback 路径通过。
+- Vivado 2021.2 OOC synthesis:
+  - `dw_tile_buffer_bram`: 10 CLB LUT、1 register、2 RAMB36E2、0 LUTRAM、0 DSP。
+  - 旧 `dw_tile_buffer`: 46131 CLB LUT、0 BRAM。
+
+结论:
+- BRAM tile buffer 已解决旧 tile buffer 的主要存储资源问题。
+- 新 streaming DW 路径功能正确，但还只是候选实现；当前 full-network 仍使用旧 DSBlock。
+- 下一步应实现新的 DSBlock controller，连接 streaming DW、BRAM tile buffer 和 PW array，再进行逐层替换。
+
+保留问题:
+- 单 requant lane 使每个 16-channel DW batch 需要串行发出 16 个结果，吞吐偏保守。
+- 当前 buffer 为单个 8x8 tile；后续可比较单 8x8 与双 4x8 ping-pong 的带宽、BRAM和重叠收益。
+- `cnn_layer_runner`、feature SRAM、PW weight/quant storage 仍需改为真正的 memory-oriented interface。
+- 当前安装的 K26 non-timing part 只能提供 synthesis utilization，不能证明 place-and-route timing closure。

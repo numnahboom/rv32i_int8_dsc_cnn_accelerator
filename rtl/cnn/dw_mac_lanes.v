@@ -6,10 +6,12 @@ module dw_mac_lanes #(
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
-    input  wire                         start,
+    input  wire                         valid_in,
+    output wire                         ready_in,
     input  wire [LANES-1:0]             lane_active,
     input  wire signed [(LANES*9*8)-1:0] window_vec,
     input  wire signed [(LANES*9*8)-1:0] weight_vec,
+    input  wire                         ready_out,
     output reg                          busy,
     output reg                          valid_out,
     output reg  signed [(LANES*32)-1:0] acc_vec
@@ -23,9 +25,16 @@ module dw_mac_lanes #(
     integer lane;
     integer init_lane;
 
+    wire input_fire;
+    wire output_fire;
+
+    assign ready_in = !busy && (!valid_out || ready_out);
+    assign input_fire = valid_in && ready_in;
+    assign output_fire = valid_out && ready_out;
+
     function signed [31:0] row_sum;
         input integer lane_idx;
-        input integer row_idx;
+        input [1:0] row_idx;
         reg signed [7:0] a0;
         reg signed [7:0] a1;
         reg signed [7:0] a2;
@@ -64,8 +73,11 @@ module dw_mac_lanes #(
                 acc[init_lane] <= 32'sd0;
             end
         end else begin
-            valid_out <= 1'b0;
-            if (start && !busy) begin
+            if (output_fire) begin
+                valid_out <= 1'b0;
+            end
+
+            if (input_fire) begin
                 busy <= 1'b1;
                 cycle_idx <= 2'd0;
                 lane_active_r <= lane_active;

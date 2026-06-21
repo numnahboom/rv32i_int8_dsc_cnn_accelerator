@@ -58,6 +58,7 @@ set rtl_files [list \
     "rtl/cnn/dw_window_generator.v" \
     "rtl/cnn/dw_mac_lanes.v" \
     "rtl/cnn/dw_tile_buffer.v" \
+    "rtl/cnn/dw_tile_buffer_bram.v" \
     "rtl/cnn/dw_tile_fusion_engine.v" \
     "rtl/cnn/ds_block_tile_engine.v" \
     "rtl/cnn/conv3x3_stem_engine.v" \
