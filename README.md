@@ -1,73 +1,96 @@
 # rv32i_int8_dsc_cnn_accelerator
 
-基于 RV32I 自定义指令控制的 int8 深度可分离卷积 CNN 加速器。当前版本聚焦可仿真的 v1 数据面：`cnn_top` 通过 descriptor 顺序执行 Stem、DSBlock、GAP、FC，支持 SRAM ping-pong 层间传递，并已覆盖 EdgeDSCNet-C10 固定网络形状的 full-network smoke。
+这是一个面向 RV32I/NPC 教学 CPU 的 int8 深度可分离卷积 CNN 加速器工程。当前版本的目标不是做通用 NPU，而是把一个固定形状的 EdgeDSCNet-C10 网络从 Python golden、量化导出、RTL 数据面、CPU 控制接口到 bare-metal firmware 串成可仿真的端到端闭环。
 
-## 项目状态
+当前主线是：
 
-- RTL 顶层不再只是 descriptor/status skeleton，`cnn_layer_runner` 已接入真实 engine。
-- 已支持 `OP_CONV3X3_STEM`、`OP_DS_BLOCK`、`OP_GAP`、`OP_FC` 的仿真数据面。
-- DSBlock 的 DW 中间结果只进入 `dw_tile_buffer`，不写回外部 memory。
-- PW1x1 使用 8x8 int8 systolic array。
-- Firmware smoke 可以初始化 9 层 fullnet descriptor，启动 accelerator，poll done，并对 logits 做 argmax。
-- 已有 `cnn_mmio_regs -> cnn_top` 联合 fullnet smoke，验证 firmware MMIO fallback 路径。
-- 已有 `rv_cnn_custom_if -> cnn_top` 联合 fullnet smoke，验证 custom0 opcode 的 start/poll/stat 与真实数据面闭环。
-- 已有 `npc_cnn_custom_bridge -> cnn_top` 联合 fullnet smoke，验证 start/poll/stat 与真实数据面闭环。
-- Python 侧提供 golden/vector、轻量训练 smoke、int8 smoke export、firmware header export 和 hex compare。
+```text
+Python/PyTorch checkpoint
+  -> int8 quant export
+  -> firmware headers / RTL vectors
+  -> RV32I custom instruction or MMIO
+  -> cnn_top descriptor-driven full-network inference
+  -> logits / argmax compare
+```
+
+## 当前状态
+
+- `cnn_top` 已不是空的 descriptor/status skeleton，已经通过 `cnn_layer_runner` 接入 Stem、DSBlock、GAP、FC 的真实仿真数据面。
+- 支持固定 EdgeDSCNet-C10 形状：`Stem -> 6x DSBlock -> GAP -> FC`。
+- DSBlock 的 depthwise 中间结果进入 tile buffer，随后 pointwise 直接消费，不再把 DW 中间 feature 写回外部 memory。
+- PW1x1 使用 8x8 int8 systolic/MAC array。
+- Feature SRAM 使用 A/B ping-pong 方式做层间 feature 传递。
+- CPU 控制路径已有三种验证层级：`rv_cnn_custom_if`、`npc_cnn_custom_bridge`、`rv_core -> bridge -> cnn_top`。
+- C firmware 已实现裸机 driver/demo：初始化 9 层 descriptor，发出 `cnn.start`，poll done，读取 status/cycle，并对 10 类 logits 做 argmax。
+- MMIO fallback 也可用，便于不走 custom instruction 时调试同一套 accelerator 控制寄存器。
+- Python 侧已有训练 smoke、量化导出、golden model、test vector、firmware header export、logits compare、资源估算和性能报告脚本。
+
+## 目录结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `rtl/cnn` | CNN accelerator 主数据面、子模块、控制器和状态计数器 |
+| `rtl/cpu_if` | RV32I custom instruction 接口、NPC bridge、MMIO 寄存器接口 |
+| `rtl/npc` | NPC/RV32I CPU 工程副本和联合仿真所需 ROM/RAM 生成逻辑 |
+| `sw/firmware` | 裸机 C firmware、custom instruction wrapper、MMIO fallback、startup/linker |
+| `sw/model` | 当前导出的模型 descriptor、量化参数和权重 header |
+| `python` | 训练、量化、golden 推理、vector/header 导出、报告生成脚本 |
+| `sim` | Verilator/SystemVerilog testbench |
+| `tests/vectors` | 单元级和 fullnet 级测试向量 |
+| `scripts` | 仿真、模型导出、firmware 构建、报告生成入口 |
+| `docs` | 架构、量化、验证计划、已知限制和优化 bring-up 记录 |
+| `build` | 已生成的模型、firmware、报告、仿真日志和 Verilator 产物 |
 
 ## 网络结构
 
 | Layer | Op | Shape | Stride | Output | Activation |
 | --- | --- | --- | --- | --- | --- |
 | 0 | Input | 32x32x3 | - | 32x32x3 | - |
-| 1 | Conv3x3 Stem | 3->16 | 1 | 32x32x16 | ReLU6 |
-| 2 | DSBlock1 DW/PW | 16->32 | 1 | 32x32x32 | ReLU6 |
-| 3 | DSBlock2 DW/PW | 32->64 | 2 | 16x16x64 | ReLU6 |
-| 4 | DSBlock3 DW/PW | 64->64 | 1 | 16x16x64 | ReLU6 |
-| 5 | DSBlock4 DW/PW | 64->128 | 2 | 8x8x128 | ReLU6 |
-| 6 | DSBlock5 DW/PW | 128->128 | 1 | 8x8x128 | ReLU6 |
-| 7 | DSBlock6 DW/PW | 128->256 | 2 | 4x4x256 | ReLU6 |
+| 1 | Conv3x3 Stem | 3 -> 16 | 1 | 32x32x16 | ReLU6 |
+| 2 | DSBlock1 DW/PW | 16 -> 32 | 1 | 32x32x32 | ReLU6 |
+| 3 | DSBlock2 DW/PW | 32 -> 64 | 2 | 16x16x64 | ReLU6 |
+| 4 | DSBlock3 DW/PW | 64 -> 64 | 1 | 16x16x64 | ReLU6 |
+| 5 | DSBlock4 DW/PW | 64 -> 128 | 2 | 8x8x128 | ReLU6 |
+| 6 | DSBlock5 DW/PW | 128 -> 128 | 1 | 8x8x128 | ReLU6 |
+| 7 | DSBlock6 DW/PW | 128 -> 256 | 2 | 4x4x256 | ReLU6 |
 | 8 | GAP | 4x4x256 | - | 1x1x256 | none |
-| 9 | FC | 256->10 | - | 10 logits | none |
+| 9 | FC | 256 -> 10 | - | 10 logits | none |
+
+当前 `sw/model` 来自 PyTorch/CUDA 训练 checkpoint 的 int8 导出。最近保存的导出摘要：
+
+```text
+checkpoint_eval_acc=0.503700
+int8_eval_samples=256
+int8_eval_acc=0.464844
+sample_logits=-65,-69,13,4,39,17,24,22,-112,-85
+sample_argmax=4
+```
+
+这些数值用于功能验证，不代表最终 CIFAR-10 模型质量目标。
 
 ## 量化格式
 
-Activation 和 weight 使用 signed int8，bias 和 accumulator 使用 signed int32。硬件 v1 使用离线修正后的 bias：
+Activation 和 weight 使用 signed int8，bias 和 accumulator 使用 signed int32。硬件 v1 使用离线修正后的 bias，并与 Python golden 对齐：
 
 ```text
 acc = sum(input_int8 * weight_int8) + corrected_bias
-```
-
-Requant 与 Python golden 保持一致：
-
-```text
-x = acc + bias
-x = round_away_from_zero((x * multiplier) / 2^31)
+x = round_away_from_zero((acc * multiplier) / 2^31)
 x = arithmetic_right_shift(x, shift)
 x = x + output_zero_point
 x = saturate_int8(x)
 x = clamp(x, activation_min, activation_max)
 ```
 
-Padding 使用当前 layer 的 `input_zero_point`。ReLU6 通过 `activation_min=quantized(0)` 和 `activation_max=quantized(6)` 表达；FC 使用 `[-128, 127]`。
+Padding 使用当前 layer 的 `input_zero_point`。ReLU6 通过量化后的 `activation_min`/`activation_max` 表达；FC 输出使用完整 int8 范围 `[-128, 127]`。
 
-## 自定义指令
-
-| 指令 | 输入 | 语义 |
-| --- | --- | --- |
-| `cnn.start rs1, rs2` | `rs1=descriptor base`, `rs2=layer_num` | 启动 accelerator，只等待命令被接收 |
-| `cnn.poll rd` | - | 返回 packed status：`{cycle_count[23:0], current_layer[3:0], 1'b0, error, done, busy}` |
-| `cnn.stat rd` | - | 返回解码后的 cycle counter：`{8'd0, status[31:8]}` |
-
-软件侧当前提供 custom instruction wrapper 和 MMIO fallback。`npc_cnn_custom_bridge.v` 已适配现有 NPC custom 端口，但尚未直接替换 `rtl/npc` SoC 顶层里的旧加速器连接。
-
-## RTL 结构
+## 硬件架构
 
 ```text
 rv_core
   |
+  | custom0 instruction
   v
-rv_cnn_custom_if / npc_cnn_custom_bridge
-cnn_mmio_regs
+npc_cnn_custom_bridge / rv_cnn_custom_if
   |
   v
 cnn_top
@@ -78,56 +101,77 @@ cnn_top
   |-- feature_sram_pingpong
   |     `-- feature_sram_bank A/B
   |-- conv3x3_stem_engine
-  |-- dw_tile_fusion_engine -- dw_tile_buffer
+  |-- dw_tile_fusion_engine
+  |-- dw_tile_buffer / dw_tile_buffer_bram
   |-- pw_systolic_array_8x8
   |-- gap_unit
   |-- fc_unit
   `-- status_counter
+
+Optional debug/control path:
+
+MMIO bus -> cnn_mmio_regs -> cnn_top
 ```
 
-## DW Tile Fusion
+`cnn_top` 由 descriptor 驱动，每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。
 
-DW3x3 按 spatial tile 读取带 halo 的 input tile，越界点填 `input_zero_point`。DW MAC lanes 完成 depthwise convolution 和 requant 后，只把 tile 输出写入 `dw_tile_buffer[pixel][channel]`。DW 中间结果不写回外部 memory；随后 PW1x1 直接从 tile buffer 读取 activation。
+当前外部 memory 仿真格式仍是“一 int8 element 一 32-bit word，低 8 位有效”。这是为了简化仿真和调试，后续需要改为 packed NHWC byte layout。
 
-## PW Systolic Array
+## CPU 和 Firmware 接口
 
-PW1x1 映射为：
+### Custom instruction
 
-```text
-A[8 pixels][Cin] * W[Cin][8 output channels] = O[8 pixels][8 output channels]
-```
+当前使用 RV32I `custom0` opcode，软件侧通过 `.insn` 封装：
 
-每 cycle 输入同一个 `cin` 上的 8 个 pixel activation 和 8 个 output-channel weight。8x8 PE 阵列内部保持 int32 psum，`k_last` 后输出完整 psum，再经 bias、requant、activation 写回 output feature。
+| 指令 | 输入/输出 | 语义 |
+| --- | --- | --- |
+| `cnn.start rs1, rs2` | `rs1=descriptor base`, `rs2=layer_num` | 启动 accelerator，等待命令被接收 |
+| `cnn.poll rd` | `rd=status` | 返回 packed status：`{cycle_count[23:0], current_layer[3:0], 1'b0, error, done, busy}` |
+| `cnn.stat rd` | `rd=cycle_count` | 返回解码后的 cycle counter：`{8'd0, status[31:8]}` |
 
-## cnn_top v1 数据面
+### MMIO fallback
 
-- Descriptor 为 32 words / 128B stride。
-- `cnn_top_ctrl` 等待真实 `layer_done/layer_error`，不再使用固定 latency 模拟执行。
-- `cnn_layer_runner` 负责 payload load、engine start/wait、output store。
-- Stem 和 DSBlock 均支持 tiled full-feature-map execution。
-- Feature SRAM A/B 支持 ping-pong，descriptor flags 控制 input/output 是否走 SRAM。
-- 外部 memory v1 仿真格式为“一 int8 element 一 32-bit word”，低 8 位有效。
-- 已有 full-network smoke：`Stem -> 6x DSBlock -> GAP -> FC`，最终 logits 与 Python golden 对齐。
+编译 firmware 时设置 `CNN_ACCEL_USE_CUSTOM=0` 可切到 MMIO fallback。寄存器由 `rtl/cpu_if/cnn_mmio_regs.v` 提供：
 
-## 训练模型
+| Offset | Register | 作用 |
+| --- | --- | --- |
+| `0x00` | `DESC_BASE` | descriptor base address |
+| `0x04` | `LAYER_NUM` | layer count |
+| `0x08` | `CMD` | 写 `CNN_CMD_START` 启动 |
+| `0x0c` | `STATUS` | packed status |
+| `0x10` | `STAT` | 解码后的 cycle counter |
 
-轻量训练 smoke 使用 PyTorch 实现 EdgeDSCNet-C10。脚本会优先使用 `PYTHON`，其次使用 `python3`，若没有 NumPy 会回退到本机已有的 `/mnt/d/Stuff/Documented/Model/.venv/python.exe`。
+### Firmware demo
+
+`sw/firmware/main.c` 当前流程：
+
+1. 调用 `edgedscnet_c10_init_desc()` 展开模型 payload 并初始化 9 层 descriptor。
+2. 调用 `cnn_accel_start((uint32_t)g_model_desc, EDGE_DSC_NET_C10_LAYER_NUM)`。
+3. 轮询 `cnn_accel_wait_done()`。
+4. 读取 `cnn_demo_status` 和 `cnn_demo_cycle_count`。
+5. 从 `g_model_logits_words[10]` 做 argmax，写入 `cnn_demo_prediction`。
+
+## 快速开始
+
+以下脚本主要按 WSL/Linux shell 组织。Windows 下工程路径对应为 `D:\Stuff\Project`，WSL 下通常是 `/mnt/d/Stuff/Project`。
+
+### 1. 导出模型和 firmware headers
 
 ```bash
 cd /mnt/d/Stuff/Project
 MAX_SAMPLES=128 EVAL_SAMPLES=64 ./scripts/export_model.sh
 ```
 
-`scripts/export_model.sh` 会顺序执行：
+该脚本顺序执行：
 
-```bash
+```text
 python/train_edgedscnet_c10.py
 python/quantize_export.py
 python/export_firmware_headers.py
 python/compare_outputs.py
 ```
 
-默认输出：
+主要输出：
 
 - `build/model/edgedscnet_c10_smoke.npz`
 - `build/model_export/edgedscnet_c10_int8_smoke.npz`
@@ -135,52 +179,52 @@ python/compare_outputs.py
 - `tests/vectors/training_smoke/expected_logits.hex`
 - `tests/vectors/training_smoke/expected_fullnet_logits.hex`
 - `tests/vectors/training_smoke/expected_argmax.hex`
-- `sw/model/model_weights.h`
+- `sw/model/model_desc.h`
 - `sw/model/model_quant.h`
+- `sw/model/model_weights.h`
 
-当前导出是 smoke 级验证：训练一个很小 batch 的 fp32 模型，保存 CIFAR-10 样本，再生成确定性 int8 参数并用 Python golden 产出 logits。它用于证明训练/导出/向量生成链路可跑通，不等同于正式 PTQ/QAT 精度验收。
-
-Firmware header export 使用 compact 方案：ROM 中保存 packed int8 权重和输入样本，启动时展开到当前 accelerator v1 需要的 word-per-int8 buffer。这样能接入 smoke 参数，同时避免把 300KB 以上的初始化 word payload 放进 ROM。
-
-## 运行仿真
-
-在 WSL 中进入工程根目录：
+### 2. 运行单项仿真
 
 ```bash
 cd /mnt/d/Stuff/Project
 ./scripts/run_sim.sh tb_requant_activation_unit
 ./scripts/run_sim.sh tb_cnn_top_fullnet_sram_datapath
+./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet
+```
+
+### 3. 运行回归
+
+```bash
+cd /mnt/d/Stuff/Project
 ./scripts/run_all_sims.sh
 ```
 
-Long regressions can be chunked or resumed:
+可用环境变量筛选或恢复：
 
 ```bash
 SIM_LIST=1 ./scripts/run_all_sims.sh
+SIM_ONLY="tb_npc_cnn_custom_bridge tb_npc_bridge_cnn_top_fullnet" ./scripts/run_all_sims.sh
 SIM_FROM=tb_cnn_top_tiled_stem_datapath ./scripts/run_all_sims.sh
 SIM_TO=tb_cnn_top_fullnet_sram_datapath ./scripts/run_all_sims.sh
-SIM_ONLY="tb_npc_cnn_custom_bridge tb_npc_bridge_cnn_top_fullnet" ./scripts/run_all_sims.sh
 SIM_CONTINUE_ON_FAIL=1 ./scripts/run_all_sims.sh
 SIM_LOG_DIR=build/reports/my_sim_logs SIM_ONLY=tb_requant_activation_unit ./scripts/run_all_sims.sh
 ```
 
-Each selected regression writes a per-test log and CSV summary. By default:
+默认日志位置：
 
 ```text
 build/reports/sim_logs/<test>.log
 build/reports/sim_logs/summary.csv
 ```
 
-## 推理精度与周期报告
-
-运行完整 `cnn_top` SRAM fullnet RTL 推理，并与 Python/software golden logits 做逐元素比较：
+### 4. 生成推理精度和周期报告
 
 ```bash
 cd /mnt/d/Stuff/Project
 ./scripts/run_inference_report.sh
 ```
 
-报告输出到：
+输出：
 
 - `build/reports/inference_accuracy_perf.md`
 - `build/reports/fullnet_expected_logits.hex`
@@ -188,35 +232,87 @@ cd /mnt/d/Stuff/Project
 - `build/reports/tb_cnn_top_fullnet_sram_datapath_metrics.txt`
 - `build/reports/fullnet_layer_metrics.csv`
 
-当前 smoke 结果：
+### 5. 构建 firmware 和 ROM
 
-```text
-Hardware cycles: 1085562
-Software golden logits: -5 -3 8 -3 2 -11 -2 -2 4 -11
-Hardware RTL logits:    -5 -3 8 -3 2 -11 -2 -2 4 -11
-Exact element accuracy: 100.00%
-Argmax: 2
-RV32I-only theoretical estimate: 341390112 cycles
-Estimated RV32I / RTL speedup: 314.48x
-External memory reads: 78890
-External memory writes: 10
-Descriptor reads: 288
+需要 `riscv64-unknown-elf-gcc`、`objcopy` 等 RISC-V bare-metal 工具链。
+
+```bash
+cd /mnt/d/Stuff/Project
+./scripts/build_firmware.sh
+./scripts/build_firmware_rom.sh
 ```
 
-RV32I-only 理论估算默认假设：无 RV32M，`cycles_per_mac=64`，`cycles_per_requant=80`，`cycles_per_gap_add=3`，单周期 memory 且无 pipeline stall。该估算用于硬件/软件量级对比，不等同于真实 CPU 联合仿真计数。
+MMIO fallback 版本：
 
-报告还包含每层 HW cycles、外部 memory read/write 计数，以及 PW systolic array 的端到端 utilization 估算。
+```bash
+EXTRA_CFLAGS="-DCNN_ACCEL_USE_CUSTOM=0" ./scripts/build_firmware.sh
+```
 
-## 资源估算报告
+当前已生成的 firmware 产物位于：
 
-当前还没有接入 FPGA 综合工具，先提供静态 RTL 参数估算：
+```text
+build/firmware/cnn_demo.elf
+build/firmware/cnn_demo.bin
+build/firmware/rom.hex
+```
+
+### 6. 多样本 RTL/CPU 联合验证
+
+```bash
+cd /mnt/d/Stuff/Project
+SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
+```
+
+该脚本会为每个样本重新导出 headers/vectors，并复用 `tb_npc_rv_core_cnn_top_fullnet` 检查 RTL logits 和 Python int8 golden 是否逐元素一致。
+
+## 最近验证快照
+
+最近保存的完整回归目录为 `build/reports/sim_logs_full_20260621`，包含 35 个 testbench，全部 PASS。
+
+| 用例 | 状态 | 关键结果 |
+| --- | --- | --- |
+| `tb_cnn_top_fullnet_sram_datapath` | PASS | `hw_cycles=3501306`, `checks=10`, `errors=0`, `status=356cfa82` |
+| `tb_mmio_cnn_top_fullnet` | PASS | `polls=1750654`, `status=356cfa82`, `hw_cycles=3501306`, `checks=10` |
+| `tb_rv_custom_if_cnn_top_fullnet` | PASS | custom instruction -> `cnn_top` fullnet 闭环 |
+| `tb_npc_bridge_cnn_top_fullnet` | PASS | `polls=3501308`, `status=356cfa82`, `hw_cycles=3501306`, `checks=10` |
+| `tb_npc_rv_core_cnn_top_fullnet` | PASS | `cycles=3501306`, `status=356cfa82`, `start_count=1`, `stat_count=1`, `argmax=4` |
+
+当前 fullnet logits compare：
+
+```text
+expected: fb fd 08 fd 02 f5 fe fe 04 f5
+hardware: fb fd 08 fd 02 f5 fe fe 04 f5
+```
+
+按 int8 解释为：
+
+```text
+-5 -3 8 -3 2 -11 -2 -2 4 -11
+```
+
+当前保存的 fullnet metrics：
+
+```text
+hw_cycles=3501306
+mem_reads=78890
+mem_writes=10
+desc_reads=288
+checks=10
+errors=0
+```
+
+最近保存的多样本联合仿真工作目录 `build/multi_sample_rtl` 显示 sample `0,1,2` 均 PASS，且 `expected_argmax == rtl_argmax`。
+
+## 资源估算
+
+静态资源估算脚本：
 
 ```bash
 cd /mnt/d/Stuff/Project
 ./scripts/run_resource_report.sh
 ```
 
-报告输出到：
+输出：
 
 - `build/reports/resource_estimate.md`
 
@@ -233,139 +329,43 @@ Wide requant multipliers: 4
 Conservative DSP risk estimate: 178 DSPs
 ```
 
-该报告不是 Vivado/Yosys post-synthesis 结果；它用于跟踪资源量级，并指出当前 packed-reg staging、wide requant multiplier 等综合风险。
+这不是 Vivado/Yosys post-synthesis 结果，只是 RTL 参数级估算。当前最大综合风险不是 feature SRAM 本身，而是 `cnn_layer_runner.v` 中为了仿真便利保留的大型 packed staging 向量。
 
-## 运行 Firmware Demo
+## 关键已实现模块
 
-```bash
-./scripts/build_firmware.sh
-EXTRA_CFLAGS="-DCNN_ACCEL_USE_CUSTOM=0" ./scripts/build_firmware.sh
-```
-
-当前 firmware demo 会运行时展开 `sw/model` 中的 exported smoke payload，初始化 9 层 fullnet descriptor，发出 `cnn.start`，poll done，并从 10 个 word-stride logits 中做 argmax。
-
-默认 firmware 使用 custom instruction；编译时设置 `CNN_ACCEL_USE_CUSTOM=0` 可切换到 MMIO fallback。RTL 侧的 `cnn_mmio_regs.v` 已覆盖同一组寄存器：`DESC_BASE +0x00`、`LAYER_NUM +0x04`、`CMD +0x08`、`STATUS +0x0c`、`STAT +0x10`。其中 `STATUS` 返回 packed status，`STAT` 返回解码后的 cycle counter，与 `cnn.poll`/`cnn.stat` 保持一致。
-
-## 已实现
-
-- Python: `golden_int8.py`, `generate_test_vectors.py`, `train_edgedscnet_c10.py`, `quantize_export.py`, `export_firmware_headers.py`, `compare_outputs.py`, `inference_accuracy_perf_report.py`, `resource_estimate.py`
-- Common arithmetic: `round_shift.v`, `saturate_int8.v`, `requant_activation_unit.v`, `requant_activation_pipeline.v`
-- PW: `systolic_pe.v`, `pw_systolic_array_8x8.v`
-- DW: `dw_line_buffer.v`, `dw_window_generator.v`, `dw_mac_lanes.v`, `dw_tile_buffer.v`, `dw_tile_buffer_bram.v`, `dw_tile_fusion_engine.v`, `dw_tile_fusion_engine_new.v`
-- DSBlock integration: `ds_block_tile_engine.v`
-- Stem/GAP/FC: `conv3x3_stem_engine.v`, `gap_unit.v`, `fc_unit.v`
-- Scheduler/SRAM/status: `tile_scheduler.v`, `feature_sram_bank.v`, `feature_sram_pingpong.v`, `status_counter.v`
-- Top datapath: `descriptor_fetch.v`, `cnn_layer_runner.v`, `cnn_top_ctrl.v`, `cnn_top.v`
+- Python/model: `train_edgedscnet_c10.py`, `quantize_export.py`, `golden_int8.py`, `export_firmware_headers.py`, `generate_test_vectors.py`, `compare_outputs.py`
+- Arithmetic: `round_shift.v`, `saturate_int8.v`, `requant_activation_unit.v`, `requant_activation_pipeline.v`
+- Stem/DW/PW: `conv3x3_stem_engine.v`, `dw_mac_lanes.v`, `dw_tile_fusion_engine.v`, `dw_tile_fusion_engine_new.v`, `pw_systolic_array_8x8.v`
+- Buffer/SRAM: `feature_sram_bank.v`, `feature_sram_pingpong.v`, `dw_tile_buffer.v`, `dw_tile_buffer_bram.v`
+- Top control: `descriptor_fetch.v`, `cnn_top_ctrl.v`, `cnn_layer_runner.v`, `cnn_top.v`, `status_counter.v`
 - CPU IF: `rv_cnn_custom_if.v`, `npc_cnn_custom_bridge.v`, `cnn_mmio_regs.v`
 - Firmware: `cnn_accel.h`, `cnn_accel.c`, `main.c`, `startup.S`, `linker.ld`
 
-## 关键仿真
-
-- `tb_requant_activation_unit`
-- `tb_requant_activation_pipeline`
-- `tb_pw_systolic_array_8x8`
-- `tb_dw_tile_fusion_engine`
-- `tb_dw_tile_fusion_engine_new`
-- `tb_dw_tile_buffer_bram`
-- `tb_ds_block_tile_engine`
-- `tb_conv3x3_stem_engine`
-- `tb_gap_unit`
-- `tb_fc_unit`
-- `tb_tile_scheduler`
-- `tb_feature_sram_bank`
-- `tb_feature_sram_pingpong`
-- `tb_cnn_top`
-- `tb_cnn_top_dsblock_datapath`
-- `tb_cnn_top_tiled_stem_datapath`
-- `tb_cnn_top_tiled_dsblock_datapath`
-- `tb_cnn_top_sram_tiled_dsblock_datapath`
-- `tb_cnn_top_ops_datapath`
-- `tb_cnn_top_multilayer_datapath`
-- `tb_cnn_top_sram_gap_fc_datapath`
-- `tb_cnn_top_sram_stem_dsblock_datapath`
-- `tb_cnn_top_tail_sram_datapath`
-- `tb_cnn_top_e2e_sram_datapath`
-- `tb_cnn_top_fullnet_sram_datapath`
-- `tb_cnn_mmio_regs`
-- `tb_mmio_cnn_top_fullnet`
-- `tb_rv_cnn_custom_if`
-- `tb_rv_custom_if_cnn_top_fullnet`
-- `tb_npc_cnn_custom_bridge`
-- `tb_npc_bridge_cnn_top_fullnet`
-
-## 最近验证
-
-```text
-python3 -m py_compile python/generate_test_vectors.py
-./scripts/run_sim.sh tb_cnn_top_tiled_stem_datapath
-./scripts/run_sim.sh tb_cnn_top_fullnet_sram_datapath
-./scripts/build_firmware.sh
-riscv64-unknown-elf-size build/firmware/cnn_demo.elf
-MAX_SAMPLES=128 EVAL_SAMPLES=64 ./scripts/export_model.sh
-./scripts/run_inference_report.sh
-./scripts/run_resource_report.sh
-./scripts/run_sim.sh tb_rv_cnn_custom_if
-./scripts/run_sim.sh tb_npc_cnn_custom_bridge
-./scripts/run_sim.sh tb_cnn_mmio_regs
-./scripts/run_sim.sh tb_mmio_cnn_top_fullnet
-./scripts/run_sim.sh tb_rv_custom_if_cnn_top_fullnet
-./scripts/run_sim.sh tb_npc_bridge_cnn_top_fullnet
-SIM_LIST=1 ./scripts/run_all_sims.sh
-SIM_ONLY=tb_npc_cnn_custom_bridge ./scripts/run_all_sims.sh
-SIM_ONLY=tb_requant_activation_unit ./scripts/run_all_sims.sh
-EXTRA_CFLAGS="-DCNN_ACCEL_USE_CUSTOM=0" ./scripts/build_firmware.sh
-```
-
-Firmware size after exported smoke model:
-
-```text
-custom instruction: text=91736 data=0 bss=297008
-MMIO fallback:      text=91764 data=0 bss=297008
-```
-
-## 待实现
-
-- 将 smoke 级随机 int8 参数替换为正式 PTQ/QAT 导出的训练权重。
-- 将 v1 外部 memory 格式从 word-per-int8 切换到 packed NHWC byte layout。
-- 直接接入 `rtl/npc` CPU/SOC 顶层并跑 CPU+accelerator 联合仿真。
-- 接入真实 FPGA 综合流程，输出 post-synthesis LUT/FF/BRAM/DSP。
-- 跑真实 RV32I CPU 软件推理或 CPU+accelerator 联合系统仿真，替代当前理论 RV32I-only cycle 估算。
-
 ## 已知限制
 
-- 当前 full-network RTL smoke 和 firmware smoke 都使用确定性 smoke 参数；它们不是正式训练后的 CIFAR-10 精度模型。
-- 训练/export 路径是 smoke 级验证，不是正式 PTQ/QAT 或 CIFAR-10 精度目标。
-- v1 使用 64-bit 中间乘法实现 requant，优先保证行为清晰和 Python golden 对齐。
-- 仅支持固定 EdgeDSCNet-C10 shape，不支持动态网络、任意 kernel、Winograd、稀疏、residual、SE 或 hard-swish。
+- 当前是固定 EdgeDSCNet-C10 shape 的功能型 v1，不是通用 CNN/NPU。
+- 当前模型精度足够做硬件功能验证，但不是最终 ML 质量目标。
+- 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
+- `dw_tile_buffer_bram` 已有独立验证，但 BRAM-oriented buffer 还没有完全替换当前 DSBlock 主路径。
+- `cnn_layer_runner` 仍有大型 packed payload/staging 向量，导致 full `cnn_top` OOC 综合难以在本地 1 小时限制内完成。
+- Requant 当前优先 bit-exact 对齐 Python golden，后续仍需要根据 DSP/时序压力做位宽收敛、共享或流水化。
+- 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
+- 缺少形式验证和更强的 constrained-random/backpressure 压力测试。
 
-## 开发日志
+## 下一步
 
-详细推进记录、已定位问题和不影响当前验证的优化项见 `docs/development_log.md`。
+1. 把 `cnn_layer_runner` 中的大型 packed payload 向量替换为真实 SRAM/loader 接口。
+2. 将已验证的 BRAM tile buffer 接入 DSBlock 主路径，并为 feature/weight storage 增加 BRAM-oriented wrapper。
+3. 将 word-per-int8 外部 memory 布局改成 packed NHWC byte addressing 和 burst-friendly loader。
+4. 对 requant multiplier、PW array fanout、valid/control 信号做综合后的时序优化。
+5. 用更强的 PTQ/QAT checkpoint 重新导出 firmware headers，并扩大多样本 RTL 回归。
+6. 建立更接近真实 SoC 的顶层、memory arbitration、UART/GPIO debug 和 FPGA synthesis/implementation 流程。
 
-当前 Project 内已经有 `rtl/npc` 源码副本和 `rv_core -> npc_cnn_custom_bridge -> cnn_top` 联合仿真 harness：
+更多细节见：
 
-```bash
-SIM_ONLY=tb_npc_rv_core_cnn_top_fullnet ./scripts/run_all_sims.sh
-```
-
-当前该用例 PASS，记录结果为 `cycles=1085562`、`status=10907a82`、`start_count=1`、`stat_count=1`、`argmax=0`。原始 `D:\Stuff\npc` 工程未被修改，后续 CPU/SoC 接线应以 `Project/rtl/npc` 副本为修改对象。
-
-## 当前训练 checkpoint 验证
-
-当前 `sw/model` 已更新为 PyTorch/CUDA 训练 10 epoch 后导出的 int8 checkpoint：
-
-- float CIFAR-10 eval accuracy：`0.503700`
-- int8 golden 抽样 accuracy：`0.484375`，`64` samples
-- sample golden logits：`[-65, -69, 13, 4, 39, 17, 24, 22, -112, -85]`
-- sample argmax：`4`
-- CPU 联合仿真：`./scripts/run_sim.sh tb_npc_rv_core_cnn_top_fullnet` PASS
-- 联合仿真结果：`cycles=1033722`、`status=0fc5fa82`、`start_count=1`、`stat_count=1`、`argmax=4`
-- 验收重点：RTL logits 与 Python int8 golden 逐元素完全一致。
-
-多样本 RTL 功能仿真可运行：
-
-```bash
-SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
-```
-
-当前 sample `0,1,2` 均 PASS，`expected_argmax == rtl_argmax`，每个样本的 RTL logits 与对应 Python int8 golden 逐元素完全一致。
+- `docs/quantization.md`
+- `docs/network_spec.md`
+- `docs/module_design_contracts.md`
+- `docs/verification_plan.md`
+- `docs/known_limits_next_steps.md`
+- `docs/project_next_optimization_bringup_guide.md`
