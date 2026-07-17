@@ -133,3 +133,25 @@ test,status,seconds,log
 Acceptance standard:
 - Every selected row in `summary.csv` must report `PASS`.
 - Interface/fullnet regressions must also check `cnn.stat` or MMIO `STAT` against the decoded cycle counter, `{8'd0, status[31:8]}`.
+
+## Windows XSim Streaming-Refactor Gate
+
+The memory-oriented branch also provides a native Windows/Vivado gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_cnn_xsim.ps1
+```
+
+It compiles the CNN/common RTL from `sim/filelist.f` and runs 13 critical tests:
+new DSBlock, feature SRAM, normal/tiled/SRAM DS, tiled stem, ops, multilayer,
+GAP/FC, stem→DS, tail, end-to-end, and full-network SRAM datapaths.
+
+Acceptance standard:
+
+- the final line is `PASS cnn_xsim_regression tests=13`;
+- `tb_ds_block_tile_engine_new` reports 3 cases / 1792 checks;
+- tiled stem reports 16384 checks;
+- normal and tiled DS top tests report 768 and 2256 checks;
+- full-network SRAM logits match all 10 golden values;
+- a synthesis result is not accepted as a replacement for this functional gate.

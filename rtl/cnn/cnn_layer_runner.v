@@ -54,6 +54,16 @@ module cnn_layer_runner #(
     localparam PH_PW_MUL    = 4'd7;
     localparam PH_PW_SHIFT  = 4'd8;
 
+    localparam DS_CFG_INPUT      = 4'd0;
+    localparam DS_CFG_DW_WEIGHT  = 4'd1;
+    localparam DS_CFG_DW_BIAS    = 4'd2;
+    localparam DS_CFG_DW_MUL     = 4'd3;
+    localparam DS_CFG_DW_SHIFT   = 4'd4;
+    localparam DS_CFG_PW_WEIGHT  = 4'd5;
+    localparam DS_CFG_PW_BIAS    = 4'd6;
+    localparam DS_CFG_PW_MUL     = 4'd7;
+    localparam DS_CFG_PW_SHIFT   = 4'd8;
+
     localparam ST_IDLE                = 5'd0;
     localparam ST_VALIDATE            = 5'd1;
     localparam ST_LOAD_SETUP          = 5'd2;
@@ -114,32 +124,6 @@ module cnn_layer_runner #(
     reg [31:0] tiled_load_idx;
     reg [31:0] tiled_load_count;
 
-    reg signed [(10*10*3*8)-1:0] stem_input_tile;
-    reg signed [(16*27*8)-1:0] stem_weight;
-    reg signed [(16*32)-1:0] stem_bias;
-    reg signed [(16*32)-1:0] stem_multiplier;
-    reg [(16*8)-1:0] stem_shift;
-
-    reg signed [(MAX_DS_IN_H*MAX_DS_IN_W*MAX_CIN*8)-1:0] ds_input_tile;
-    reg signed [(MAX_CIN*9*8)-1:0] dw_weight;
-    reg signed [(MAX_CIN*32)-1:0] dw_bias;
-    reg signed [(MAX_CIN*32)-1:0] dw_multiplier;
-    reg [(MAX_CIN*8)-1:0] dw_shift;
-    reg signed [(MAX_COUT*MAX_CIN*8)-1:0] pw_weight;
-    reg signed [(MAX_COUT*32)-1:0] pw_bias;
-    reg signed [(MAX_COUT*32)-1:0] pw_multiplier;
-    reg [(MAX_COUT*8)-1:0] pw_shift;
-
-    reg signed [(4*4*256*8)-1:0] gap_feature_in;
-    wire signed [(256*8)-1:0] gap_out;
-
-    reg signed [(256*8)-1:0] fc_input_vec;
-    reg signed [(10*256*8)-1:0] fc_weight;
-    reg signed [(10*32)-1:0] fc_bias;
-    reg signed [(10*32)-1:0] fc_multiplier;
-    reg [(10*8)-1:0] fc_shift;
-    wire signed [(10*8)-1:0] fc_logits;
-
     wire out_buffer_wr_en;
     wire [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_wr_addr;
     wire signed [7:0] out_buffer_wr_data;
@@ -149,6 +133,8 @@ module cnn_layer_runner #(
     reg stem_start;
     wire stem_busy;
     wire stem_done;
+    wire stem_error;
+    wire stem_cfg_ready;
     wire stem_out_wr_en;
     wire [5:0] stem_out_wr_pixel_idx;
     wire [3:0] stem_out_wr_channel_idx;
@@ -161,14 +147,34 @@ module cnn_layer_runner #(
     wire [5:0] ds_out_wr_pixel_idx;
     wire [7:0] ds_out_wr_channel_idx;
     wire signed [7:0] ds_out_wr_data_int8;
+    reg ds_cfg_wr_en;
+    reg [3:0] ds_cfg_target;
+    reg [15:0] ds_cfg_index;
+    reg [31:0] ds_cfg_data;
+    wire ds_cfg_ready;
+    wire ds_error;
+    wire [31:0] ds_perf_total_cycles;
+    wire [31:0] ds_perf_dw_cycles;
+    wire [31:0] ds_perf_pw_cycles;
+    wire [31:0] ds_perf_pw_issue_cycles;
 
     reg gap_start;
     wire gap_busy;
     wire gap_done;
+    wire gap_cfg_ready;
+    wire signed [7:0] gap_out_rd_data;
 
     reg fc_start;
     wire fc_busy;
     wire fc_done;
+    wire fc_error;
+    wire fc_cfg_ready;
+    wire signed [7:0] fc_out_rd_data;
+
+    reg aux_cfg_wr_en;
+    reg [3:0] aux_cfg_target;
+    reg [15:0] aux_cfg_index;
+    reg [31:0] aux_cfg_data;
 
     reg tile_sched_start;
     reg tile_sched_next;
@@ -247,7 +253,15 @@ module cnn_layer_runner #(
     assign conv_out_h = calc_out_dim(in_h_reg, effective_stride);
     assign conv_out_w = calc_out_dim(in_w_reg, effective_stride);
     assign conv_out_pixels = conv_out_h * conv_out_w;
-    assign store_byte_current = output_byte_for(op_type_reg, store_idx);
+    assign store_byte_current =
+        ((op_type_reg == OP_CONV3X3_STEM) ||
+         (op_type_reg == OP_DS_BLOCK))
+        ? out_buffer_rd_data
+        : ((op_type_reg == OP_GAP)
+           ? gap_out_rd_data
+           : ((op_type_reg == OP_FC)
+              ? fc_out_rd_data
+              : 8'd0));
     assign tiled_stem_mode = (op_type_reg == OP_CONV3X3_STEM) && flags_reg[FLAG_TILED_STEM];
     assign tiled_ds_mode = (op_type_reg == OP_DS_BLOCK) && flags_reg[FLAG_TILED_DS_BLOCK];
     assign tiled_spatial_mode = tiled_stem_mode || tiled_ds_mode;
@@ -258,20 +272,20 @@ module cnn_layer_runner #(
     assign ds_engine_out_h = tiled_ds_mode ? tile_h_size_reg[3:0] : conv_out_h;
     assign ds_engine_out_w = tiled_ds_mode ? tile_w_size_reg[3:0] : conv_out_w;
 
-    conv3x3_stem_engine u_stem_engine (
+    conv3x3_stem_engine_new u_stem_engine (
         .clk(clk),
         .rst_n(rst_n),
+        .cfg_wr_en(aux_cfg_wr_en && (op_type_reg == OP_CONV3X3_STEM)),
+        .cfg_ready(stem_cfg_ready),
+        .cfg_target(aux_cfg_target),
+        .cfg_index(aux_cfg_index),
+        .cfg_data(aux_cfg_data),
         .start(stem_start),
         .busy(stem_busy),
         .done(stem_done),
+        .error(stem_error),
         .out_h(stem_engine_out_h),
         .out_w(stem_engine_out_w),
-        .input_zero_point(input_zero_point_reg[7:0]),
-        .input_tile(stem_input_tile),
-        .stem_weight(stem_weight),
-        .stem_bias(stem_bias),
-        .stem_multiplier(stem_multiplier),
-        .stem_shift(stem_shift),
         .output_zero_point(dw_output_zero_point_reg),
         .activation_min(dw_activation_min_reg),
         .activation_max(dw_activation_max_reg),
@@ -281,7 +295,7 @@ module cnn_layer_runner #(
         .out_wr_data_int8(stem_out_wr_data_int8)
     );
 
-    ds_block_tile_engine #(
+    ds_block_tile_engine_new #(
         .MAX_CIN(MAX_CIN),
         .MAX_COUT(MAX_COUT),
         .MAX_IN_H(MAX_DS_IN_H),
@@ -292,31 +306,32 @@ module cnn_layer_runner #(
         .start(ds_start),
         .busy(ds_busy),
         .done(ds_done),
+        .error(ds_error),
+        .cfg_wr_en(ds_cfg_wr_en),
+        .cfg_ready(ds_cfg_ready),
+        .cfg_target(ds_cfg_target),
+        .cfg_index(ds_cfg_index),
+        .cfg_data(ds_cfg_data),
         .out_h(ds_engine_out_h),
         .out_w(ds_engine_out_w),
         .channels(in_c_reg[7:0]),
         .out_channels(out_c_reg),
         .stride(effective_stride[1:0]),
         .input_zero_point(input_zero_point_reg[7:0]),
-        .input_tile(ds_input_tile),
-        .dw_weight(dw_weight),
-        .dw_bias(dw_bias),
-        .dw_multiplier(dw_multiplier),
-        .dw_shift(dw_shift),
         .dw_output_zero_point(dw_output_zero_point_reg),
         .dw_activation_min(dw_activation_min_reg),
         .dw_activation_max(dw_activation_max_reg),
-        .pw_weight(pw_weight),
-        .pw_bias(pw_bias),
-        .pw_multiplier(pw_multiplier),
-        .pw_shift(pw_shift),
         .pw_output_zero_point(pw_output_zero_point_reg),
         .pw_activation_min(pw_activation_min_reg),
         .pw_activation_max(pw_activation_max_reg),
         .out_wr_en(ds_out_wr_en),
         .out_wr_pixel_idx(ds_out_wr_pixel_idx),
         .out_wr_channel_idx(ds_out_wr_channel_idx),
-        .out_wr_data_int8(ds_out_wr_data_int8)
+        .out_wr_data_int8(ds_out_wr_data_int8),
+        .perf_total_cycles(ds_perf_total_cycles),
+        .perf_dw_cycles(ds_perf_dw_cycles),
+        .perf_pw_cycles(ds_perf_pw_cycles),
+        .perf_pw_issue_cycles(ds_perf_pw_issue_cycles)
     );
 
     tile_scheduler #(
@@ -340,31 +355,38 @@ module cnn_layer_runner #(
         .is_last_tile(sched_is_last_tile)
     );
 
-    gap_unit u_gap_unit (
+    gap_unit_new u_gap_unit (
         .clk(clk),
         .rst_n(rst_n),
+        .cfg_wr_en(aux_cfg_wr_en && (op_type_reg == OP_GAP) &&
+                   (aux_cfg_target == PH_INPUT)),
+        .cfg_ready(gap_cfg_ready),
+        .cfg_index(aux_cfg_index),
+        .cfg_data_int8(aux_cfg_data[7:0]),
         .start(gap_start),
         .busy(gap_busy),
         .done(gap_done),
-        .feature_in(gap_feature_in),
-        .gap_out(gap_out)
+        .out_rd_index(store_idx[7:0]),
+        .out_rd_data(gap_out_rd_data)
     );
 
-    fc_unit u_fc_unit (
+    fc_unit_new u_fc_unit (
         .clk(clk),
         .rst_n(rst_n),
+        .cfg_wr_en(aux_cfg_wr_en && (op_type_reg == OP_FC)),
+        .cfg_ready(fc_cfg_ready),
+        .cfg_target(aux_cfg_target),
+        .cfg_index(aux_cfg_index),
+        .cfg_data(aux_cfg_data),
         .start(fc_start),
         .busy(fc_busy),
         .done(fc_done),
-        .input_vec(fc_input_vec),
-        .fc_weight(fc_weight),
-        .fc_bias(fc_bias),
-        .fc_multiplier(fc_multiplier),
-        .fc_shift(fc_shift),
+        .error(fc_error),
         .output_zero_point(pw_output_zero_point_reg),
         .activation_min(pw_activation_min_reg),
         .activation_max(pw_activation_max_reg),
-        .logits(fc_logits)
+        .out_rd_index(store_idx[3:0]),
+        .out_rd_data(fc_out_rd_data)
     );
 
     cnn_out_buffer #(
@@ -565,31 +587,6 @@ module cnn_layer_runner #(
         end
     endfunction
 
-    function [7:0] output_byte_for;
-        input [31:0] op_type;
-        input [31:0] idx;
-        begin
-            output_byte_for = 8'd0;
-            case (op_type)
-                OP_CONV3X3_STEM: begin
-                    output_byte_for = out_buffer_rd_data;
-                end
-                OP_DS_BLOCK: begin
-                    output_byte_for = out_buffer_rd_data;
-                end
-                OP_GAP: begin
-                    output_byte_for = gap_out[(idx*8) +: 8];
-                end
-                OP_FC: begin
-                    output_byte_for = fc_logits[(idx*8) +: 8];
-                end
-                default: begin
-                    output_byte_for = 8'd0;
-                end
-            endcase
-        end
-    endfunction
-
     always @(*) begin
         out_buffer_rd_addr = {OUT_BUFFER_ADDR_WIDTH{1'b0}};
         case (op_type_reg)
@@ -747,13 +744,16 @@ module cnn_layer_runner #(
         integer y;
         integer x;
         integer c;
-        integer bit_base;
+        integer cfg_linear_index;
         begin
             y = idx / (in_w_reg * 3);
             x = (idx / 3) % in_w_reg;
             c = idx % 3;
-            bit_base = (((y * 10 * 3) + (x * 3) + c) * 8);
-            stem_input_tile[bit_base +: 8] <= value;
+            cfg_linear_index = (y * 10 * 3) + (x * 3) + c;
+            aux_cfg_wr_en <= 1'b1;
+            aux_cfg_target <= PH_INPUT;
+            aux_cfg_index <= cfg_linear_index[15:0];
+            aux_cfg_data <= {{24{value[7]}}, value};
         end
     endtask
 
@@ -763,7 +763,7 @@ module cnn_layer_runner #(
         integer y;
         integer x;
         integer c;
-        integer bit_base;
+        integer cfg_linear_index;
         begin
             y = 0;
             x = 0;
@@ -773,8 +773,11 @@ module cnn_layer_runner #(
                 x = (idx / in_c_reg) % tile_input_w_reg;
                 c = idx % in_c_reg;
             end
-            bit_base = (((y * 10 * 3) + (x * 3) + c) * 8);
-            stem_input_tile[bit_base +: 8] <= value;
+            cfg_linear_index = (y * 10 * 3) + (x * 3) + c;
+            aux_cfg_wr_en <= 1'b1;
+            aux_cfg_target <= PH_INPUT;
+            aux_cfg_index <= cfg_linear_index[15:0];
+            aux_cfg_data <= {{24{value[7]}}, value};
         end
     endtask
 
@@ -784,13 +787,17 @@ module cnn_layer_runner #(
         integer y;
         integer x;
         integer c;
-        integer bit_base;
+        integer cfg_linear_index;
         begin
             y = idx / (in_w_reg * in_c_reg);
             x = (idx / in_c_reg) % in_w_reg;
             c = idx % in_c_reg;
-            bit_base = (((y * MAX_DS_IN_W * MAX_CIN) + (x * MAX_CIN) + c) * 8);
-            ds_input_tile[bit_base +: 8] <= value;
+            cfg_linear_index = ((y * MAX_DS_IN_W * MAX_CIN) +
+                                (x * MAX_CIN) + c);
+            ds_cfg_wr_en <= 1'b1;
+            ds_cfg_target <= DS_CFG_INPUT;
+            ds_cfg_index <= cfg_linear_index[15:0];
+            ds_cfg_data <= {{24{value[7]}}, value};
         end
     endtask
 
@@ -800,7 +807,7 @@ module cnn_layer_runner #(
         integer y;
         integer x;
         integer c;
-        integer bit_base;
+        integer cfg_linear_index;
         begin
             y = 0;
             x = 0;
@@ -810,8 +817,12 @@ module cnn_layer_runner #(
                 x = (idx / in_c_reg) % tile_input_w_reg;
                 c = idx % in_c_reg;
             end
-            bit_base = (((y * MAX_DS_IN_W * MAX_CIN) + (x * MAX_CIN) + c) * 8);
-            ds_input_tile[bit_base +: 8] <= value;
+            cfg_linear_index = ((y * MAX_DS_IN_W * MAX_CIN) +
+                                (x * MAX_CIN) + c);
+            ds_cfg_wr_en <= 1'b1;
+            ds_cfg_target <= DS_CFG_INPUT;
+            ds_cfg_index <= cfg_linear_index[15:0];
+            ds_cfg_data <= {{24{value[7]}}, value};
         end
     endtask
 
@@ -820,12 +831,15 @@ module cnn_layer_runner #(
         input [7:0] value;
         integer co;
         integer ci;
-        integer bit_base;
+        integer cfg_linear_index;
         begin
             co = idx / in_c_reg;
             ci = idx % in_c_reg;
-            bit_base = (((co * MAX_CIN) + ci) * 8);
-            pw_weight[bit_base +: 8] <= value;
+            cfg_linear_index = (co * MAX_CIN) + ci;
+            ds_cfg_wr_en <= 1'b1;
+            ds_cfg_target <= DS_CFG_PW_WEIGHT;
+            ds_cfg_index <= cfg_linear_index[15:0];
+            ds_cfg_data <= {{24{value[7]}}, value};
         end
     endtask
 
@@ -838,39 +852,87 @@ module cnn_layer_runner #(
                 OP_CONV3X3_STEM: begin
                     case (phase)
                         PH_INPUT:     store_stem_input(idx, data[7:0]);
-                        PH_DW_WEIGHT: stem_weight[(idx*8) +: 8] <= data[7:0];
-                        PH_DW_BIAS:   stem_bias[(idx*32) +: 32] <= data;
-                        PH_DW_MUL:    stem_multiplier[(idx*32) +: 32] <= data;
-                        PH_DW_SHIFT:  stem_shift[(idx*8) +: 8] <= data[7:0];
+                        PH_DW_WEIGHT,
+                        PH_DW_BIAS,
+                        PH_DW_MUL,
+                        PH_DW_SHIFT: begin
+                            aux_cfg_wr_en <= 1'b1;
+                            aux_cfg_target <= phase;
+                            aux_cfg_index <= idx[15:0];
+                            aux_cfg_data <= data;
+                        end
                         default: begin end
                     endcase
                 end
                 OP_DS_BLOCK: begin
                     case (phase)
                         PH_INPUT:     store_ds_input(idx, data[7:0]);
-                        PH_DW_WEIGHT: dw_weight[(idx*8) +: 8] <= data[7:0];
-                        PH_DW_BIAS:   dw_bias[(idx*32) +: 32] <= data;
-                        PH_DW_MUL:    dw_multiplier[(idx*32) +: 32] <= data;
-                        PH_DW_SHIFT:  dw_shift[(idx*8) +: 8] <= data[7:0];
+                        PH_DW_WEIGHT: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_DW_WEIGHT;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
+                        PH_DW_BIAS: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_DW_BIAS;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
+                        PH_DW_MUL: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_DW_MUL;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
+                        PH_DW_SHIFT: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_DW_SHIFT;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
                         PH_PW_WEIGHT: store_pw_weight(idx, data[7:0]);
-                        PH_PW_BIAS:   pw_bias[(idx*32) +: 32] <= data;
-                        PH_PW_MUL:    pw_multiplier[(idx*32) +: 32] <= data;
-                        PH_PW_SHIFT:  pw_shift[(idx*8) +: 8] <= data[7:0];
+                        PH_PW_BIAS: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_PW_BIAS;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
+                        PH_PW_MUL: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_PW_MUL;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
+                        PH_PW_SHIFT: begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_PW_SHIFT;
+                            ds_cfg_index <= idx[15:0];
+                            ds_cfg_data <= data;
+                        end
                         default: begin end
                     endcase
                 end
                 OP_GAP: begin
                     if (phase == PH_INPUT) begin
-                        gap_feature_in[(idx*8) +: 8] <= data[7:0];
+                        aux_cfg_wr_en <= 1'b1;
+                        aux_cfg_target <= PH_INPUT;
+                        aux_cfg_index <= idx[15:0];
+                        aux_cfg_data <= data;
                     end
                 end
                 OP_FC: begin
                     case (phase)
-                        PH_INPUT:     fc_input_vec[(idx*8) +: 8] <= data[7:0];
-                        PH_PW_WEIGHT: fc_weight[(idx*8) +: 8] <= data[7:0];
-                        PH_PW_BIAS:   fc_bias[(idx*32) +: 32] <= data;
-                        PH_PW_MUL:    fc_multiplier[(idx*32) +: 32] <= data;
-                        PH_PW_SHIFT:  fc_shift[(idx*8) +: 8] <= data[7:0];
+                        PH_INPUT,
+                        PH_PW_WEIGHT,
+                        PH_PW_BIAS,
+                        PH_PW_MUL,
+                        PH_PW_SHIFT: begin
+                            aux_cfg_wr_en <= 1'b1;
+                            aux_cfg_target <= phase;
+                            aux_cfg_index <= idx[15:0];
+                            aux_cfg_data <= data;
+                        end
                         default: begin end
                     endcase
                 end
@@ -897,6 +959,14 @@ module cnn_layer_runner #(
             sram_output_wr_data <= 8'sd0;
             stem_start <= 1'b0;
             ds_start <= 1'b0;
+            ds_cfg_wr_en <= 1'b0;
+            ds_cfg_target <= 4'd0;
+            ds_cfg_index <= 16'd0;
+            ds_cfg_data <= 32'd0;
+            aux_cfg_wr_en <= 1'b0;
+            aux_cfg_target <= 4'd0;
+            aux_cfg_index <= 16'd0;
+            aux_cfg_data <= 32'd0;
             gap_start <= 1'b0;
             fc_start <= 1'b0;
             tile_sched_start <= 1'b0;
@@ -941,32 +1011,12 @@ module cnn_layer_runner #(
             pw_activation_min_reg <= -32'sd128;
             pw_activation_max_reg <= 32'sd127;
             flags_reg <= 32'd0;
-`ifndef SYNTHESIS
-            stem_input_tile <= 2400'sd0;
-            stem_weight <= 3456'sd0;
-            stem_bias <= 512'sd0;
-            stem_multiplier <= 512'sd0;
-            stem_shift <= 128'd0;
-            ds_input_tile <= 0;
-            dw_weight <= 0;
-            dw_bias <= 0;
-            dw_multiplier <= 0;
-            dw_shift <= 0;
-            pw_weight <= 0;
-            pw_bias <= 0;
-            pw_multiplier <= 0;
-            pw_shift <= 0;
-            gap_feature_in <= 32768'sd0;
-            fc_input_vec <= 2048'sd0;
-            fc_weight <= 20480'sd0;
-            fc_bias <= 320'sd0;
-            fc_multiplier <= 320'sd0;
-            fc_shift <= 80'd0;
-`endif
         end else begin
             done <= 1'b0;
             stem_start <= 1'b0;
             ds_start <= 1'b0;
+            ds_cfg_wr_en <= 1'b0;
+            aux_cfg_wr_en <= 1'b0;
             gap_start <= 1'b0;
             fc_start <= 1'b0;
             sram_input_rd_en <= 1'b0;
@@ -1012,29 +1062,6 @@ module cnn_layer_runner #(
                 end
 
                 ST_VALIDATE: begin
-`ifndef SYNTHESIS
-                    stem_input_tile <= 2400'sd0;
-                    stem_weight <= 3456'sd0;
-                    stem_bias <= 512'sd0;
-                    stem_multiplier <= 512'sd0;
-                    stem_shift <= 128'd0;
-                    ds_input_tile <= 0;
-                    dw_weight <= 0;
-                    dw_bias <= 0;
-                    dw_multiplier <= 0;
-                    dw_shift <= 0;
-                    pw_weight <= 0;
-                    pw_bias <= 0;
-                    pw_multiplier <= 0;
-                    pw_shift <= 0;
-                    gap_feature_in <= 32768'sd0;
-                    fc_input_vec <= 2048'sd0;
-                    fc_weight <= 20480'sd0;
-                    fc_bias <= 320'sd0;
-                    fc_multiplier <= 320'sd0;
-                    fc_shift <= 80'd0;
-`endif
-
                     if (flags_reg[FLAG_SKIP_EXEC]) begin
                         state <= ST_DONE;
                     end else if (!valid_config()) begin
@@ -1136,7 +1163,15 @@ module cnn_layer_runner #(
                 end
 
                 ST_ENGINE_WAIT: begin
-                    if (((op_type_reg == OP_CONV3X3_STEM) && stem_done) ||
+                    if (((op_type_reg == OP_CONV3X3_STEM) &&
+                         stem_done && stem_error) ||
+                        ((op_type_reg == OP_DS_BLOCK) &&
+                         ds_done && ds_error) ||
+                        ((op_type_reg == OP_FC) &&
+                         fc_done && fc_error)) begin
+                        error <= 1'b1;
+                        state <= ST_ERROR;
+                    end else if (((op_type_reg == OP_CONV3X3_STEM) && stem_done) ||
                         ((op_type_reg == OP_DS_BLOCK) && ds_done) ||
                         ((op_type_reg == OP_GAP) && gap_done) ||
                         ((op_type_reg == OP_FC) && fc_done)) begin
@@ -1207,7 +1242,6 @@ module cnn_layer_runner #(
                         tiled_load_count <= {24'd0, sched_input_tile_h} *
                                             {24'd0, sched_input_tile_w} *
                                             {16'd0, in_c_reg};
-                        ds_input_tile <= 0;
                         if (({24'd0, sched_input_tile_h} *
                              {24'd0, sched_input_tile_w} *
                              {16'd0, in_c_reg}) == 32'd0) begin
@@ -1293,7 +1327,12 @@ module cnn_layer_runner #(
                 end
 
                 ST_TILED_ENGINE_WAIT: begin
-                    if ((tiled_stem_mode && stem_done) || (tiled_ds_mode && ds_done)) begin
+                    if ((tiled_stem_mode && stem_done && stem_error) ||
+                        (tiled_ds_mode && ds_done && ds_error)) begin
+                        error <= 1'b1;
+                        state <= ST_ERROR;
+                    end else if ((tiled_stem_mode && stem_done) ||
+                                 (tiled_ds_mode && ds_done)) begin
                         state <= ST_TILED_STORE_SETUP;
                     end
                 end

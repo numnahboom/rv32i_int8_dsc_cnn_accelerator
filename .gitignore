@@ -10,6 +10,13 @@ logs/
 *.d
 vivado*.log
 vivado*.jou
+xsim.dir/
+xsim*.log
+xsim*.jou
+xelab*.log
+xvlog*.log
+xelab.pb
+xvlog.pb
 *.fst
 *.vcd
 *.vvp

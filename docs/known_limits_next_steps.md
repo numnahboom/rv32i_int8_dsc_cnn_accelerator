@@ -1,34 +1,73 @@
 # Known Limits and Next Optimizations
 
-## Current Limits
+## Current Status
 
-- The current RTL is a functional v1 datapath for fixed EdgeDSCNet-C10 shapes. It is not a general CNN accelerator.
-- External memory uses a simulation-friendly word-per-int8 layout for many tests. Packed NHWC byte layout is still a later memory pass.
-- The CPU custom-instruction path is verified in simulation, but the copied NPC SoC top has not been fully replaced by a production SoC integration.
-- The design is single-clock. There is no asynchronous CPU/accelerator clock boundary yet.
-- `cnn_top` has full-network smoke coverage, but not yet formal verification or constrained-random stress for every memory backpressure pattern.
-- The current PW array is an 8x8 broadcast-style MAC array. It is simple and correct, but may need control/data register replication for high FPGA frequency.
-- Requant uses wide signed multiplication. It is bit-exact with Python golden, but resource sharing or deeper pipelining may be needed after timing closure.
-- Feature SRAM still maps to distributed RAM and needs a BRAM-oriented wrapper.
-- The new `dw_tile_buffer_bram` maps to two RAMB36E2 with no LUTRAM, but it is not connected to the current DSBlock path yet.
-- `dw_tile_fusion_engine` and `ds_block_tile_engine` now pass OOC synthesis by staging packed input/weight vectors into byte memories. This is intentionally a high-cost synthesis-proof implementation, not the final storage architecture.
-- Full `cnn_top` OOC synthesis still does not complete within the local 1 hour run limit because `cnn_layer_runner` holds large simulation-friendly packed payload vectors.
-- Model accuracy is good enough for functional validation, not final ML quality. The current trained checkpoint is around 50% float accuracy and below that for sampled int8 PTQ.
-- Resource numbers in `resource_estimate.md` are static estimates, not post-synthesis implementation results.
+- `ds_block_tile_engine_new` is the active DS path in `cnn_layer_runner`.
+- The new path uses XPM-backed input, PW-weight, and DW-tile buffers.
+- Stem, GAP, and FC now use scalar configuration loaders and sequential compute
+  instead of runner-owned packed payload vectors.
+- Feature SRAM uses an XPM BRAM implementation under synthesis with an explicit
+  same-address write/read bypass.
+- The descriptor format, firmware address map, external word-per-int8 test
+  layout, and golden vectors are unchanged.
+- The Windows XSim critical regression passes 13/13 tests, including tiled,
+  SRAM, multilayer, end-to-end, and full-network paths.
+- `ds_block_tile_engine_new` OOC synthesis passes at 24281 CLB LUT, 15649 FF,
+  26 BRAM36 tiles, and 14 DSPs.
 
-## Follow-Up Optimizations
+## Evidence Boundary
 
-1. Replace `cnn_layer_runner` packed payload vectors with real SRAM/loader interfaces so full `cnn_top` synthesis can finish with meaningful resources.
-2. Integrate the verified XPM-backed tile buffer into the new streaming DSBlock, then add similar BRAM-oriented wrappers for feature and weight storage.
-3. Convert the current synthesis-proof staging registers in DW/DSBlock into BRAM-backed or streamed storage.
-4. Pipeline or share the requant multiplier depending on DSP pressure and target frequency.
-5. Register-replicate `valid`, `clear_acc`, and row/column data feeds in `pw_systolic_array_8x8`.
-6. Evaluate DSBlock scheduling choices:
-   - keep conservative DW-then-PW sequencing for minimum buffer risk;
-   - add a small tile double buffer if PW backpressure dominates;
-   - scale PW resources only if DSP budget allows.
-7. Replace v1 word-per-int8 memory with packed NHWC byte addressing and aligned burst-friendly loaders.
-8. Add multi-sample RTL regression to the default CI path once runtime is acceptable.
-9. Add more realistic CPU memory stalls and accelerator memory contention tests.
-10. Train a stronger checkpoint with calibration or QAT, then regenerate firmware headers.
-11. Consider an async `acc_clk` only after single-clock timing reports prove the accelerator limits CPU frequency.
+- The post-refactor full `cnn_top` OOC synthesis completed on 2026-07-17 with
+  0 errors and 0 critical warnings.
+- Standard utilization is 45830 CLB LUT (39.13%), 18387 CLB registers (7.85%),
+  42 RAMB36 tiles (29.17%), and 60 DSP blocks (4.81%).
+- Hierarchical utilization shows `cnn_layer_runner` at 44503 total LUT,
+  including `ds_block_tile_engine_new` at 24283 LUT and `cnn_out_buffer` at
+  3398 LUT. The runner's own non-child logic is 14812 LUT, down from the
+  333191 logic LUT intermediate result.
+- `feature_sram_pingpong` maps to 16 RAMB36 with only 67 LUT, confirming that
+  the XPM BRAM conversion is active.
+- The earlier 446272-LUT result remains useful only as evidence of why the
+  legacy packed stem/GAP/FC loaders had to be removed; it is not the current
+  resource count.
+- The installed K26 part reports `Cannot run timing on a non-timing device`.
+  Current reports are synthesis utilization only, not place-and-route timing
+  closure.
+
+## Remaining Limits
+
+- The accelerator is fixed around EdgeDSCNet-C10 shapes; it is not a general
+  CNN/NPU ISA.
+- External memory still uses a simulation-friendly word-per-int8 layout rather
+  than packed NHWC bytes and burst transfers.
+- `cnn_out_buffer` is still asynchronous distributed RAM. It should be moved to
+  synchronous BRAM only together with an explicit read-prefetch state.
+- The DW 16-lane and PW 8x8 int8 multipliers are mainly LUT/CARRY arithmetic;
+  DSP-vs-LUT mapping has not been tuned against a routed timing target.
+- The single-MAC stem is area-oriented. Its throughput should be increased to
+  3 or 9 MAC lanes only if full-network profiling shows it is material.
+- Requant is bit-exact with the Python golden but uses wide multiplication.
+  Sharing, width reduction, or deeper pipelining still needs timing evidence.
+- There is no formal verification or broad constrained-random backpressure
+  suite.
+- NPC/custom-instruction simulation exists, but there is no production AXI SoC
+  top, CDC plan, board constraints, or bitstream bring-up.
+- Model accuracy remains a functional-validation checkpoint, not the final ML
+  quality target.
+
+## Next Actions
+
+1. Run implementation on a timing-capable device/part installation and collect
+   WNS, Fmax, congestion, power, and routed utilization.
+2. Redesign `cnn_out_buffer` as synchronous BRAM plus an explicit prefetch
+   state; the current asynchronous version costs 3398 LUT.
+3. Profile real layer cycles and scale stem/DW/PW parallelism only where useful.
+4. Convert external payloads to packed NHWC byte addressing and an aligned
+   burst-friendly loader.
+5. Add random memory stalls, cfg legality assertions, and tile-boundary stress.
+6. Re-run CPU/NPC full-network regression with the new engines.
+7. Integrate a production memory bus/SoC top and board-level debug.
+8. Train/calibrate a stronger PTQ or QAT checkpoint and regenerate firmware.
+
+See `streaming_engine_refactor_guide.md` for the architecture, exact commands,
+cycle/resource data, and a step-by-step reproduction path.

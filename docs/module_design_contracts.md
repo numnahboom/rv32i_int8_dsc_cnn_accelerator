@@ -207,6 +207,18 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 - **测试向量**：`generate_dsblock_cases` 生成 `dsblock_cases.hex`，由 `tb_ds_block_tile_engine.v` 对比融合 DW+PW golden。
 - **资源期望**：最终应由 8 KB DW tile buffer、一个 8x8 PW array、可复用 weight/quant SRAM 和 DW lanes 主导。当前 OOC 约 389253 CLB LUT、565654 register、20 DSP，仅为 synthesis-proof。
 
+### 7.2 `ds_block_tile_engine_new`
+
+- **输入**：标量 `cfg_wr_en/target/index/data`、输出 tile shape、Cin/Cout、stride、量化参数和 `start`。
+- **输出**：逐 pixel/channel int8 写流、`busy/done/error` 和四个 cycle counter。
+- **事务边界**：idle 时接收配置；start 后完整执行 DW channel tiles，再执行 PW pixel/Cout tiles；busy 时 `cfg_ready=0`。
+- **内部 memory**：input XPM BRAM、PW weight XPM BRAM、DW tile XPM BRAM；DW/PW 小参数使用 indexed distributed memories。
+- **读延迟**：三类 BRAM 均按一拍读延迟控制；状态机显式区分 READ/FEED，不能按异步 memory 使用。
+- **Backpressure**：DW 内部使用 ready/valid；当前 PW 和最终写回下游固定接受。
+- **边界条件**：`Cin<=128`、`Cout<=256`、最多 64 输出 pixel、stride 1/2；非 16 倍数 Cin 用 input zero point 掩蔽，非 8 倍数 tile/Cout 抑制无效写。
+- **测试向量**：复用 `dsblock_cases.hex`，由 `tb_ds_block_tile_engine_new.v` 验证 1792 个输出，并检查 PW 理论 issue cycle。
+- **资源证据**：Vivado OOC 为 24281 CLB LUT、15649 FF、26 BRAM36、14 DSP；当前 runner 主路径使用本模块。
+
 ## 8. Stem、GAP、FC
 
 ### 8.1 `conv3x3_stem_engine`
@@ -248,6 +260,14 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 - **测试向量**：`generate_fc_cases` 生成 `fc_cases.hex`，由 `tb_fc_unit.v` 比较。
 - **资源期望**：当前组合展开极其昂贵且时序长。最终应使用复用 MAC、PW array 或小型向量 MAC，权重放 BRAM/ROM。
 
+### 8.4 Memory-oriented new engines
+
+- `conv3x3_stem_engine_new` 用标量配置端口保存 300 B input 和 432 B weight，复用一个 int8 MAC 串行处理 27 个 kernel 项；输出接口与旧 stem 相同。
+- `gap_unit_new` 在 4096 个输入加载时按 channel 累加，只保留 256 个 13-bit sum；输出读口按 `sum >>> 4` 返回 int8。
+- `fc_unit_new` 保存 256 B input，加载 2560 个 weight 时直接更新 10 个 accumulator；start 后顺序 requant 10 个 class。
+- 三个模块由 runner 的 `aux_cfg_*` 标量总线驱动，外部 phase/address 协议不变。
+- 旧模块保留用于 legacy unit tests，新模块由 top-level ops、tiled、SRAM、多层和 fullnet golden 覆盖。
+
 ## 9. Feature SRAM
 
 ### 9.1 `feature_sram_bank`
@@ -261,7 +281,7 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 - **done/valid**：读请求后一拍 `rd_valid=1`；写没有完成信号。
 - **边界条件**：地址范围 `0..32767`；memory 不在 reset 时清零，软件/loader 必须先初始化有效区域。
 - **测试向量**：`generate_feature_sram_bank_cases` 生成对应 hex，由 `tb_feature_sram_bank.v` 验证读写和同地址 bypass。
-- **资源期望**：目标每 bank 32 KB，约 8 个 BRAM36。当前 Vivado OOC 映射为 distributed RAM，约 5120 LUTRAM LUT，需要 BRAM-friendly wrapper 或 XPM。
+- **资源期望**：综合路径现使用 XPM SDPRAM，目标每 bank 32 KB、约 8 个 BRAM36；同地址读写采用 BRAM read-first 加显式新数据 bypass。
 
 ### 9.2 `feature_sram_pingpong`
 
@@ -337,13 +357,17 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 - **输入**：完整 descriptor、start、外部 memory 握手，以及 feature SRAM 读响应。
 - **输出**：layer done/error、外部 memory 请求、feature SRAM 写请求和 busy。
 - **事务边界**：IDLE 中 start 上升沿锁存 descriptor；依次 load 参数、启动 engine、等待完成、写回输出；ST_DONE 产生结束脉冲。
-- **内部 memory**：当前 packed payload 和 out buffer 合计约 98,630 B，包括 36,992 B DS input、32,768 B PW weight、16,384 B output、4096 B GAP input 及其它参数。
+- **内部 memory**：runner 自身只保留 16 KB 异步 output buffer；DS input/PW
+  weight/DW tile memory 已下沉到 new DS engine 的 XPM BRAM，Stem/GAP/FC 也各自
+  使用标量配置接口和本地小 memory，不再由 runner 持有 packed payload。
 - **读延迟**：外部 memory 响应可变；feature SRAM 固定一拍；tiled 输入逐 int8 读取；engine 延迟取决于 op type。
 - **Backpressure**：外部 request 支持 `mem_req_ready`，response 可等待；SRAM 使用 `rd_valid`；engine 的逐元素输出没有 ready，必须被内部 out buffer 接受。
 - **done/valid**：正常完成时 `done=1` 一拍；配置非法时 `error=1` 并进入 error completion；busy 覆盖完整 layer 生命周期。
 - **边界条件**：Stem、DSBlock shape 受 `valid_config` 限制；tiled DS 支持输入到 32x32、Cin<=128、Cout<=256、stride 1/2；GAP/FC 当前固定 shape。外部 debug layout 是一个 int8 占一个 32-bit word。
 - **测试向量**：由全部 `tb_cnn_top_*datapath.v` 间接覆盖；memory image 和 expected output 由 `generate_test_vectors.py` 生成。
-- **资源期望**：控制本身应较小，资源应主要来自共享 activation/weight/quant SRAM。当前大 packed vector 和动态 part-select 是 full-top 综合的主要成本，应重构为 loader + SRAM 接口。
+- **资源期望**：2026-07-17 顶层层级报告中 runner 自身非子模块部分为
+  14812 LUT / 1011 FF / 26 DSP；其中动态地址计算仍是主要组合逻辑来源。
+  `cnn_out_buffer` 另占 3398 LUT，后续应改为同步 BRAM + 预取状态。
 
 ### 11.3 `cnn_top_ctrl`
 
@@ -363,13 +387,16 @@ rv_cnn_custom_if / npc_cnn_custom_bridge / cnn_mmio_regs
 - **输入**：CPU command、descriptor base、layer count、统一 external memory request/response。
 - **输出**：command ready、32-bit status 和统一 memory master。
 - **事务边界**：`cmd_valid && cmd_ready && cmd_type=START` 的上升沿开始；控制器完成所有层时 done 被锁存在 status，直到下一条 command 清除。
-- **内部 memory**：两个 32 KB feature SRAM bank，加 `cnn_layer_runner` 当前约 98.6 KB payload，以及 descriptor/status/control 状态。
+- **内部 memory**：两个 32 KB feature SRAM bank、new DS 内 26 个 BRAM36、
+  runner 的 16 KB 异步 output buffer，以及 Stem/GAP/FC 的本地小 memory。
 - **读延迟**：descriptor 和 payload 取决于 external memory；feature SRAM 一拍；总事务周期由所有 layer 累加。
 - **Backpressure**：command 侧只在不 busy 时 ready；memory request 支持 ready/response 等待。descriptor fetch 期间独占 memory bus。
 - **done/valid**：`status[0]=busy`、`status[1]=done`、`status[2]=error`；done/error 为锁存状态，不是单拍。
 - **边界条件**：只接受 `CMD_START=0`；status 只保留 total cycle 低 24 bit和 current layer 低 4 bit；没有 memory error 或 timeout。
 - **测试向量**：`tb_cnn_top.v`、各 op/tiled/SRAM/multilayer/fullnet TB；fullnet memory image 来自 `cnn_top_fullnet_sram_cases.hex`。
-- **资源期望**：最终应由 64 KB feature BRAM、PW array、DW lanes、weight/quant buffers 主导。当前 full top 因 layer runner packed payload 尚未在本机快速完成 OOC synthesis。
+- **资源期望**：2026-07-17 完整 OOC synthesis 为 45830 CLB LUT、
+  18387 FF、42 BRAM36、60 DSP；资源可装入 K26，但当前 device support 不能做
+  timing report，因此还不是 place-and-route closure。
 
 ## 12. CPU 和 MMIO 接口
 

@@ -625,3 +625,64 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 - 当前 buffer 为单个 8x8 tile；后续可比较单 8x8 与双 4x8 ping-pong 的带宽、BRAM和重叠收益。
 - `cnn_layer_runner`、feature SRAM、PW weight/quant storage 仍需改为真正的 memory-oriented interface。
 - 当前安装的 K26 non-timing part 只能提供 synthesis utilization，不能证明 place-and-route timing closure。
+
+## 2026-07-17：Streaming DSBlock 主路径与 runner memory-oriented 重构
+
+目标：
+
+- 创建 `refactor/streaming-dsblock-bram` 分支，完成上一轮候选 streaming DW 的 DSBlock 集成。
+- 保持 descriptor、firmware 地址与 golden vector 协议不变。
+- 将资源目标从“Vivado 能接受”提升为“子模块可装入 K26，完整顶层不再由 packed payload 写网络主导”。
+
+实现：
+
+- 新增 `ds_input_tile_buffer_bram.v`、`pw_weight_buffer_bram.v` 和
+  `ds_block_tile_engine_new.v`。
+- 新 DS 数据流为 input BRAM → streaming DW → DW tile BRAM → PW 8x8 →
+  shared requant。
+- `cnn_layer_runner` 改为向 new DS 发送 scalar indexed configuration write，
+  并完成 compact external layout 到 MAX-stride BRAM layout 的转换。
+- 新增 `conv3x3_stem_engine_new.v`、`gap_unit_new.v`、`fc_unit_new.v`：
+  - stem 复用一个 MAC；
+  - GAP 在加载时累计；
+  - FC 在加载 weight 时累计。
+- 移除 runner 中 stem/GAP/FC 的大型 packed payload register。
+- `feature_sram_bank` 综合路径改为 XPM BRAM；同地址读写使用 read-first
+  memory 加显式 bypass 保持原 write-first 接口语义。
+- 修复 runner 输出选择函数隐式读取全局 signal 导致的 XSim 一拍数据滞后。
+- 新增 `scripts/run_cnn_xsim.ps1` 和
+  `docs/streaming_engine_refactor_guide.md`。
+
+验证：
+
+- new DSBlock：3 cases / 1792 checks PASS。
+- Windows XSim 关键回归：13/13 PASS。
+- 覆盖普通/tiled/SRAM DS、tiled stem、ops、多层、stem→DS、GAP→FC、
+  end-to-end 和 full-network SRAM。
+- new DSBlock cycle：
+  - case 0：total 2937，DW 2240，PW 697，PW issue 64；
+  - case 1：total 1113，DW 700，PW 413，PW issue 64；
+  - case 2：total 2985，DW 296，PW 2689，PW issue 256。
+- new DSBlock OOC：24281 CLB LUT、15649 FF、26 BRAM36、14 DSP。
+- 旧 DSBlock OOC：389253 CLB LUT、565654 FF、0 BRAM、20 DSP。
+
+综合边界：
+
+- 仅替换 DS 的中间 `cnn_top` 完成 synthesis，但仍为 446272 CLB LUT；
+  hierarchy 显示旧 runner packed stem/GAP/FC loader 占 333191 logic LUT。
+- 随后这些 packed loader 已被移除，功能回归全通过。
+- post-refactor `cnn_top` OOC synthesis 最终 PASS，0 error、0 critical warning：
+  - 45830 CLB LUT（39.13%）；
+  - 18387 FF（7.85%）；
+  - 42 BRAM36（29.17%）；
+  - 60 DSP（4.81%）。
+- hierarchy 中 `feature_sram_pingpong` 为 16 RAMB36 / 67 LUT；
+  `u_ds_block_engine` 为 24283 LUT / 15630 FF / 26 RAMB36 / 14 DSP；
+  runner 自身非子模块逻辑为 14812 LUT。
+- 当前 K26 part 仍无法输出 timing summary，不能声称 timing closure。
+
+下一步：
+
+- 使用 timing-capable part/device support 做 implementation。
+- 将仍占 3398 LUT 的异步 output buffer 改为同步 BRAM + 预取状态。
+- 根据真实 layer cycles 决定 stem 并行度，并继续优化地址生成与 loader。

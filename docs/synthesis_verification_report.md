@@ -1,268 +1,145 @@
 # 综合验证报告
 
-项目：`rv32i_int8_dsc_cnn_accelerator`  
-日期：2026-06-16  
-目标：对当前 RTL 进行初步 FPGA 综合验证，确认资源量级、综合阻塞点，以及后续优化优先级。
+项目：`rv32i_int8_dsc_cnn_accelerator`
 
-## 1. 验证范围
+更新日期：2026-07-17
 
-本次综合验证覆盖两类目标：
+目标：确认 memory-oriented 重构后的完整 RTL 是否具备合理的 FPGA 资源量级，
+并记录仍需通过实现阶段确认的问题。
 
-1. `cnn_top` 顶层综合尝试  
-   用于判断当前完整加速器 RTL 是否已经具备可综合落地条件。
+## 1. 验证结论
 
-2. 代表性子模块 out-of-context 综合  
-   用于获得真实 Vivado 资源量级，避免只依赖静态估算。
+`cnn_top` 在 Vivado 2021.2、`xck26-sfvc784-2LV-c` 上完成 out-of-context
+synthesis：
 
-已尝试/完成的模块：
+- 0 errors；
+- 0 critical warnings；
+- 45830 CLB LUT（39.13%）；
+- 18387 CLB registers（7.85%）；
+- 42 RAMB36（29.17%）；
+- 60 DSP（4.81%）。
 
-| 类型 | Top | 状态 |
-| --- | --- | --- |
-| Full top | `cnn_top` | 前端综合已越过原 RAM 阻塞；完整 OOC run 在本机 1 小时内未完成 |
-| Arithmetic | `requant_activation_unit` | 综合通过 |
-| PW compute | `pw_systolic_array_8x8` | 综合通过 |
-| DW compute | `dw_mac_lanes` | 综合通过 |
-| DW tile buffer | `dw_tile_buffer` | 综合通过，3D RAM 写法已改为显式 bank |
-| DW fused engine | `dw_tile_fusion_engine` | 综合通过，使用串行 input staging 避免 packed 动态读 |
-| DSBlock tile engine | `ds_block_tile_engine` | 综合通过，使用 PW weight staging 避免 packed 动态读 |
-| SRAM wrapper | `feature_sram_bank` | 综合通过，但未推断 BRAM |
+因此，本轮重构已经把顶层从中间版本的 446272 LUT（381%）降到器件容量以内。
+功能侧 Windows XSim 关键回归同时为 13/13 PASS。
 
-## 2. 工具环境
+## 2. 验证环境与命令
 
-### Vivado
-
-- Tool: Vivado 2021.2
-- Path: `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`
-- Installed parts:
-  - `xck26-sfvc784-2LV-c`
-  - `xck26-sfvc784-2LVI-i`
-- 本次使用 part: `xck26-sfvc784-2LV-c`
-- 综合模式: out-of-context synthesis
-
-### Yosys
-
-Yosys 在当前 Windows PATH 和 WSL PATH 中均未找到，因此没有得到 Yosys 资源结果。
-
-已提供可复现脚本：
-
-```bash
-cd /mnt/d/Stuff/Project
-./scripts/run_synthesis_yosys.sh
-```
-
-## 3. 可复现命令
-
-Vivado 综合脚本：
+- Vivado：2021.2
+- 路径：`D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`
+- Part：`xck26-sfvc784-2LV-c`
+- 综合模式：OOC、保留 hierarchy、`RuntimeOptimized`
 
 ```powershell
 cd D:\Stuff\Project
-powershell -ExecutionPolicy Bypass -File scripts\run_synthesis_vivado.ps1 `
-  -Vivado D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat `
-  -Part xck26-sfvc784-2LV-c `
-  -Top requant_activation_unit
+& D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat `
+  -mode batch `
+  -source scripts\vivado_cnn_top_synth.tcl `
+  -tclargs cnn_top xck26-sfvc784-2LV-c
 ```
 
-更换 `-Top` 可综合其它模块：
+功能回归：
 
 ```powershell
--Top pw_systolic_array_8x8
--Top dw_mac_lanes
--Top feature_sram_bank
--Top cnn_top
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_cnn_xsim.ps1
 ```
 
-## 4. Vivado 代表模块结果
+## 3. 完整顶层资源
 
-以下数字来自 Vivado `report_utilization` 的 Site Type 表，而不是手写估算。
+以下数字来自 `report_utilization`：
 
-| Module | CLB LUTs | CLB Registers | BRAM Tiles | DSPs | 结论 |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `requant_activation_unit` | 494 | 294 | 0 | 10 | Q31 乘法映射到 DSP48E2 cascade |
-| `pw_systolic_array_8x8` | 5957 | 4098 | 0 | 0 | int8 PE 乘法映射到 LUT/CARRY |
-| `dw_mac_lanes` | 9759 | 3367 | 0 | 0 | 16 lane DW MAC 映射到 LUT/CARRY |
-| `feature_sram_bank` | 6791 | 9 | 0 | 0 | 32KB bank 被映射为 distributed RAM |
-| `dw_tile_buffer` | 46131 | 64 | 0 | 0 | 3D RAM 阻塞已解除，当前主要映射到 LUT/LUTRAM |
-| `dw_tile_fusion_engine` | 170408 | 296388 | 0 | 10 | OOC 综合通过；成本很高，仅作为可综合性证明 |
-| `ds_block_tile_engine` | 389253 | 565654 | 0 | 20 | OOC 综合通过；成本很高，仅作为可综合性证明 |
+| Metric | Used | Available | Utilization |
+| --- | ---: | ---: | ---: |
+| CLB LUT | 45830 | 117120 | 39.13% |
+| LUT as logic | 41946 | 117120 | 35.81% |
+| LUT as memory | 3884 | 57600 | 6.74% |
+| CLB registers | 18387 | 234240 | 7.85% |
+| RAMB36 | 42 | 144 | 29.17% |
+| DSP | 60 | 1248 | 4.81% |
 
-### 4.1 Requant
+资源没有单项接近上限，说明当前并行度与存储规模已具备继续做 implementation 的
+基础。LUT 仍是最主要资源，BRAM 次之，DSP 余量很大。
 
-`requant_activation_unit` 的真实结果说明：
+## 4. 层级分析
 
-- 单个 requant 单元约使用 10 个 DSP48E2。
-- 这是由当前 64-bit signed product / Q31 multiply 表达式导致的。
-- 该结果支持之前的架构判断：如果多个 requant 单元并行复制，DSP 压力会明显上升。
+| Instance | LUT | Logic LUT | LUTRAM | FF | RAMB36 | DSP |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `cnn_top` | 45830 | 41946 | 3884 | 18387 | 42 | 60 |
+| `u_layer_runner` total | 44503 | 40619 | 3884 | 17158 | 26 | 60 |
+| runner self | 14812 | 14812 | 0 | 1011 | 0 | 26 |
+| `u_ds_block_engine` | 24283 | 23303 | 980 | 15630 | 26 | 14 |
+| `u_stem_engine` | 1000 | 836 | 164 | 127 | 0 | 10 |
+| `u_gap_unit` | 115 | 19 | 96 | 2 | 0 | 0 |
+| `u_fc_unit` | 826 | 742 | 84 | 377 | 0 | 10 |
+| `u_out_buffer` | 3398 | 838 | 2560 | 0 | 0 | 0 |
+| `u_feature_sram` | 67 | 67 | 0 | 23 | 16 | 0 |
 
-后续优化方向：
+主要判断：
 
-- 限制 multiplier/accumulator 位宽。
-- 将 Q31 multiply 拆成多级流水。
-- 在吞吐允许时复用 requant 单元。
-- 必要时改为 vendor DSP primitive 或固定格式乘法器。
+1. `cnn_layer_runner` 自身 logic 从中间版本的 333191 LUT 降到 14812 LUT，
+   证明 packed payload 与动态 part-select 写网络已经被移除。
+2. Feature SRAM 正确映射为 16 个 RAMB36，而不是旧版本的 LUTRAM。
+3. New DSBlock 使用 26 个 RAMB36：input 16、PW weight 8、DW tile 2。
+4. 剩余最明确的 memory 优化点是 `cnn_out_buffer`：16 KB 异步读使其占用
+   3398 LUT；改同步 BRAM 预计需要约 4 RAMB36，并必须增加 read-prefetch 状态。
+5. runner self 的 26 DSP 主要来自地址/维度乘法与综合后的宽运算；DSP 总利用率
+   只有 4.81%，暂不构成容量问题。
 
-### 4.2 PW 8x8 Array
+## 5. 新旧 DSBlock 对比
 
-`pw_systolic_array_8x8` 的真实结果说明：
+| Design | CLB LUT | FF | RAMB36 | DSP |
+| --- | ---: | ---: | ---: | ---: |
+| Legacy `ds_block_tile_engine` | 389253 | 565654 | 0 | 20 |
+| New `ds_block_tile_engine_new` | 24281 | 15649 | 26 | 14 |
 
-- 8x8 阵列没有消耗 DSP。
-- Vivado 将 int8 乘法和 int32 累加映射到 LUT/CARRY。
-- LUT/FF 量级较高，但保留了 DSP 给 requant 或其它模块使用。
+New DSBlock 把输入、PW weight 和 DW tile 明确放入 BRAM，并保留 16-lane DW、
+8x8 PW 计算结构。三个 golden case 共 1792 checks 全部通过。
 
-后续优化方向：
+已记录的 DSBlock 周期：
 
-- 如果 LUT 紧张，可尝试 `(* use_dsp = "yes" *)` 或 DSP-based PE。
-- 如果频率紧张，可优先给 `valid/clear_acc` 和 row/column 数据加寄存复制。
-- 目前 8x8 广播式 fanout 在功能上合理，但 timing closure 需要真实 timing-capable part 再确认。
+| Case | Total | DW | PW | PW issue |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 2937 | 2240 | 697 | 64 |
+| 1 | 1113 | 700 | 413 | 64 |
+| 2 | 2985 | 296 | 2689 | 256 |
 
-### 4.3 DW MAC Lanes
+PW issue 满足 `ceil(pixels/8) * ceil(Cout/8) * Cin`，说明 8x8 阵列在真正
+发射 MAC 的阶段没有额外空拍；total 还包括 BRAM 读、DW、requant 和切换开销。
 
-`dw_mac_lanes` 的真实结果说明：
+## 6. Timing 证据边界
 
-- 16 lanes × 3 multipliers 的实现没有消耗 DSP。
-- LUT 使用量比 PW array 更高，说明 DW lanes 的并行组合逻辑和控制展开仍有优化空间。
-
-后续优化方向：
-
-- 若 DW 吞吐富余，可减少 lanes 或减少每 lane 并行乘法器。
-- 若 LUT 紧张，可评估 DSP 映射或 lane 复用。
-- 若 timing 紧张，可把 3-cycle row MAC 进一步流水化。
-
-### 4.4 Feature SRAM Bank
-
-`feature_sram_bank` 的真实结果非常关键：
-
-- 32KB bank 没有推断成 BRAM。
-- Vivado 报告显示 `5120 LUT as Distributed RAM`。
-- BRAM Tiles = 0。
-
-这意味着当前 SRAM wrapper 虽然功能仿真正确，但不是理想 FPGA memory mapping。
-
-后续优化方向：
-
-- 如果目标是 BRAM，应改为显式 BRAM wrapper 或加入更严格的 RAM inference pattern。
-- 避免在同一个 always block 中写出工具不易识别的 bypass/读写模式。
-- 可针对 Xilinx 使用 `(* ram_style = "block" *)`，但前提是访问模式先满足 BRAM 推断要求。
-
-## 5. cnn_top 综合尝试
-
-`cnn_top` 已用 Vivado 2021.2 启动真实综合。初始版本在 `dw_tile_buffer` 处出现 3D RAM warning，并长时间展开。该问题已经通过显式 bank 化修复。
-
-修复后，以下模块均能被 Vivado 读入并进入综合流程：
-
-- `cnn_top`
-- `cnn_top_ctrl`
-- `descriptor_fetch`
-- `cnn_layer_runner`
-- `conv3x3_stem_engine`
-- `ds_block_tile_engine`
-- `dw_tile_fusion_engine`
-- `dw_mac_lanes`
-- `dw_tile_buffer`
-
-当前 full top 不再停在 `dw_tile_buffer`，但在本机 1 小时 OOC run 内仍未完成。最新日志显示主要 large-pin-count warning 来自：
-
-```text
-dw_tile_fusion_engine.v: input staging cone
-ds_block_tile_engine.v: PW weight staging cone
-cnn_layer_runner.v: packed payload buffers and dynamic store tasks
-```
-
-结论：
-
-当前 `cnn_top` 的硬性语法/unsupported-RAM 阻塞已经解除到核心模块 OOC 可综合状态。但 full top 仍包含大量仿真友好的 packed payload vector，例如 `cnn_layer_runner` 中的 `ds_input_tile`、`pw_weight`、`gap_feature_in` 等。它们适合 Verilator 功能验证，不适合作为最终 FPGA memory 结构。完整 top resource number 需要等这些 payload buffer 改为 SRAM/loader interface 或采用 hierarchical synthesis 后再获取。
-
-## 6. Timing 限制
-
-当前安装的 K26 part 在 timing report 阶段报：
+当前 K26 part 在 timing API 阶段报告：
 
 ```text
 ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 ```
 
-因此本报告只包含 synthesis utilization，不包含：
+所以本报告不能给出：
 
-- WNS/TNS
-- Fmax
-- post-place-and-route timing
-- routed utilization
+- WNS/TNS；
+- Fmax；
+- place-and-route 拥塞；
+- routed utilization；
+- 功耗或板级时序。
 
-若要获得最终 timing，需要：
+应在 timing-capable device support 和真实 XDC 下执行
+`opt_design -> place_design -> route_design -> report_timing_summary`。
 
-1. 安装 timing-capable device support / board part。
-2. 加入真实 XDC 约束。
-3. 运行 `synth_design -> opt_design -> place_design -> route_design -> report_timing_summary`。
+## 7. 下一步
 
-## 7. 与静态估算的对照
+1. 在 timing-capable 环境跑 implementation，先获取关键路径和拥塞证据。
+2. 将 `cnn_out_buffer` 改成同步 BRAM + 显式预取状态，并重跑 13 项回归。
+3. 根据逐层 cycle profile 决定 Stem 是否从 1 MAC 扩为 3/9 MAC。
+4. 根据 routed timing 比较 DW/PW int8 乘法的 LUT 与 DSP 映射。
+5. 将外部 word-per-int8 布局改为 packed NHWC byte 和 burst loader。
+6. 增加随机 memory stall、非法 cfg、tile 边界和 backpressure 压力测试。
 
-静态估算报告曾指出：
+## 8. 相关产物
 
-| 风险项 | 静态判断 | Vivado 验证结果 |
-| --- | --- | --- |
-| Wide requant multiplier | 可能消耗较多 DSP | 单个 requant = 10 DSP |
-| Feature SRAM A/B | 期望 BRAM | 当前 bank 映射为 LUTRAM |
-| DW tile buffer | banked BRAM/LUTRAM intended | 3D RAM pattern 已修复，当前 OOC 通过但成本高 |
-| PW/DW int8 MAC | conservative DSP risk | 当前映射为 LUT/CARRY，DSP=0 |
-
-因此静态估算方向基本成立，但 Vivado 给出了更明确的优化优先级：
-
-1. 先修 memory inference。
-2. 再处理 requant DSP 压力。
-3. 最后根据 timing 决定 PW/DW 是否 DSP 化或流水化。
-
-## 8. 结论
-
-当前 RTL 功能验证已经形成闭环，综合验证已证明关键算子模块可以被 Vivado 综合。但 full top 仍需要一次“FPGA memory/interface pass”。
-
-已确认：
-
-- Vivado 2021.2 可以读取并综合代表性 RTL 模块。
-- `requant_activation_unit`、`pw_systolic_array_8x8`、`dw_mac_lanes`、`feature_sram_bank` 均可 OOC synthesis。
-- `requant` 的 DSP 成本真实存在。
-- PW/DW MAC 当前主要消耗 LUT/FF。
-- `dw_tile_buffer`、`dw_tile_fusion_engine`、`ds_block_tile_engine` 的可综合性阻塞已解除。
-- 当前 staging 写法资源极高，只用于证明可综合，不作为优化后的实现。
-
-未完成：
-
-- `cnn_top` full synthesis 完整资源报告。本机 1 小时 OOC run 未完成。
-- timing closure。
-- BRAM inference / vendor RAM wrapper。
-- post-route utilization。
-
-## 9. 下一步计划
-
-优先级从高到低：
-
-1. 重写 `cnn_layer_runner` payload 存储
-   - 避免在顶层持有巨大的 packed feature/weight vector。
-   - 将 `ds_input_tile`、`pw_weight` 等改为 loader + SRAM/memory style 接口。
-   - 保持当前 testbench 全部通过。
-
-2. 重写或包装 `feature_sram_bank`
-   - 明确目标是 BRAM 还是 LUTRAM。
-   - 若目标 BRAM，使用 Xilinx-friendly 1RW RAM pattern 或 `xpm_memory`。
-
-3. 重新跑 `cnn_top` Vivado synthesis
-   - 确认不再卡在 large packed payload 展开。
-   - 记录 full top LUT/FF/BRAM/DSP。
-
-4. 获取 timing-capable part 或完整器件库
-   - 跑 timing summary。
-   - 再决定是否需要异步时钟、requant 深流水、PW 控制复制。
-
-5. 更新 PPT 和 README
-   - 将 full top synthesis 数字替换当前 representative module 数字。
-
-## 10. 相关文件
-
-- `docs/synthesis_vivado_summary.md`
 - `docs/synthesis_vivado_initial.md`
-- `docs/synthesis_vivado_requant_activation_unit.md`
-- `docs/synthesis_vivado_pw_systolic_array_8x8.md`
-- `docs/synthesis_vivado_dw_mac_lanes.md`
-- `docs/synthesis_vivado_feature_sram_bank.md`
-- `docs/synthesis_initial.md`
-- `build/reports/resource_estimate.md`
-- `scripts/run_synthesis_vivado.ps1`
+- `docs/synthesis_vivado_summary.md`
+- `docs/synthesis_vivado_ds_block_tile_engine_new.md`
+- `build/reports/vivado_cnn_top/utilization.txt`
+- `build/reports/vivado_cnn_top/utilization_hierarchical.txt`
 - `scripts/vivado_cnn_top_synth.tcl`
-- `scripts/run_synthesis_yosys.sh`
+- `scripts/run_cnn_xsim.ps1`

@@ -1,73 +1,80 @@
 # Vivado Synthesis Summary
 
-- Date: 2026-06-16
+- Date: 2026-07-17
 - Tool: Vivado 2021.2 at `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`
-- Installed devices found: `xck26-sfvc784-2LV-c`, `xck26-sfvc784-2LVI-i`
-- Part used for these runs: `xck26-sfvc784-2LV-c`
-- Mode: out-of-context synthesis
+- Part: `xck26-sfvc784-2LV-c`
+- Mode: out-of-context synthesis, `-flatten_hierarchy none`
+- Top: `cnn_top`
+- Result: PASS, 0 errors and 0 critical warnings
 
-## Full Top Attempt
+## Full-Top Result
 
-`cnn_top` synthesis was attempted with the K26 part after the memory-pattern fixes below. Vivado now gets past the previous `dw_tile_buffer` 3D RAM failure and through front-end synthesis, but the complete top did not finish within the 1 hour local run limit.
+Numbers below are from Vivado `report_utilization`, not static estimates.
 
-Current limiting warnings are large-pin-count cones from simulation-friendly packed payload buffers in `cnn_layer_runner` and the synthesis-only staging registers used to make the DW/DSBlock engines acceptable to Vivado:
+| Metric | Used | Available | Utilization |
+| --- | ---: | ---: | ---: |
+| CLB LUT | 45830 | 117120 | 39.13% |
+| LUT as logic | 41946 | 117120 | 35.81% |
+| LUT as memory | 3884 | 57600 | 6.74% |
+| CLB registers | 18387 | 234240 | 7.85% |
+| RAMB36 tiles | 42 | 144 | 29.17% |
+| DSP blocks | 60 | 1248 | 4.81% |
 
-```text
-WARNING: [Synth 8-5402] Detected an instance with large pin count ...
-```
+This is a major reduction from the intermediate DS-only integration result of
+446272 CLB LUT. That intermediate design still contained runner-owned packed
+Stem/GAP/FC payloads and is not the current RTL.
 
-Conclusion: the hard RTL inference blockers have moved from "unsupported memory pattern" to "full top is too large for a quick local OOC run". A full-top result should wait until the packed payload buffers in `cnn_layer_runner` are replaced by real SRAM/loader interfaces or until hierarchical synthesis checkpoints are used.
+## Main Hierarchy
 
-## Successful Representative Modules
-
-Numbers below are from `report_utilization` Site Type tables after synthesis.
-
-| Module | CLB LUTs | CLB Registers | BRAM Tiles | DSPs | Notes |
+| Instance | LUT | FF | RAMB36 | DSP | Interpretation |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `requant_activation_unit` | 494 | 294 | 0 | 10 | Q31 multiply maps to DSP48E2 cascade |
-| `pw_systolic_array_8x8` | 5957 | 4098 | 0 | 0 | 8-bit PE multipliers mapped to LUT/CARRY |
-| `dw_mac_lanes` | 9759 | 3367 | 0 | 0 | 16 DW lanes mapped to LUT/CARRY |
-| `feature_sram_bank` | 6791 | 9 | 0 | 0 | 5120 LUTs are distributed RAM, not BRAM |
-| `dw_tile_buffer` | 46131 | 64 | 0 | 0 | 3D RAM issue resolved; maps mostly to LUT/LUTRAM |
-| `dw_tile_buffer_bram` | 10 | 1 | 2 | 0 | XPM 1024x64 simple dual port; no LUTRAM |
-| `dw_tile_fusion_engine` | 170408 | 296388 | 0 | 10 | OOC synthesis passes after input staging |
-| `ds_block_tile_engine` | 389253 | 565654 | 0 | 20 | OOC synthesis passes after PW weight staging |
+| `u_layer_runner` total | 44503 | 17158 | 26 | 60 | Includes all compute engines and output buffer |
+| runner self | 14812 | 1011 | 0 | 26 | Control, loaders, address generation |
+| `u_ds_block_engine` | 24283 | 15630 | 26 | 14 | Active streaming/BRAM DSBlock |
+| `u_stem_engine` | 1000 | 127 | 0 | 10 | One reused int8 MAC plus requant |
+| `u_gap_unit` | 115 | 2 | 0 | 0 | Accumulates while input is loaded |
+| `u_fc_unit` | 826 | 377 | 0 | 10 | Sequential weight-load accumulation |
+| `u_out_buffer` | 3398 | 0 | 0 | 0 | 16 KB asynchronous LUTRAM |
+| `u_feature_sram` | 67 | 23 | 16 | 0 | Two 32 KB XPM BRAM banks |
+
+The intended memory mapping is visible in the hierarchy:
+
+- DS input tile: 16 RAMB36
+- PW weights: 8 RAMB36
+- DW output tile: 2 RAMB36
+- Two feature SRAM banks: 16 RAMB36
 
 ## Timing Caveat
 
-The installed K26 part library reports timing as unavailable:
+The installed K26 part reports:
 
 ```text
 ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 ```
 
-Therefore these are synthesis utilization results only. They are not timing closure or post-place-and-route results.
+Therefore this result establishes synthesis resource feasibility only. It does
+not establish WNS, Fmax, congestion, power, or post-route closure.
 
-## Artifacts
+## Reproduction
 
-- `docs/synthesis_verification_report.md`
+```powershell
+& D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat `
+  -mode batch `
+  -source scripts\vivado_cnn_top_synth.tcl `
+  -tclargs cnn_top xck26-sfvc784-2LV-c
+```
+
+Primary artifacts:
+
 - `docs/synthesis_vivado_initial.md`
-- `docs/synthesis_vivado_requant_activation_unit.md`
-- `docs/synthesis_vivado_pw_systolic_array_8x8.md`
-- `docs/synthesis_vivado_dw_mac_lanes.md`
-- `docs/synthesis_vivado_feature_sram_bank.md`
-- `docs/synthesis_vivado_dw_tile_buffer.md`
-- `docs/synthesis_vivado_dw_tile_buffer_bram.md`
-- `docs/synthesis_vivado_dw_tile_fusion_engine.md`
-- `docs/synthesis_vivado_ds_block_tile_engine.md`
-- `build/reports/vivado_requant_activation_unit/utilization.txt`
-- `build/reports/vivado_pw_systolic_array_8x8/utilization.txt`
-- `build/reports/vivado_dw_mac_lanes/utilization.txt`
-- `build/reports/vivado_feature_sram_bank/utilization.txt`
-- `build/reports/vivado_dw_tile_buffer/utilization.txt`
-- `build/reports/vivado_dw_tile_buffer_bram/utilization.txt`
-- `build/reports/vivado_dw_tile_fusion_engine/utilization.txt`
-- `build/reports/vivado_ds_block_tile_engine/utilization.txt`
+- `build/reports/vivado_cnn_top/utilization.txt`
+- `build/reports/vivado_cnn_top/utilization_hierarchical.txt`
+- `docs/synthesis_vivado_ds_block_tile_engine_new.md`
 
-## Next Synthesis Fixes
+## Next Synthesis Work
 
-1. Replace `cnn_layer_runner` packed payload vectors (`ds_input_tile`, `pw_weight`, etc.) with SRAM/loader style interfaces.
-2. Integrate `dw_tile_buffer_bram` into the new streaming DSBlock after its controller is verified.
-3. Decide whether `feature_sram_bank` should be BRAM or LUTRAM, then force or wrap accordingly.
-4. Keep the current high-cost staging implementation as a synthesis proof only; optimize the remaining DW/DSBlock payload paths.
-5. Re-run `cnn_top` after the layer-runner payload buffers are made memory-oriented or after setting up hierarchical synthesis.
+1. Run implementation with timing-capable device support and real XDC.
+2. Convert the 16 KB asynchronous `cnn_out_buffer` to synchronous BRAM with an
+   explicit read-prefetch state.
+3. Use routed timing and real layer-cycle profiles to tune DW/PW LUT-vs-DSP
+   mapping, requant pipelining, and Stem parallelism.

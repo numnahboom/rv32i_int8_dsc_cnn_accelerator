@@ -329,37 +329,54 @@ Wide requant multipliers: 4
 Conservative DSP risk estimate: 178 DSPs
 ```
 
-这不是 Vivado/Yosys post-synthesis 结果，只是 RTL 参数级估算。当前最大综合风险不是 feature SRAM 本身，而是 `cnn_layer_runner.v` 中为了仿真便利保留的大型 packed staging 向量。
+这只是 RTL 参数级静态估算，不能替代综合报告。当前分支已移除
+`cnn_layer_runner.v` 中的大型 packed staging 向量；2026-07-17 的完整
+`cnn_top` Vivado OOC synthesis 结果为 45830 CLB LUT、18387 FF、
+42 BRAM36、60 DSP。正式口径见 `docs/synthesis_vivado_initial.md` 和
+`build/reports/vivado_cnn_top/utilization.txt`。
 
 ## 关键已实现模块
 
 - Python/model: `train_edgedscnet_c10.py`, `quantize_export.py`, `golden_int8.py`, `export_firmware_headers.py`, `generate_test_vectors.py`, `compare_outputs.py`
 - Arithmetic: `round_shift.v`, `saturate_int8.v`, `requant_activation_unit.v`, `requant_activation_pipeline.v`
-- Stem/DW/PW: `conv3x3_stem_engine.v`, `dw_mac_lanes.v`, `dw_tile_fusion_engine.v`, `dw_tile_fusion_engine_new.v`, `pw_systolic_array_8x8.v`
-- Buffer/SRAM: `feature_sram_bank.v`, `feature_sram_pingpong.v`, `dw_tile_buffer.v`, `dw_tile_buffer_bram.v`
+- Stem/DW/PW: `conv3x3_stem_engine_new.v`, `dw_mac_lanes.v`, `dw_tile_fusion_engine_new.v`, `ds_block_tile_engine_new.v`, `pw_systolic_array_8x8.v`
+- Tail: `gap_unit_new.v`, `fc_unit_new.v`
+- Buffer/SRAM: `feature_sram_bank.v`, `feature_sram_pingpong.v`, `ds_input_tile_buffer_bram.v`, `pw_weight_buffer_bram.v`, `dw_tile_buffer_bram.v`
 - Top control: `descriptor_fetch.v`, `cnn_top_ctrl.v`, `cnn_layer_runner.v`, `cnn_top.v`, `status_counter.v`
 - CPU IF: `rv_cnn_custom_if.v`, `npc_cnn_custom_bridge.v`, `cnn_mmio_regs.v`
 - Firmware: `cnn_accel.h`, `cnn_accel.c`, `main.c`, `startup.S`, `linker.ld`
+
+## Windows XSim 关键回归
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_cnn_xsim.ps1
+```
+
+当前 `refactor/streaming-dsblock-bram` 分支实测为 13/13 PASS。详细架构、
+cycle/resource 数据、综合命令和从 main 复现顺序见
+`docs/streaming_engine_refactor_guide.md`。
 
 ## 已知限制
 
 - 当前是固定 EdgeDSCNet-C10 shape 的功能型 v1，不是通用 CNN/NPU。
 - 当前模型精度足够做硬件功能验证，但不是最终 ML 质量目标。
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
-- `dw_tile_buffer_bram` 已有独立验证，但 BRAM-oriented buffer 还没有完全替换当前 DSBlock 主路径。
-- `cnn_layer_runner` 仍有大型 packed payload/staging 向量，导致 full `cnn_top` OOC 综合难以在本地 1 小时限制内完成。
+- new DSBlock、顺序式 stem/GAP/FC 和 BRAM feature SRAM 已接入；13 项 XSim 关键回归全部通过。
+- new DSBlock OOC 为 24281 CLB LUT、15649 FF、26 BRAM36、14 DSP。
+- post-refactor `cnn_top` 综合通过：45830 CLB LUT（39.13%）、18387 FF（7.85%）、42 BRAM36（29.17%）、60 DSP（4.81%）。
+- 当前 K26 device support 不能生成 timing report，因此上述数字只证明资源可装入，不证明 WNS/Fmax 或 place-and-route closure。
 - Requant 当前优先 bit-exact 对齐 Python golden，后续仍需要根据 DSP/时序压力做位宽收敛、共享或流水化。
 - 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
 - 缺少形式验证和更强的 constrained-random/backpressure 压力测试。
 
 ## 下一步
 
-1. 把 `cnn_layer_runner` 中的大型 packed payload 向量替换为真实 SRAM/loader 接口。
-2. 将已验证的 BRAM tile buffer 接入 DSBlock 主路径，并为 feature/weight storage 增加 BRAM-oriented wrapper。
+1. 使用 timing-capable part/device support 跑 place-and-route，获得 WNS/Fmax、拥塞和功耗数据。
+2. 将异步 `cnn_out_buffer` 改成带预取状态的同步 BRAM，预计可减少约 3.4K LUT，但必须保持 store 时序契约。
 3. 将 word-per-int8 外部 memory 布局改成 packed NHWC byte addressing 和 burst-friendly loader。
 4. 对 requant multiplier、PW array fanout、valid/control 信号做综合后的时序优化。
 5. 用更强的 PTQ/QAT checkpoint 重新导出 firmware headers，并扩大多样本 RTL 回归。
-6. 建立更接近真实 SoC 的顶层、memory arbitration、UART/GPIO debug 和 FPGA synthesis/implementation 流程。
 
 更多细节见：
 
@@ -369,3 +386,4 @@ Conservative DSP risk estimate: 178 DSPs
 - `docs/verification_plan.md`
 - `docs/known_limits_next_steps.md`
 - `docs/project_next_optimization_bringup_guide.md`
+- `docs/streaming_engine_refactor_guide.md`

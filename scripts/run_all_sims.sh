@@ -13,6 +13,7 @@ TESTS=(
   tb_dw_tile_fusion_engine_new
   tb_dw_tile_buffer_bram
   tb_ds_block_tile_engine
+  tb_ds_block_tile_engine_new
   tb_conv3x3_stem_engine
   tb_gap_unit
   tb_fc_unit
