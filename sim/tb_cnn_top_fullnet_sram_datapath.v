@@ -48,6 +48,8 @@ module tb_cnn_top_fullnet_sram_datapath;
     integer desc_read_total;
     integer layer_read_total;
     integer layer_write_total;
+    integer sram_read_total;
+    integer sram_write_total;
     reg [31:0] tmp_addr;
     reg [31:0] tmp_data;
     reg [7:0] tmp_i8;
@@ -57,6 +59,69 @@ module tb_cnn_top_fullnet_sram_datapath;
     reg [31:0] perf_layer_cycles [0:MAX_LAYERS-1];
     reg [31:0] perf_layer_reads [0:MAX_LAYERS-1];
     reg [31:0] perf_layer_writes [0:MAX_LAYERS-1];
+    reg [31:0] perf_layer_sram_reads [0:MAX_LAYERS-1];
+    reg [31:0] perf_layer_sram_writes [0:MAX_LAYERS-1];
+
+    function [31:0] expected_sram_reads_for_layer;
+        input integer layer_idx;
+        begin
+            case (layer_idx)
+                0: expected_sram_reads_for_layer = 32'd0;
+                1: expected_sram_reads_for_layer = 32'd23104;
+                2: expected_sram_reads_for_layer = 32'd34848;
+                3: expected_sram_reads_for_layer = 32'd20736;
+                4: expected_sram_reads_for_layer = 32'd16384;
+                5: expected_sram_reads_for_layer = 32'd8192;
+                6: expected_sram_reads_for_layer = 32'd8192;
+                7: expected_sram_reads_for_layer = 32'd4096;
+                8: expected_sram_reads_for_layer = 32'd256;
+                default: expected_sram_reads_for_layer = 32'd0;
+            endcase
+        end
+    endfunction
+
+    function [31:0] expected_sram_writes_for_layer;
+        input integer layer_idx;
+        begin
+            case (layer_idx)
+                0: expected_sram_writes_for_layer = 32'd16384;
+                1: expected_sram_writes_for_layer = 32'd32768;
+                2: expected_sram_writes_for_layer = 32'd16384;
+                3: expected_sram_writes_for_layer = 32'd16384;
+                4: expected_sram_writes_for_layer = 32'd8192;
+                5: expected_sram_writes_for_layer = 32'd8192;
+                6: expected_sram_writes_for_layer = 32'd4096;
+                7: expected_sram_writes_for_layer = 32'd256;
+                8: expected_sram_writes_for_layer = 32'd0;
+                default: expected_sram_writes_for_layer = 32'd0;
+            endcase
+        end
+    endfunction
+
+    function [31:0] expected_ext_reads_for_layer;
+        input integer layer_idx;
+        begin
+            case (layer_idx)
+                0: expected_ext_reads_for_layer = 32'd4812;
+                1: expected_ext_reads_for_layer = 32'd800;
+                2: expected_ext_reads_for_layer = 32'd2624;
+                3: expected_ext_reads_for_layer = 32'd5056;
+                4: expected_ext_reads_for_layer = 32'd9344;
+                5: expected_ext_reads_for_layer = 32'd18304;
+                6: expected_ext_reads_for_layer = 32'd35072;
+                7: expected_ext_reads_for_layer = 32'd0;
+                8: expected_ext_reads_for_layer = 32'd2590;
+                default: expected_ext_reads_for_layer = 32'd0;
+            endcase
+        end
+    endfunction
+
+    function [31:0] expected_ext_writes_for_layer;
+        input integer layer_idx;
+        begin
+            expected_ext_writes_for_layer = (layer_idx == 8) ? 32'd10 : 32'd0;
+        end
+    endfunction
 
     cnn_top dut (
         .clk(clk),
@@ -107,10 +172,14 @@ module tb_cnn_top_fullnet_sram_datapath;
             desc_read_total <= 0;
             layer_read_total <= 0;
             layer_write_total <= 0;
+            sram_read_total <= 0;
+            sram_write_total <= 0;
             for (perf_i = 0; perf_i < MAX_LAYERS; perf_i = perf_i + 1) begin
                 perf_layer_cycles[perf_i] <= 32'd0;
                 perf_layer_reads[perf_i] <= 32'd0;
                 perf_layer_writes[perf_i] <= 32'd0;
+                perf_layer_sram_reads[perf_i] <= 32'd0;
+                perf_layer_sram_writes[perf_i] <= 32'd0;
             end
         end else begin
             if (dut.layer_start) begin
@@ -120,9 +189,26 @@ module tb_cnn_top_fullnet_sram_datapath;
                     perf_layer_cycles[dut.current_layer] <= 32'd1;
                     perf_layer_reads[dut.current_layer] <= 32'd0;
                     perf_layer_writes[dut.current_layer] <= 32'd0;
+                    perf_layer_sram_reads[dut.current_layer] <= 32'd0;
+                    perf_layer_sram_writes[dut.current_layer] <= 32'd0;
                 end
             end else if (perf_layer_active && perf_layer_idx < MAX_LAYERS) begin
                 perf_layer_cycles[perf_layer_idx] <= perf_layer_cycles[perf_layer_idx] + 32'd1;
+            end
+
+            if (dut.layer_sram_input_rd_en) begin
+                sram_read_total <= sram_read_total + 1;
+                if (perf_layer_active && perf_layer_idx < MAX_LAYERS) begin
+                    perf_layer_sram_reads[perf_layer_idx] <=
+                        perf_layer_sram_reads[perf_layer_idx] + 32'd1;
+                end
+            end
+            if (dut.layer_sram_output_wr_en) begin
+                sram_write_total <= sram_write_total + 1;
+                if (perf_layer_active && perf_layer_idx < MAX_LAYERS) begin
+                    perf_layer_sram_writes[perf_layer_idx] <=
+                        perf_layer_sram_writes[perf_layer_idx] + 32'd1;
+                end
             end
 
             if (mem_req_valid && mem_req_ready) begin
@@ -155,12 +241,14 @@ module tb_cnn_top_fullnet_sram_datapath;
 
     task reset_dut;
         begin
+            @(negedge clk);
             rst_n = 1'b0;
             cmd_valid = 1'b0;
             cmd_type = 2'd0;
             mem_resp_valid = 1'b0;
             mem_resp_rdata = 32'd0;
             repeat (5) @(posedge clk);
+            @(negedge clk);
             rst_n = 1'b1;
             @(posedge clk);
         end
@@ -171,9 +259,10 @@ module tb_cnn_top_fullnet_sram_datapath;
             while (!cmd_ready) begin
                 @(posedge clk);
             end
+            @(negedge clk);
             cmd_valid = 1'b1;
             cmd_type = 2'd0;
-            @(posedge clk);
+            @(negedge clk);
             cmd_valid = 1'b0;
 
             timeout = 0;
@@ -206,14 +295,25 @@ module tb_cnn_top_fullnet_sram_datapath;
         fd = $fopen("tests/vectors/cnn_top_fullnet_sram_cases.hex", "r");
         if (fd == 0) begin
             $display("ERROR: cannot open tests/vectors/cnn_top_fullnet_sram_cases.hex");
-            $finish;
+            $fatal;
         end
         report_fd = $fopen("build/reports/tb_cnn_top_fullnet_sram_datapath_metrics.txt", "w");
         layer_metrics_fd = $fopen("build/reports/fullnet_layer_metrics.csv", "w");
         hw_logits_fd = $fopen("build/reports/fullnet_hw_logits.hex", "w");
         expected_logits_fd = $fopen("build/reports/fullnet_expected_logits.hex", "w");
+        if ((report_fd == 0) || (layer_metrics_fd == 0) ||
+            (hw_logits_fd == 0) || (expected_logits_fd == 0)) begin
+            $display(
+                "ERROR: cannot create fullnet reports metrics=%0d layers=%0d hw=%0d expected=%0d",
+                report_fd, layer_metrics_fd, hw_logits_fd, expected_logits_fd
+            );
+            $fatal;
+        end
         if (layer_metrics_fd != 0) begin
-            $fwrite(layer_metrics_fd, "case,layer,cycles,mem_reads,mem_writes\n");
+            $fwrite(
+                layer_metrics_fd,
+                "case,layer,cycles,mem_reads,mem_writes,sram_reads,sram_writes\n"
+            );
         end
         scan_count = $fscanf(fd, "%d\n", num_cases);
 
@@ -283,10 +383,44 @@ module tb_cnn_top_fullnet_sram_datapath;
                 end
                 total_checks = total_checks + 1;
             end
+            for (i = 0; i < layer_num_file && i < MAX_LAYERS; i = i + 1) begin
+                if (perf_layer_reads[i] !== expected_ext_reads_for_layer(i)) begin
+                    $display(
+                        "MISMATCH layer=%0d ext_reads got=%0d expected=%0d",
+                        i, perf_layer_reads[i], expected_ext_reads_for_layer(i)
+                    );
+                    error_count = error_count + 1;
+                    case_errors = case_errors + 1;
+                end
+                if (perf_layer_writes[i] !== expected_ext_writes_for_layer(i)) begin
+                    $display(
+                        "MISMATCH layer=%0d ext_writes got=%0d expected=%0d",
+                        i, perf_layer_writes[i], expected_ext_writes_for_layer(i)
+                    );
+                    error_count = error_count + 1;
+                    case_errors = case_errors + 1;
+                end
+                if (perf_layer_sram_reads[i] !== expected_sram_reads_for_layer(i)) begin
+                    $display(
+                        "MISMATCH layer=%0d sram_reads got=%0d expected=%0d",
+                        i, perf_layer_sram_reads[i], expected_sram_reads_for_layer(i)
+                    );
+                    error_count = error_count + 1;
+                    case_errors = case_errors + 1;
+                end
+                if (perf_layer_sram_writes[i] !== expected_sram_writes_for_layer(i)) begin
+                    $display(
+                        "MISMATCH layer=%0d sram_writes got=%0d expected=%0d",
+                        i, perf_layer_sram_writes[i], expected_sram_writes_for_layer(i)
+                    );
+                    error_count = error_count + 1;
+                    case_errors = case_errors + 1;
+                end
+            end
             if (report_fd != 0) begin
                 $fwrite(
                     report_fd,
-                    "case=%0d hw_cycles=%0d checks=%0d errors=%0d status=%08x mem_reads=%0d mem_writes=%0d desc_reads=%0d layer_reads=%0d layer_writes=%0d\n",
+                    "case=%0d hw_cycles=%0d checks=%0d errors=%0d status=%08x mem_reads=%0d mem_writes=%0d desc_reads=%0d layer_reads=%0d layer_writes=%0d sram_reads=%0d sram_writes=%0d\n",
                     case_idx,
                     case_hw_cycles,
                     expected_count,
@@ -296,19 +430,23 @@ module tb_cnn_top_fullnet_sram_datapath;
                     mem_write_total,
                     desc_read_total,
                     layer_read_total,
-                    layer_write_total
+                    layer_write_total,
+                    sram_read_total,
+                    sram_write_total
                 );
             end
             if (layer_metrics_fd != 0) begin
                 for (i = 0; i < layer_num_file && i < MAX_LAYERS; i = i + 1) begin
                     $fwrite(
                         layer_metrics_fd,
-                        "%0d,%0d,%0d,%0d,%0d\n",
+                        "%0d,%0d,%0d,%0d,%0d,%0d,%0d\n",
                         case_idx,
                         i,
                         perf_layer_cycles[i],
                         perf_layer_reads[i],
-                        perf_layer_writes[i]
+                        perf_layer_writes[i],
+                        perf_layer_sram_reads[i],
+                        perf_layer_sram_writes[i]
                     );
                 end
             end

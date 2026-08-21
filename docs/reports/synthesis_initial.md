@@ -13,7 +13,7 @@
 
 Therefore no Yosys cell/resource/timing numbers were produced on this machine.
 
-Vivado 2021.2 was later found at `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`. See `docs/synthesis_vivado_summary.md` for the Vivado run results.
+Vivado 2021.2 was later found at `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`. See `docs/reports/synthesis_vivado_summary.md` for the Vivado run results.
 
 This is a real tool-run attempt, not a fabricated synthesis result. Install Yosys, then rerun:
 

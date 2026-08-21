@@ -22,6 +22,7 @@ module cnn_top_ctrl (
     localparam ST_WAIT_DESC = 2'd1;
     localparam ST_EXEC = 2'd2;
     localparam ST_DONE = 2'd3;
+    localparam [31:0] MAX_LAYERS = 32'd256;
 
     reg [1:0] state;
     wire is_last_layer;
@@ -56,6 +57,10 @@ module cnn_top_ctrl (
                         current_layer <= 8'd0;
                         fetch_layer_index <= 32'd0;
                         if (layer_num == 32'd0) begin
+                            done <= 1'b1;
+                            state <= ST_IDLE;
+                        end else if (layer_num > MAX_LAYERS) begin
+                            error <= 1'b1;
                             done <= 1'b1;
                             state <= ST_IDLE;
                         end else begin

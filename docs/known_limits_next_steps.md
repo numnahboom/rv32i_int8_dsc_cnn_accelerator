@@ -2,37 +2,58 @@
 
 ## Current Status
 
-- `ds_block_tile_engine_new` is the active DS path in `cnn_layer_runner`.
-- The new path uses XPM-backed input, PW-weight, and DW-tile buffers.
-- Stem, GAP, and FC now use scalar configuration loaders and sequential compute
-  instead of runner-owned packed payload vectors.
-- Feature SRAM uses an XPM BRAM implementation under synthesis with an explicit
-  same-address write/read bypass.
-- The descriptor format, firmware address map, external word-per-int8 test
-  layout, and golden vectors are unchanged.
-- The Windows XSim critical regression passes 13/13 tests, including tiled,
-  SRAM, multilayer, end-to-end, and full-network paths.
-- `ds_block_tile_engine_new` OOC synthesis passes at 24281 CLB LUT, 15649 FF,
-  26 BRAM36 tiles, and 14 DSPs.
+- `ds_block_tile_engine_new` remains the active DS path.  The runner now uses
+  compact and tiled loader lookahead, and the PW BRAM path also pre-arms its
+  next read.
+- The Stem is a 3-MAC implementation; GAP and FC retain their sequential,
+  load-time accumulation approach.
+- `cnn_out_buffer` is synchronous and uses four BRAMs in the synthesis/XPM
+  implementation.  Ordinary XSim and Verilator use its cycle-equivalent
+  behavioral model; the XPM branch is checked through synthesis structure,
+  not executed by those ordinary simulators.
+- The fixed full-network SRAM datapath is freshly bit-exact for all 10 logits:
+  `944568` cycles, status `0x0e69b882`, 5.438 MAC/cycle.  This is 194332
+  cycles (17.06%) below the dated 1138900-cycle pre-lookahead baseline.
+- The same 944568-cycle/status result is confirmed through the CPU harness.
+  A three-sample CPU+RTL run is bit-exact with argmax values 3, 8, and 8;
+  tracked vectors were not changed for that evidence.
+- The fullnet transaction oracle reports 78602 payload external reads plus 288
+  descriptor reads, 10 external writes, 115808 SRAM reads, and 102656 SRAM
+  writes.  Bounds testing checks every SRAM address transaction-by-transaction.
 
 ## Evidence Boundary
 
-- The post-refactor full `cnn_top` OOC synthesis completed on 2026-07-17 with
-  0 errors and 0 critical warnings.
-- Standard utilization is 45830 CLB LUT (39.13%), 18387 CLB registers (7.85%),
-  42 RAMB36 tiles (29.17%), and 60 DSP blocks (4.81%).
-- Hierarchical utilization shows `cnn_layer_runner` at 44503 total LUT,
-  including `ds_block_tile_engine_new` at 24283 LUT and `cnn_out_buffer` at
-  3398 LUT. The runner's own non-child logic is 14812 LUT, down from the
-  333191 logic LUT intermediate result.
-- `feature_sram_pingpong` maps to 16 RAMB36 with only 67 LUT, confirming that
-  the XPM BRAM conversion is active.
-- The earlier 446272-LUT result remains useful only as evidence of why the
-  legacy packed stem/GAP/FC loaders had to be removed; it is not the current
-  resource count.
-- The installed K26 part reports `Cannot run timing on a non-timing device`.
-  Current reports are synthesis utilization only, not place-and-route timing
-  closure.
+- The tiled external-memory backpressure tests exercise one outstanding read,
+  response delays of 0..3 idle cycles, ready stalls, payload stability and a
+  write-sequence oracle.  Fresh Windows XSim recompiled 27 RTL files and
+  passed all 16 selected TBs, including fullnet.
+- A WSL Verilator 5.020 clean directed run passed tiled Stem (16384 checks),
+  tiled DSBlock (2256 checks), and tile engine tail cases (7 / 2191).  The
+  complete 38-test Verilator batch remains an explicit follow-up because the
+  controller's one-command runtime limit interrupted a longer aggregation run;
+  this is a coverage limitation, not a DUT failure.
+- Fresh 2026-08-18 Vivado OOC synthesis for the current lookahead/output-buffer
+  RTL passed with 30451 CLB LUT, 18558 CLB registers, 46 Block RAM tiles, and
+  65 DSPs.  It also proves `cnn_out_buffer` is a 4-BRAM XPM structure (6 LUT
+  at that hierarchy), rather than the earlier large LUTRAM.  These are current
+  structural/resource figures, not timing-closure evidence.
+- OOC synthesis is a structural/resource check.  Even after a fresh OOC PASS,
+  it does not exercise board IO, routing congestion, clock uncertainty, WNS,
+  Fmax, power, or timing closure.
+- The installed K26 database is a non-timing device database.  It cannot
+  produce WNS/Fmax or prove place-and-route timing closure even when synthesis
+  or a non-timing implementation step succeeds.
+
+## External Read Contract
+
+- At most one external read may be outstanding.
+- A request is accepted only on its ready/valid handshake.  Its response may
+  be delayed arbitrarily, but must not arrive in that same handshake cycle;
+  the earliest legal response is the following cycle.
+- External writes have no response channel.  While a write is stalled, its
+  `{write, address, data}` payload must remain stable.
+- An AXI adapter or a combinational-RAM adapter must register its read
+  response so that it obeys the above contract.
 
 ## Remaining Limits
 
@@ -40,34 +61,19 @@
   CNN/NPU ISA.
 - External memory still uses a simulation-friendly word-per-int8 layout rather
   than packed NHWC bytes and burst transfers.
-- `cnn_out_buffer` is still asynchronous distributed RAM. It should be moved to
-  synchronous BRAM only together with an explicit read-prefetch state.
-- The DW 16-lane and PW 8x8 int8 multipliers are mainly LUT/CARRY arithmetic;
-  DSP-vs-LUT mapping has not been tuned against a routed timing target.
-- The single-MAC stem is area-oriented. Its throughput should be increased to
-  3 or 9 MAC lanes only if full-network profiling shows it is material.
-- Requant is bit-exact with the Python golden but uses wide multiplication.
-  Sharing, width reduction, or deeper pipelining still needs timing evidence.
-- There is no formal verification or broad constrained-random backpressure
-  suite.
+- DW/PW multiplier DSP-versus-LUT mapping has not been tuned against a routed
+  timing target.  Requant also needs timing-driven width/pipeline decisions.
+- There is no formal proof or broad constrained-random memory/CDC campaign.
 - NPC/custom-instruction simulation exists, but there is no production AXI SoC
-  top, CDC plan, board constraints, or bitstream bring-up.
-- Model accuracy remains a functional-validation checkpoint, not the final ML
-  quality target.
+  top, CDC plan, board constraints, bitstream, or board bring-up evidence.
 
 ## Next Actions
 
-1. Run implementation on a timing-capable device/part installation and collect
-   WNS, Fmax, congestion, power, and routed utilization.
-2. Redesign `cnn_out_buffer` as synchronous BRAM plus an explicit prefetch
-   state; the current asynchronous version costs 3398 LUT.
-3. Profile real layer cycles and scale stem/DW/PW parallelism only where useful.
-4. Convert external payloads to packed NHWC byte addressing and an aligned
-   burst-friendly loader.
-5. Add random memory stalls, cfg legality assertions, and tile-boundary stress.
-6. Re-run CPU/NPC full-network regression with the new engines.
-7. Integrate a production memory bus/SoC top and board-level debug.
-8. Train/calibrate a stronger PTQ or QAT checkpoint and regenerate firmware.
-
-See `streaming_engine_refactor_guide.md` for the architecture, exact commands,
-cycle/resource data, and a step-by-step reproduction path.
+1. Archive a complete 38-test Verilator batch in an environment without the
+   controller command-time limit; retain its summary.csv with the XSim log.
+2. Use a timing-capable target/device installation for implementation, then
+   collect WNS, Fmax, congestion, power, and routed utilization.
+3. Convert external payloads to packed NHWC byte addressing and a burst-aware
+   memory adapter while preserving the registered response contract.
+4. Add formal assertions/coverage for loader and memory protocol boundaries.
+5. Integrate a production bus/SoC top and board-level debug path.

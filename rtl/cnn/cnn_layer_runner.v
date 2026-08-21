@@ -86,7 +86,12 @@ module cnn_layer_runner #(
     localparam ST_TILED_ADVANCE       = 5'd19;
     localparam ST_TILED_NEXT_WAIT     = 5'd20;
     localparam ST_TILED_START_WAIT    = 5'd21;
-    localparam OUT_BUFFER_ADDR_WIDTH  = 14;
+    localparam ST_STORE_PREFETCH      = 5'd22;
+    localparam ST_TILED_STORE_PREFETCH = 5'd23;
+    localparam integer OUT_BUFFER_DEPTH = 64 * MAX_COUT;
+    localparam integer OUT_BUFFER_ADDR_WIDTH =
+        (OUT_BUFFER_DEPTH <= 2) ? 1 : $clog2(OUT_BUFFER_DEPTH);
+    localparam [32:0] SRAM_CAPACITY_BYTES = (33'd1 << SRAM_ADDR_WIDTH);
 
     reg [4:0] state;
     reg [31:0] op_type_reg;
@@ -119,16 +124,31 @@ module cnn_layer_runner #(
     reg [31:0] phase_count;
     reg [31:0] phase_base_addr;
     reg [31:0] load_idx;
+    reg [15:0] compact_load_y;
+    reg [15:0] compact_load_x;
+    reg [15:0] compact_load_channel;
+    reg [15:0] pw_load_cout;
+    reg [15:0] pw_load_cin;
     reg [31:0] store_idx;
     reg [31:0] store_count;
     reg [31:0] tiled_load_idx;
     reg [31:0] tiled_load_count;
+    reg [7:0] tiled_load_y;
+    reg [7:0] tiled_load_x;
+    reg [15:0] tiled_load_channel;
+    reg [7:0] tiled_store_y;
+    reg [7:0] tiled_store_x;
 
     wire out_buffer_wr_en;
     wire [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_wr_addr;
     wire signed [7:0] out_buffer_wr_data;
-    reg  [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_rd_addr;
+    wire out_buffer_rd_en;
+    wire [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_rd_addr;
     wire signed [7:0] out_buffer_rd_data;
+    reg  [OUT_BUFFER_ADDR_WIDTH-1:0] store_outbuf_addr;
+    reg  [15:0] store_channel_pos;
+    wire [15:0] store_active_channels;
+    wire [OUT_BUFFER_ADDR_WIDTH-1:0] store_outbuf_next_addr;
 
     reg stem_start;
     wire stem_busy;
@@ -228,6 +248,11 @@ module cnn_layer_runner #(
     wire [3:0] stem_engine_out_w;
     wire [3:0] ds_engine_out_h;
     wire [3:0] ds_engine_out_w;
+    wire tiled_load_channel_wrap;
+    wire tiled_load_x_wrap;
+    wire [7:0] tiled_load_y_next;
+    wire [7:0] tiled_load_x_next;
+    wire [15:0] tiled_load_channel_next;
 
     assign desc_word0  = desc_words[(0*32) +: 32];
     assign desc_word1  = desc_words[(1*32) +: 32];
@@ -267,6 +292,20 @@ module cnn_layer_runner #(
     assign tiled_spatial_mode = tiled_stem_mode || tiled_ds_mode;
     assign tiled_out_h = same_out_dim(in_h_reg, effective_stride);
     assign tiled_out_w = same_out_dim(in_w_reg, effective_stride);
+    assign tiled_load_channel_wrap =
+        (tiled_load_channel + 16'd1) >= in_c_reg;
+    assign tiled_load_x_wrap =
+        (tiled_load_x + 8'd1) >= tile_input_w_reg;
+    assign tiled_load_channel_next = tiled_load_channel_wrap ?
+                                     16'd0 :
+                                     (tiled_load_channel + 16'd1);
+    assign tiled_load_x_next = tiled_load_channel_wrap ?
+                               (tiled_load_x_wrap ? 8'd0 :
+                                (tiled_load_x + 8'd1)) :
+                               tiled_load_x;
+    assign tiled_load_y_next =
+        (tiled_load_channel_wrap && tiled_load_x_wrap) ?
+        (tiled_load_y + 8'd1) : tiled_load_y;
     assign stem_engine_out_h = tiled_stem_mode ? tile_h_size_reg[3:0] : conv_out_h;
     assign stem_engine_out_w = tiled_stem_mode ? tile_w_size_reg[3:0] : conv_out_w;
     assign ds_engine_out_h = tiled_ds_mode ? tile_h_size_reg[3:0] : conv_out_h;
@@ -390,13 +429,14 @@ module cnn_layer_runner #(
     );
 
     cnn_out_buffer #(
-        .DEPTH(64*MAX_COUT),
+        .DEPTH(OUT_BUFFER_DEPTH),
         .ADDR_WIDTH(OUT_BUFFER_ADDR_WIDTH)
     ) u_out_buffer (
         .clk(clk),
         .wr_en(out_buffer_wr_en),
         .wr_addr(out_buffer_wr_addr),
         .wr_data(out_buffer_wr_data),
+        .rd_en(out_buffer_rd_en),
         .rd_addr(out_buffer_rd_addr),
         .rd_data(out_buffer_rd_data)
     );
@@ -406,19 +446,37 @@ module cnn_layer_runner #(
         ((stem_out_wr_pixel_idx * MAX_COUT) + stem_out_wr_channel_idx) :
         ((ds_out_wr_pixel_idx * MAX_COUT) + ds_out_wr_channel_idx);
     assign out_buffer_wr_data = stem_out_wr_en ? stem_out_wr_data_int8 : ds_out_wr_data_int8;
+    assign store_active_channels = (op_type_reg == OP_CONV3X3_STEM) ?
+                                   16'd16 : out_c_reg;
+    assign store_outbuf_next_addr =
+        ((store_channel_pos + 16'd1) >= store_active_channels) ?
+        (store_outbuf_addr + MAX_COUT - store_active_channels + 16'd1) :
+        (store_outbuf_addr + 1'b1);
+    assign out_buffer_rd_addr =
+        (((state == ST_WRITE_REQ) || (state == ST_TILED_WRITE_REQ)) &&
+         ((store_idx + 32'd1) < store_count)) ?
+        store_outbuf_next_addr : store_outbuf_addr;
+    assign out_buffer_rd_en =
+        ((op_type_reg == OP_CONV3X3_STEM) || (op_type_reg == OP_DS_BLOCK)) &&
+        ((state == ST_STORE_PREFETCH) ||
+         (state == ST_WRITE_REQ) ||
+         (state == ST_TILED_STORE_PREFETCH) ||
+         (state == ST_TILED_WRITE_REQ));
 
     function [3:0] calc_out_dim;
         input [15:0] in_dim;
         input [7:0] stride_value;
-        reg [15:0] stride_safe;
         reg [15:0] out_value;
         begin
-            stride_safe = (stride_value == 8'd0) ? 16'd1 : {8'd0, stride_value};
             if (in_dim < 16'd3) begin
                 calc_out_dim = 4'd0;
-            end else begin
-                out_value = ((in_dim - 16'd3) / stride_safe) + 16'd1;
+            end else if ((stride_value == 8'd0) || (stride_value == 8'd1)) begin
+                calc_out_dim = (in_dim - 16'd2);
+            end else if (stride_value == 8'd2) begin
+                out_value = ((in_dim - 16'd3) >> 1) + 16'd1;
                 calc_out_dim = out_value[3:0];
+            end else begin
+                calc_out_dim = 4'd0;
             end
         end
     endfunction
@@ -426,15 +484,15 @@ module cnn_layer_runner #(
     function [7:0] same_out_dim;
         input [15:0] in_dim;
         input [7:0] stride_value;
-        reg [15:0] stride_safe;
-        reg [15:0] out_value;
         begin
-            stride_safe = (stride_value == 8'd0) ? 16'd1 : {8'd0, stride_value};
             if (in_dim == 16'd0) begin
                 same_out_dim = 8'd0;
+            end else if ((stride_value == 8'd0) || (stride_value == 8'd1)) begin
+                same_out_dim = in_dim[7:0];
+            end else if (stride_value == 8'd2) begin
+                same_out_dim = ((in_dim + 16'd1) >> 1);
             end else begin
-                out_value = ((in_dim - 16'd1) / stride_safe) + 16'd1;
-                same_out_dim = out_value[7:0];
+                same_out_dim = 8'd0;
             end
         end
     endfunction
@@ -571,36 +629,32 @@ module cnn_layer_runner #(
         end
     endfunction
 
-    function integer buffer_index_from_linear;
-        input [31:0] idx;
-        input [15:0] channel_count;
-        integer p;
-        integer c;
+    function [31:0] sram_output_count_for;
+        input [31:0] op_type;
         begin
-            p = 0;
-            c = 0;
-            if (channel_count != 16'd0) begin
-                p = idx / channel_count;
-                c = idx % channel_count;
+            if (tiled_spatial_mode) begin
+                sram_output_count_for =
+                    {24'd0, tiled_out_h} *
+                    {24'd0, tiled_out_w} *
+                    {16'd0, out_c_reg};
+            end else begin
+                sram_output_count_for = output_count_for(op_type);
             end
-            buffer_index_from_linear = (p * MAX_COUT) + c;
         end
     endfunction
 
-    always @(*) begin
-        out_buffer_rd_addr = {OUT_BUFFER_ADDR_WIDTH{1'b0}};
-        case (op_type_reg)
-            OP_CONV3X3_STEM: begin
-                out_buffer_rd_addr = buffer_index_from_linear(store_idx, 16'd16);
-            end
-            OP_DS_BLOCK: begin
-                out_buffer_rd_addr = buffer_index_from_linear(store_idx, out_c_reg);
-            end
-            default: begin
-                out_buffer_rd_addr = {OUT_BUFFER_ADDR_WIDTH{1'b0}};
-            end
-        endcase
-    end
+    function sram_span_valid;
+        input [31:0] base_addr;
+        input [31:0] element_count;
+        reg [32:0] span_end_exclusive;
+        begin
+            span_end_exclusive =
+                {1'b0, base_addr} + {1'b0, element_count};
+            sram_span_valid =
+                ({1'b0, base_addr} < SRAM_CAPACITY_BYTES) &&
+                (span_end_exclusive <= SRAM_CAPACITY_BYTES);
+        end
+    endfunction
 
     function [SRAM_ADDR_WIDTH-1:0] sram_addr_for_index;
         input [31:0] base_addr;
@@ -611,78 +665,67 @@ module cnn_layer_runner #(
     endfunction
 
     /* verilator lint_off BLKSEQ */
-    function [31:0] tiled_input_index_for;
-        input [31:0] idx;
-        integer local_y;
-        integer local_x;
-        integer channel;
+    function [31:0] tiled_input_index_current;
         integer src_y;
         integer src_x;
         begin
-            local_y = 0;
-            local_x = 0;
-            channel = 0;
-            src_y = 0;
-            src_x = 0;
-            if (tile_input_w_reg != 8'd0 && in_c_reg != 16'd0) begin
-                local_y = idx / (tile_input_w_reg * in_c_reg);
-                local_x = (idx / in_c_reg) % tile_input_w_reg;
-                channel = idx % in_c_reg;
-            end
-            src_y = (tile_h_start_reg * effective_stride) + local_y - 1;
-            src_x = (tile_w_start_reg * effective_stride) + local_x - 1;
-            tiled_input_index_for = (((src_y * in_w_reg) + src_x) * in_c_reg) + channel;
+            src_y = (tile_h_start_reg * effective_stride) + tiled_load_y - 1;
+            src_x = (tile_w_start_reg * effective_stride) + tiled_load_x - 1;
+            tiled_input_index_current =
+                (((src_y * in_w_reg) + src_x) * in_c_reg) +
+                tiled_load_channel;
         end
     endfunction
 
-    function tiled_input_is_padding;
-        input [31:0] idx;
-        integer local_y;
-        integer local_x;
+    function tiled_input_current_is_padding;
         integer src_y;
         integer src_x;
         begin
-            local_y = 0;
-            local_x = 0;
-            src_y = 0;
-            src_x = 0;
-            if (tile_input_w_reg != 8'd0 && in_c_reg != 16'd0) begin
-                local_y = idx / (tile_input_w_reg * in_c_reg);
-                local_x = (idx / in_c_reg) % tile_input_w_reg;
-            end
-            src_y = (tile_h_start_reg * effective_stride) + local_y - 1;
-            src_x = (tile_w_start_reg * effective_stride) + local_x - 1;
-            tiled_input_is_padding = (src_y < 0) || (src_x < 0) ||
-                                     (src_y >= in_h_reg) || (src_x >= in_w_reg);
+            src_y = (tile_h_start_reg * effective_stride) + tiled_load_y - 1;
+            src_x = (tile_w_start_reg * effective_stride) + tiled_load_x - 1;
+            tiled_input_current_is_padding =
+                (src_y < 0) || (src_x < 0) ||
+                (src_y >= in_h_reg) || (src_x >= in_w_reg);
         end
     endfunction
 
-    function [31:0] tiled_store_global_index_for;
-        input [31:0] idx;
-        integer local_pixel;
-        integer local_y;
-        integer local_x;
-        integer channel;
+    function [31:0] tiled_input_index_next;
+        integer src_y;
+        integer src_x;
+        begin
+            src_y = (tile_h_start_reg * effective_stride) +
+                    tiled_load_y_next - 1;
+            src_x = (tile_w_start_reg * effective_stride) +
+                    tiled_load_x_next - 1;
+            tiled_input_index_next =
+                (((src_y * in_w_reg) + src_x) * in_c_reg) +
+                tiled_load_channel_next;
+        end
+    endfunction
+
+    function tiled_input_next_is_padding;
+        integer src_y;
+        integer src_x;
+        begin
+            src_y = (tile_h_start_reg * effective_stride) +
+                    tiled_load_y_next - 1;
+            src_x = (tile_w_start_reg * effective_stride) +
+                    tiled_load_x_next - 1;
+            tiled_input_next_is_padding =
+                (src_y < 0) || (src_x < 0) ||
+                (src_y >= in_h_reg) || (src_x >= in_w_reg);
+        end
+    endfunction
+
+    function [31:0] tiled_store_global_index_current;
         integer global_y;
         integer global_x;
         begin
-            local_pixel = 0;
-            local_y = 0;
-            local_x = 0;
-            channel = 0;
-            global_y = 0;
-            global_x = 0;
-            if (out_c_reg != 16'd0) begin
-                local_pixel = idx / out_c_reg;
-                channel = idx % out_c_reg;
-            end
-            if (tile_w_size_reg != 8'd0) begin
-                local_y = local_pixel / tile_w_size_reg;
-                local_x = local_pixel % tile_w_size_reg;
-            end
-            global_y = tile_h_start_reg + local_y;
-            global_x = tile_w_start_reg + local_x;
-            tiled_store_global_index_for = (((global_y * tiled_out_w) + global_x) * out_c_reg) + channel;
+            global_y = tile_h_start_reg + tiled_store_y;
+            global_x = tile_w_start_reg + tiled_store_x;
+            tiled_store_global_index_current =
+                (((global_y * tiled_out_w) + global_x) * out_c_reg) +
+                store_channel_pos;
         end
     endfunction
     /* verilator lint_on BLKSEQ */
@@ -703,6 +746,10 @@ module cnn_layer_runner #(
                     end else begin
                         valid_config = (in_h_reg >= 16'd3) && (in_h_reg <= 16'd10) &&
                                        (in_w_reg >= 16'd3) && (in_w_reg <= 16'd10) &&
+                                       (in_c_reg == 16'd3) &&
+                                       (out_c_reg == 16'd16) &&
+                                       (effective_stride == 8'd1) &&
+                                       (pad_reg == 8'd1) &&
                                        (conv_out_pixels <= 14'd64);
                     end
                 end
@@ -721,14 +768,25 @@ module cnn_layer_runner #(
                                        (in_c_reg >= 16'd1) && (in_c_reg <= MAX_CIN) &&
                                        (out_c_reg >= 16'd1) && (out_c_reg <= MAX_COUT) &&
                                        ((effective_stride == 8'd1) || (effective_stride == 8'd2)) &&
+                                       (pad_reg == 8'd1) &&
                                        (conv_out_pixels <= 14'd64);
                     end
                 end
                 OP_GAP: begin
-                    valid_config = 1'b1;
+                    valid_config = (in_h_reg == 16'd4) &&
+                                   (in_w_reg == 16'd4) &&
+                                   (in_c_reg == 16'd256) &&
+                                   (out_c_reg == 16'd256) &&
+                                   (effective_stride == 8'd1) &&
+                                   (pad_reg == 8'd0);
                 end
                 OP_FC: begin
-                    valid_config = 1'b1;
+                    valid_config = (in_h_reg == 16'd1) &&
+                                   (in_w_reg == 16'd1) &&
+                                   (in_c_reg == 16'd256) &&
+                                   (out_c_reg == 16'd10) &&
+                                   (effective_stride == 8'd1) &&
+                                   (pad_reg == 8'd0);
                 end
                 default: begin
                     valid_config = 1'b0;
@@ -739,17 +797,13 @@ module cnn_layer_runner #(
 
     /* verilator lint_off BLKSEQ */
     task store_stem_input;
-        input [31:0] idx;
         input [7:0] value;
-        integer y;
-        integer x;
-        integer c;
         integer cfg_linear_index;
         begin
-            y = idx / (in_w_reg * 3);
-            x = (idx / 3) % in_w_reg;
-            c = idx % 3;
-            cfg_linear_index = (y * 10 * 3) + (x * 3) + c;
+            cfg_linear_index =
+                (compact_load_y * 10 * 3) +
+                (compact_load_x * 3) +
+                compact_load_channel;
             aux_cfg_wr_en <= 1'b1;
             aux_cfg_target <= PH_INPUT;
             aux_cfg_index <= cfg_linear_index[15:0];
@@ -758,22 +812,13 @@ module cnn_layer_runner #(
     endtask
 
     task store_stem_tiled_input;
-        input [31:0] idx;
         input [7:0] value;
-        integer y;
-        integer x;
-        integer c;
         integer cfg_linear_index;
         begin
-            y = 0;
-            x = 0;
-            c = 0;
-            if (tile_input_w_reg != 8'd0 && in_c_reg != 16'd0) begin
-                y = idx / (tile_input_w_reg * in_c_reg);
-                x = (idx / in_c_reg) % tile_input_w_reg;
-                c = idx % in_c_reg;
-            end
-            cfg_linear_index = (y * 10 * 3) + (x * 3) + c;
+            cfg_linear_index =
+                (tiled_load_y * 10 * 3) +
+                (tiled_load_x * 3) +
+                tiled_load_channel;
             aux_cfg_wr_en <= 1'b1;
             aux_cfg_target <= PH_INPUT;
             aux_cfg_index <= cfg_linear_index[15:0];
@@ -782,18 +827,13 @@ module cnn_layer_runner #(
     endtask
 
     task store_ds_input;
-        input [31:0] idx;
         input [7:0] value;
-        integer y;
-        integer x;
-        integer c;
         integer cfg_linear_index;
         begin
-            y = idx / (in_w_reg * in_c_reg);
-            x = (idx / in_c_reg) % in_w_reg;
-            c = idx % in_c_reg;
-            cfg_linear_index = ((y * MAX_DS_IN_W * MAX_CIN) +
-                                (x * MAX_CIN) + c);
+            cfg_linear_index =
+                (compact_load_y * MAX_DS_IN_W * MAX_CIN) +
+                (compact_load_x * MAX_CIN) +
+                compact_load_channel;
             ds_cfg_wr_en <= 1'b1;
             ds_cfg_target <= DS_CFG_INPUT;
             ds_cfg_index <= cfg_linear_index[15:0];
@@ -802,23 +842,13 @@ module cnn_layer_runner #(
     endtask
 
     task store_ds_tiled_input;
-        input [31:0] idx;
         input [7:0] value;
-        integer y;
-        integer x;
-        integer c;
         integer cfg_linear_index;
         begin
-            y = 0;
-            x = 0;
-            c = 0;
-            if (tile_input_w_reg != 8'd0 && in_c_reg != 16'd0) begin
-                y = idx / (tile_input_w_reg * in_c_reg);
-                x = (idx / in_c_reg) % tile_input_w_reg;
-                c = idx % in_c_reg;
-            end
-            cfg_linear_index = ((y * MAX_DS_IN_W * MAX_CIN) +
-                                (x * MAX_CIN) + c);
+            cfg_linear_index =
+                (tiled_load_y * MAX_DS_IN_W * MAX_CIN) +
+                (tiled_load_x * MAX_CIN) +
+                tiled_load_channel;
             ds_cfg_wr_en <= 1'b1;
             ds_cfg_target <= DS_CFG_INPUT;
             ds_cfg_index <= cfg_linear_index[15:0];
@@ -826,20 +856,76 @@ module cnn_layer_runner #(
         end
     endtask
 
+    task advance_tiled_load_position;
+        begin
+            if ((tiled_load_channel + 16'd1) >= in_c_reg) begin
+                tiled_load_channel <= 16'd0;
+                if ((tiled_load_x + 8'd1) >= tile_input_w_reg) begin
+                    tiled_load_x <= 8'd0;
+                    tiled_load_y <= tiled_load_y + 8'd1;
+                end else begin
+                    tiled_load_x <= tiled_load_x + 8'd1;
+                end
+            end else begin
+                tiled_load_channel <= tiled_load_channel + 16'd1;
+            end
+        end
+    endtask
+
+    task advance_tiled_store_position;
+        begin
+            if ((store_channel_pos + 16'd1) >= store_active_channels) begin
+                store_channel_pos <= 16'd0;
+                if ((tiled_store_x + 8'd1) >= tile_w_size_reg) begin
+                    tiled_store_x <= 8'd0;
+                    tiled_store_y <= tiled_store_y + 8'd1;
+                end else begin
+                    tiled_store_x <= tiled_store_x + 8'd1;
+                end
+            end else begin
+                store_channel_pos <= store_channel_pos + 16'd1;
+            end
+        end
+    endtask
+
     task store_pw_weight;
-        input [31:0] idx;
         input [7:0] value;
-        integer co;
-        integer ci;
         integer cfg_linear_index;
         begin
-            co = idx / in_c_reg;
-            ci = idx % in_c_reg;
-            cfg_linear_index = (co * MAX_CIN) + ci;
+            cfg_linear_index = (pw_load_cout * MAX_CIN) + pw_load_cin;
             ds_cfg_wr_en <= 1'b1;
             ds_cfg_target <= DS_CFG_PW_WEIGHT;
             ds_cfg_index <= cfg_linear_index[15:0];
             ds_cfg_data <= {{24{value[7]}}, value};
+        end
+    endtask
+
+    task advance_compact_load_position;
+        input [3:0] phase;
+        begin
+            if ((phase == PH_INPUT) &&
+                ((op_type_reg == OP_CONV3X3_STEM) ||
+                 (op_type_reg == OP_DS_BLOCK))) begin
+                if ((compact_load_channel + 16'd1) >= in_c_reg) begin
+                    compact_load_channel <= 16'd0;
+                    if ((compact_load_x + 16'd1) >= in_w_reg) begin
+                        compact_load_x <= 16'd0;
+                        compact_load_y <= compact_load_y + 16'd1;
+                    end else begin
+                        compact_load_x <= compact_load_x + 16'd1;
+                    end
+                end else begin
+                    compact_load_channel <= compact_load_channel + 16'd1;
+                end
+            end else if ((phase == PH_PW_WEIGHT) &&
+                         (op_type_reg == OP_DS_BLOCK)) begin
+                if ((pw_load_cin + 16'd1) >= in_c_reg) begin
+                    pw_load_cin <= 16'd0;
+                    pw_load_cout <= pw_load_cout + 16'd1;
+                end else begin
+                    pw_load_cin <= pw_load_cin + 16'd1;
+                end
+            end
         end
     endtask
 
@@ -851,7 +937,7 @@ module cnn_layer_runner #(
             case (op_type_reg)
                 OP_CONV3X3_STEM: begin
                     case (phase)
-                        PH_INPUT:     store_stem_input(idx, data[7:0]);
+                        PH_INPUT:     store_stem_input(data[7:0]);
                         PH_DW_WEIGHT,
                         PH_DW_BIAS,
                         PH_DW_MUL,
@@ -866,7 +952,7 @@ module cnn_layer_runner #(
                 end
                 OP_DS_BLOCK: begin
                     case (phase)
-                        PH_INPUT:     store_ds_input(idx, data[7:0]);
+                        PH_INPUT:     store_ds_input(data[7:0]);
                         PH_DW_WEIGHT: begin
                             ds_cfg_wr_en <= 1'b1;
                             ds_cfg_target <= DS_CFG_DW_WEIGHT;
@@ -891,7 +977,7 @@ module cnn_layer_runner #(
                             ds_cfg_index <= idx[15:0];
                             ds_cfg_data <= data;
                         end
-                        PH_PW_WEIGHT: store_pw_weight(idx, data[7:0]);
+                        PH_PW_WEIGHT: store_pw_weight(data[7:0]);
                         PH_PW_BIAS: begin
                             ds_cfg_wr_en <= 1'b1;
                             ds_cfg_target <= DS_CFG_PW_BIAS;
@@ -982,10 +1068,22 @@ module cnn_layer_runner #(
             phase_count <= 32'd0;
             phase_base_addr <= 32'd0;
             load_idx <= 32'd0;
+            compact_load_y <= 16'd0;
+            compact_load_x <= 16'd0;
+            compact_load_channel <= 16'd0;
+            pw_load_cout <= 16'd0;
+            pw_load_cin <= 16'd0;
             store_idx <= 32'd0;
             store_count <= 32'd0;
+            store_outbuf_addr <= {OUT_BUFFER_ADDR_WIDTH{1'b0}};
+            store_channel_pos <= 16'd0;
             tiled_load_idx <= 32'd0;
             tiled_load_count <= 32'd0;
+            tiled_load_y <= 8'd0;
+            tiled_load_x <= 8'd0;
+            tiled_load_channel <= 16'd0;
+            tiled_store_y <= 8'd0;
+            tiled_store_x <= 8'd0;
             op_type_reg <= 32'd0;
             input_addr_reg <= 32'd0;
             output_addr_reg <= 32'd0;
@@ -1067,6 +1165,24 @@ module cnn_layer_runner #(
                     end else if (!valid_config()) begin
                         error <= 1'b1;
                         state <= ST_ERROR;
+                    end else if (
+                        (flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                         !sram_span_valid(
+                             input_addr_reg,
+                             phase_count_for(op_type_reg, PH_INPUT)
+                         )) ||
+                        (flags_reg[FLAG_OUTPUT_TO_SRAM] &&
+                         !sram_span_valid(
+                             output_addr_reg,
+                             sram_output_count_for(op_type_reg)
+                         ))
+                    ) begin
+                        // SRAM ports intentionally expose only
+                        // SRAM_ADDR_WIDTH address bits.  Reject a descriptor
+                        // whose logical tensor would otherwise alias through
+                        // silent high-bit truncation or end-of-bank wraparound.
+                        error <= 1'b1;
+                        state <= ST_ERROR;
                     end else begin
                         phase_idx <= (tiled_spatial_mode ? PH_DW_WEIGHT : PH_INPUT);
                         state <= ST_LOAD_SETUP;
@@ -1077,6 +1193,15 @@ module cnn_layer_runner #(
                     phase_count <= phase_count_for(op_type_reg, phase_idx);
                     phase_base_addr <= phase_addr_for(op_type_reg, phase_idx);
                     load_idx <= 32'd0;
+                    if (phase_idx == PH_INPUT) begin
+                        compact_load_y <= 16'd0;
+                        compact_load_x <= 16'd0;
+                        compact_load_channel <= 16'd0;
+                    end
+                    if (phase_idx == PH_PW_WEIGHT) begin
+                        pw_load_cout <= 16'd0;
+                        pw_load_cin <= 16'd0;
+                    end
                     if (phase_count_for(op_type_reg, phase_idx) == 32'd0) begin
                         if (phase_idx == last_phase_for(op_type_reg)) begin
                             state <= (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
@@ -1124,7 +1249,17 @@ module cnn_layer_runner #(
                                 end
                             end else begin
                                 load_idx <= load_idx + 32'd1;
-                                state <= ST_READ_REQ;
+                                advance_compact_load_position(phase_idx);
+                                // The feature SRAM has a fixed one-cycle
+                                // synchronous read contract.  Launch the next
+                                // read directly while consuming this response;
+                                // no additional request-setup state is needed.
+                                sram_input_rd_en <= 1'b1;
+                                sram_input_rd_addr <= sram_addr_for_index(
+                                    phase_base_addr,
+                                    load_idx + 32'd1
+                                );
+                                state <= ST_READ_RESP;
                             end
                         end
                     end else if (mem_resp_valid) begin
@@ -1138,6 +1273,17 @@ module cnn_layer_runner #(
                             end
                         end else begin
                             load_idx <= load_idx + 32'd1;
+                            advance_compact_load_position(phase_idx);
+                            // Pre-arm the next single-outstanding request while
+                            // consuming this response.  ST_READ_REQ then sees
+                            // valid already asserted and can handshake in one
+                            // cycle when ready, instead of spending an extra
+                            // cycle merely raising mem_req_valid.
+                            mem_req_valid <= 1'b1;
+                            mem_req_write <= 1'b0;
+                            mem_req_addr <= phase_base_addr +
+                                            ((load_idx + 32'd1) << 2);
+                            mem_req_wdata <= 32'd0;
                             state <= ST_READ_REQ;
                         end
                     end
@@ -1182,11 +1328,22 @@ module cnn_layer_runner #(
                 ST_STORE_SETUP: begin
                     store_count <= output_count_for(op_type_reg);
                     store_idx <= 32'd0;
+                    store_outbuf_addr <= {OUT_BUFFER_ADDR_WIDTH{1'b0}};
+                    store_channel_pos <= 16'd0;
                     if (output_count_for(op_type_reg) == 32'd0) begin
                         state <= ST_DONE;
+                    end else if ((op_type_reg == OP_CONV3X3_STEM) ||
+                                 (op_type_reg == OP_DS_BLOCK)) begin
+                        state <= ST_STORE_PREFETCH;
                     end else begin
                         state <= ST_WRITE_REQ;
                     end
+                end
+
+                ST_STORE_PREFETCH: begin
+                    mem_req_valid <= 1'b0;
+                    mem_req_write <= 1'b0;
+                    state <= ST_WRITE_REQ;
                 end
 
                 ST_WRITE_REQ: begin
@@ -1200,19 +1357,32 @@ module cnn_layer_runner #(
                             state <= ST_DONE;
                         end else begin
                             store_idx <= store_idx + 32'd1;
+                            store_outbuf_addr <= store_outbuf_next_addr;
+                            if ((store_channel_pos + 16'd1) >= store_active_channels) begin
+                                store_channel_pos <= 16'd0;
+                            end else begin
+                                store_channel_pos <= store_channel_pos + 16'd1;
+                            end
                         end
                     end else begin
-                        mem_req_valid <= 1'b1;
-                        mem_req_write <= 1'b1;
-                        mem_req_addr <= output_addr_reg + (store_idx << 2);
-                        mem_req_wdata <= {{24{store_byte_current[7]}}, store_byte_current};
-                        if (mem_req_valid && mem_req_ready) begin
+                        if (!mem_req_valid) begin
+                            mem_req_valid <= 1'b1;
+                            mem_req_write <= 1'b1;
+                            mem_req_addr <= output_addr_reg + (store_idx << 2);
+                            mem_req_wdata <= {{24{store_byte_current[7]}}, store_byte_current};
+                        end else if (mem_req_ready) begin
                             mem_req_valid <= 1'b0;
                             mem_req_write <= 1'b0;
                             if ((store_idx + 32'd1) >= store_count) begin
                                 state <= ST_DONE;
                             end else begin
                                 store_idx <= store_idx + 32'd1;
+                                store_outbuf_addr <= store_outbuf_next_addr;
+                                if ((store_channel_pos + 16'd1) >= store_active_channels) begin
+                                    store_channel_pos <= 16'd0;
+                                end else begin
+                                    store_channel_pos <= store_channel_pos + 16'd1;
+                                end
                             end
                         end
                     end
@@ -1222,6 +1392,9 @@ module cnn_layer_runner #(
                     tile_sched_start <= 1'b1;
                     tiled_load_idx <= 32'd0;
                     tiled_load_count <= 32'd0;
+                    tiled_load_y <= 8'd0;
+                    tiled_load_x <= 8'd0;
+                    tiled_load_channel <= 16'd0;
                     state <= ST_TILED_START_WAIT;
                 end
 
@@ -1239,6 +1412,9 @@ module cnn_layer_runner #(
                         tile_input_w_reg <= sched_input_tile_w;
                         tile_is_last_reg <= sched_is_last_tile;
                         tiled_load_idx <= 32'd0;
+                        tiled_load_y <= 8'd0;
+                        tiled_load_x <= 8'd0;
+                        tiled_load_channel <= 16'd0;
                         tiled_load_count <= {24'd0, sched_input_tile_h} *
                                             {24'd0, sched_input_tile_w} *
                                             {16'd0, in_c_reg};
@@ -1255,16 +1431,37 @@ module cnn_layer_runner #(
                 end
 
                 ST_TILED_LOAD_REQ: begin
-                    if (tiled_input_is_padding(tiled_load_idx)) begin
+                    if (tiled_input_current_is_padding()) begin
                         if (tiled_stem_mode) begin
-                            store_stem_tiled_input(tiled_load_idx, input_zero_point_reg[7:0]);
+                            store_stem_tiled_input(input_zero_point_reg[7:0]);
                         end else begin
-                            store_ds_tiled_input(tiled_load_idx, input_zero_point_reg[7:0]);
+                            store_ds_tiled_input(input_zero_point_reg[7:0]);
                         end
                         if ((tiled_load_idx + 32'd1) >= tiled_load_count) begin
                             state <= ST_TILED_ENGINE_START;
                         end else begin
                             tiled_load_idx <= tiled_load_idx + 32'd1;
+                            advance_tiled_load_position();
+                            // Look through the padding run boundary.  A real
+                            // next element can be pre-armed immediately; a
+                            // padded next element remains local to this state
+                            // and must not create a memory transaction.
+                            if (!tiled_input_next_is_padding()) begin
+                                if (flags_reg[FLAG_INPUT_FROM_SRAM]) begin
+                                    sram_input_rd_en <= 1'b1;
+                                    sram_input_rd_addr <= sram_addr_for_index(
+                                        input_addr_reg,
+                                        tiled_input_index_next()
+                                    );
+                                    state <= ST_TILED_LOAD_RESP;
+                                end else begin
+                                    mem_req_valid <= 1'b1;
+                                    mem_req_write <= 1'b0;
+                                    mem_req_addr <= input_addr_reg +
+                                                    (tiled_input_index_next() << 2);
+                                    mem_req_wdata <= 32'd0;
+                                end
+                            end
                         end
                     end else if (flags_reg[FLAG_INPUT_FROM_SRAM]) begin
                         mem_req_valid <= 1'b0;
@@ -1272,13 +1469,14 @@ module cnn_layer_runner #(
                         sram_input_rd_en <= 1'b1;
                         sram_input_rd_addr <= sram_addr_for_index(
                             input_addr_reg,
-                            tiled_input_index_for(tiled_load_idx)
+                            tiled_input_index_current()
                         );
                         state <= ST_TILED_LOAD_RESP;
                     end else begin
                         mem_req_valid <= 1'b1;
                         mem_req_write <= 1'b0;
-                        mem_req_addr <= input_addr_reg + (tiled_input_index_for(tiled_load_idx) << 2);
+                        mem_req_addr <= input_addr_reg +
+                                        (tiled_input_index_current() << 2);
                         mem_req_wdata <= 32'd0;
                         if (mem_req_valid && mem_req_ready) begin
                             mem_req_valid <= 1'b0;
@@ -1291,27 +1489,45 @@ module cnn_layer_runner #(
                     if (flags_reg[FLAG_INPUT_FROM_SRAM]) begin
                         if (sram_input_rd_valid) begin
                             if (tiled_stem_mode) begin
-                                store_stem_tiled_input(tiled_load_idx, sram_input_rd_data[7:0]);
+                                store_stem_tiled_input(sram_input_rd_data[7:0]);
                             end else begin
-                                store_ds_tiled_input(tiled_load_idx, sram_input_rd_data[7:0]);
+                                store_ds_tiled_input(sram_input_rd_data[7:0]);
                             end
                             if ((tiled_load_idx + 32'd1) >= tiled_load_count) begin
                                 state <= ST_TILED_ENGINE_START;
                             end else begin
                                 tiled_load_idx <= tiled_load_idx + 32'd1;
-                                state <= ST_TILED_LOAD_REQ;
+                                advance_tiled_load_position();
+                                if (tiled_input_next_is_padding()) begin
+                                    state <= ST_TILED_LOAD_REQ;
+                                end else begin
+                                    sram_input_rd_en <= 1'b1;
+                                    sram_input_rd_addr <= sram_addr_for_index(
+                                        input_addr_reg,
+                                        tiled_input_index_next()
+                                    );
+                                    state <= ST_TILED_LOAD_RESP;
+                                end
                             end
                         end
                     end else if (mem_resp_valid) begin
                         if (tiled_stem_mode) begin
-                            store_stem_tiled_input(tiled_load_idx, mem_resp_rdata[7:0]);
+                            store_stem_tiled_input(mem_resp_rdata[7:0]);
                         end else begin
-                            store_ds_tiled_input(tiled_load_idx, mem_resp_rdata[7:0]);
+                            store_ds_tiled_input(mem_resp_rdata[7:0]);
                         end
                         if ((tiled_load_idx + 32'd1) >= tiled_load_count) begin
                             state <= ST_TILED_ENGINE_START;
                         end else begin
                             tiled_load_idx <= tiled_load_idx + 32'd1;
+                            advance_tiled_load_position();
+                            if (!tiled_input_next_is_padding()) begin
+                                mem_req_valid <= 1'b1;
+                                mem_req_write <= 1'b0;
+                                mem_req_addr <= input_addr_reg +
+                                                (tiled_input_index_next() << 2);
+                                mem_req_wdata <= 32'd0;
+                            end
                             state <= ST_TILED_LOAD_REQ;
                         end
                     end
@@ -1342,13 +1558,23 @@ module cnn_layer_runner #(
                                    {24'd0, tile_w_size_reg} *
                                    {16'd0, out_c_reg};
                     store_idx <= 32'd0;
+                    store_outbuf_addr <= {OUT_BUFFER_ADDR_WIDTH{1'b0}};
+                    store_channel_pos <= 16'd0;
+                    tiled_store_y <= 8'd0;
+                    tiled_store_x <= 8'd0;
                     if (({24'd0, tile_h_size_reg} *
                          {24'd0, tile_w_size_reg} *
                          {16'd0, out_c_reg}) == 32'd0) begin
                         state <= ST_TILED_ADVANCE;
                     end else begin
-                        state <= ST_TILED_WRITE_REQ;
+                        state <= ST_TILED_STORE_PREFETCH;
                     end
+                end
+
+                ST_TILED_STORE_PREFETCH: begin
+                    mem_req_valid <= 1'b0;
+                    mem_req_write <= 1'b0;
+                    state <= ST_TILED_WRITE_REQ;
                 end
 
                 ST_TILED_WRITE_REQ: begin
@@ -1358,26 +1584,32 @@ module cnn_layer_runner #(
                         sram_output_wr_en <= 1'b1;
                         sram_output_wr_addr <= sram_addr_for_index(
                             output_addr_reg,
-                            tiled_store_global_index_for(store_idx)
+                            tiled_store_global_index_current()
                         );
                         sram_output_wr_data <= store_byte_current;
                         if ((store_idx + 32'd1) >= store_count) begin
                             state <= ST_TILED_ADVANCE;
                         end else begin
                             store_idx <= store_idx + 32'd1;
+                            store_outbuf_addr <= store_outbuf_next_addr;
+                            advance_tiled_store_position();
                         end
                     end else begin
-                        mem_req_valid <= 1'b1;
-                        mem_req_write <= 1'b1;
-                        mem_req_addr <= output_addr_reg + (tiled_store_global_index_for(store_idx) << 2);
-                        mem_req_wdata <= {{24{store_byte_current[7]}}, store_byte_current};
-                        if (mem_req_valid && mem_req_ready) begin
+                        if (!mem_req_valid) begin
+                            mem_req_valid <= 1'b1;
+                            mem_req_write <= 1'b1;
+                            mem_req_addr <= output_addr_reg +
+                                            (tiled_store_global_index_current() << 2);
+                            mem_req_wdata <= {{24{store_byte_current[7]}}, store_byte_current};
+                        end else if (mem_req_ready) begin
                             mem_req_valid <= 1'b0;
                             mem_req_write <= 1'b0;
                             if ((store_idx + 32'd1) >= store_count) begin
                                 state <= ST_TILED_ADVANCE;
                             end else begin
                                 store_idx <= store_idx + 32'd1;
+                                store_outbuf_addr <= store_outbuf_next_addr;
+                                advance_tiled_store_position();
                             end
                         end
                     end
@@ -1436,29 +1668,82 @@ module cnn_out_buffer #(
     input  wire                      wr_en,
     input  wire [ADDR_WIDTH-1:0]     wr_addr,
     input  wire signed [7:0]         wr_data,
+    input  wire                      rd_en,
     input  wire [ADDR_WIDTH-1:0]     rd_addr,
     output wire signed [7:0]         rd_data
 );
-    (* ram_style = "distributed" *) reg signed [7:0] mem [0:DEPTH-1];
+`ifdef SYNTHESIS
+    wire [7:0] rd_data_unsigned;
 
-`ifndef SYNTHESIS
+    xpm_memory_sdpram #(
+        .ADDR_WIDTH_A(ADDR_WIDTH),
+        .ADDR_WIDTH_B(ADDR_WIDTH),
+        .AUTO_SLEEP_TIME(0),
+        .BYTE_WRITE_WIDTH_A(8),
+        .CLOCKING_MODE("common_clock"),
+        .ECC_MODE("no_ecc"),
+        .MEMORY_INIT_FILE("none"),
+        .MEMORY_INIT_PARAM("0"),
+        .MEMORY_OPTIMIZATION("true"),
+        .MEMORY_PRIMITIVE("block"),
+        .MEMORY_SIZE(DEPTH * 8),
+        .MESSAGE_CONTROL(0),
+        .READ_DATA_WIDTH_B(8),
+        .READ_LATENCY_B(1),
+        .READ_RESET_VALUE_B("0"),
+        .RST_MODE_A("SYNC"),
+        .RST_MODE_B("SYNC"),
+        .SIM_ASSERT_CHK(0),
+        .USE_EMBEDDED_CONSTRAINT(0),
+        .USE_MEM_INIT(0),
+        .WAKEUP_TIME("disable_sleep"),
+        .WRITE_DATA_WIDTH_A(8),
+        .WRITE_MODE_B("read_first")
+    ) u_output_memory (
+        .clka(clk),
+        .ena(wr_en),
+        .wea(wr_en),
+        .addra(wr_addr),
+        .dina(wr_data),
+        .injectsbiterra(1'b0),
+        .injectdbiterra(1'b0),
+        .clkb(clk),
+        .rstb(1'b0),
+        .enb(rd_en),
+        .regceb(1'b1),
+        .addrb(rd_addr),
+        .doutb(rd_data_unsigned),
+        .sbiterrb(),
+        .dbiterrb(),
+        .sleep(1'b0)
+    );
+
+    assign rd_data = rd_data_unsigned;
+`else
+    reg signed [7:0] mem [0:DEPTH-1];
+    reg signed [7:0] rd_data_reg;
+
     integer init_i;
     initial begin
         /* verilator lint_off BLKSEQ */
         for (init_i = 0; init_i < DEPTH; init_i = init_i + 1) begin
             mem[init_i] = 8'sd0;
         end
+        rd_data_reg = 8'sd0;
         /* verilator lint_on BLKSEQ */
     end
-`endif
 
     always @(posedge clk) begin
         if (wr_en) begin
             mem[wr_addr] <= wr_data;
         end
+        if (rd_en) begin
+            rd_data_reg <= mem[rd_addr];
+        end
     end
 
-    assign rd_data = mem[rd_addr];
+    assign rd_data = rd_data_reg;
+`endif
 endmodule
 
 `default_nettype wire

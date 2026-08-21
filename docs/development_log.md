@@ -2,9 +2,9 @@
 
 项目：`rv32i_int8_dsc_cnn_accelerator`
 
-本日志用于记录每一轮推进、遇到的问题、验证结果，以及暂不影响当前验证但值得后续优化的事项。当前基线日期：2026-06-04。
+本日志用于记录每一轮推进、遇到的问题、验证结果，以及暂不影响当前验证但值得后续优化的事项。早期条目均保留其日期，不能替代当前工作树的证据。
 
-## 当前验证基线
+## 2026-06-04 历史验证基线
 
 - `tb_npc_cnn_custom_bridge`: PASS
 - `tb_npc_bridge_cnn_top_fullnet`: PASS, `hw_cycles=1085562`, `status=10907a82`, `checks=10`
@@ -504,7 +504,7 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 实现:
 - 新增/更新 `scripts/run_synthesis_vivado.ps1` 和 `scripts/vivado_cnn_top_synth.tcl`。
 - 支持 `-Top <module>` 做 out-of-context synthesis。
-- Vivado console 输出保存到 `build/reports/vivado_<top>/vivado_console.txt`，正式报告保存到 `docs/synthesis_vivado_<top>.md`。
+- Vivado console 输出保存到 `build/reports/vivado_<top>/vivado_console.txt`，正式报告保存到 `docs/reports/synthesis_vivado_<top>.md`。
 
 full `cnn_top` 尝试:
 - Vivado 成功启动并进入 `cnn_layer_runner` 子模块综合。
@@ -543,7 +543,7 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 - 将 Yosys 尝试、Vivado full-top 尝试、代表模块 OOC 综合结果、静态估算对照和后续修复计划整理成单一交付文档。
 
 实现:
-- 新增 `docs/synthesis_verification_report.md`。
+- 新增 `docs/reports/synthesis_verification_report.md`。
 - 报告明确区分:
   - 已完成的代表模块 Vivado synthesis。
   - `cnn_top` full synthesis 的真实阻塞点。
@@ -686,3 +686,71 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
 - 使用 timing-capable part/device support 做 implementation。
 - 将仍占 3398 LUT 的异步 output buffer 改为同步 BRAM + 预取状态。
 - 根据真实 layer cycles 决定 stem 并行度，并继续优化地址生成与 loader。
+
+## 2026-08-15：Loader lookahead、同步 output buffer 与验证加固
+
+目标：
+
+- 在保持 descriptor、firmware 地址和 tracked vectors 不变的前提下，减少 runner
+  loader 的空拍，并把 output buffer 收敛为适合 BRAM 的同步预取结构。
+- 将“能跑”的 memory interface 明确为可由真实 adapter 复现的单 outstanding
+  ready/valid contract，并用逐笔 oracle 加固测试。
+
+实现：
+
+- Stem 改为 3-MAC 复用实现；`cnn_out_buffer` 使用同步预取，综合/XPM 结构为 4
+  BRAM。XSim/Verilator 继续使用 cycle-equivalent behavioral model。
+- compact external loader 在当前响应到达时预置下一请求；compact SRAM、tiled
+  loader 和 PW BRAM loader 加入 lookahead。tiled 地址推进显式处理 channel/x/y
+  rollover，padding 不请求、最后一个元素不预取。
+- fullnet 报告加入每层 external/SRAM transaction oracle；Python 周期门槛收紧到
+  950000，理论 PW 字段改名为 `PW issue theoretical`。
+- 新增 bounds 检查和 tiled external backpressure 检查：单 outstanding、0..3 个
+  idle-cycle 响应延迟、ready stall、payload 稳定性及 write-sequence oracle。
+
+已确认验证：
+
+- fixed fullnet SRAM datapath：10/10 logits bit-exact，`944568` cycles，
+  `status=0x0e69b882`，5.438 MAC/cycle。
+- transaction totals：payload external reads 78602、descriptor reads 288、external
+  writes 10、SRAM reads 115808、SRAM writes 102656。
+- 相对 1138900-cycle 冻结旧基线，减少 194332 cycles（17.06%）。
+- CPU harness 得到相同 cycle/status；三个未改 tracked vectors 的 CPU+RTL 联合
+  结果均逐元素 bit-exact，argmax 为 3、8、8。SRAM bounds 逐笔地址测试 PASS。
+
+证据边界与后续：
+
+- tiled backpressure 的 write-sequence oracle 已补入，但其最终 PASS 以及完整
+  XSim/Verilator gate 仍在运行；不可提前宣称 16 项 XSim 或 38 项 Verilator 全过。
+- 当前 lookahead/output-buffer RTL 的 fresh synthesis 尚待执行。历史资源报告只作
+  演进对照，不能写为当前最终资源。
+- 本机 K26 database 是 non-timing device，无法得到 WNS/Fmax 或 timing closure；
+  需 timing-capable device database 和 implementation 才能完成该验证。
+
+## 2026-08-18：当前 RTL 的 fresh Vivado OOC synthesis
+
+- `cnn_top` synthesis PASS：0 errors、0 critical warnings。
+- `report_utilization`：30451 CLB LUT、28887 LUT as logic、1564 LUT as memory、
+  18558 CLB registers、46 Block RAM tiles、65 DSPs。
+- hierarchy：`u_layer_runner` 为 29119 LUT / 17328 FF / 30 BRAM / 65 DSP；
+  `u_ds_block_engine` 为 24307 LUT / 15653 FF / 26 BRAM / 14 DSP；
+  `u_out_buffer` 为 6 LUT / 4 BRAM。
+- K26 local device database 在 timing report / checkpoint API 处报告 non-timing
+  device；因此这次运行只证明综合与资源映射，不提供 WNS、Fmax 或 route closure。
+
+## 2026-08-21：fresh XSim 和定向 Verilator 收尾
+
+- `scripts/run_cnn_xsim.ps1` 在隔离并保留旧 `xsim.dir` 的前提下重新编译 27 个 RTL
+  文件，16/16 TB PASS；fullnet 为 10/10 logits bit-exact、944568 cycles、
+  `361.42x` RV32I estimate。
+- XSim 覆盖包含 tail-channel tile engine 7 cases / 2191 checks、SRAM bounds、
+  control bounds、tiled ready/response stalls/write sequence，以及所有 SRAM/e2e/
+  fullnet datapath cases。
+- WSL Verilator 5.020 的 clean directed evidence：tiled Stem 16384 checks、tiled
+  DSBlock 2256 checks、tile engine 7 cases / 2191 checks，均 PASS。完整 38-test
+  aggregation 因控制器 124-second command timeout 未形成 clean summary，不将其
+  工具中断归类为 DUT failure。
+- implementation wrapper 首次 run 正确记录 `FAILED_NON_TIMING_PART`（RTL/XDC/
+  synthesis/utilization 均通过）；随后补充 unique workdir 和 Git safe-directory
+  provenance。当前 K26 无 timing database，不能产生 closure；一次后续 Vivado
+  rerun 的 UNKNOWN/tool timeout 日志已保留为工具故障证据，不可当作 RTL 失败。

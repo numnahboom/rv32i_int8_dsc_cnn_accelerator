@@ -32,8 +32,8 @@
 | `docs/development_log.md` | 追加式开发日志和问题定位记录 | 完成一个可验证阶段、定位重要 bug、获得重要实验结果 |
 | `docs/project_next_optimization_bringup_guide.md` | 长版优化、综合、上板、报告建设路线图 | 综合状态、上板计划、优化策略发生大变化 |
 | `docs/architecture_diagrams.md` | Mermaid 架构图、数据流图、验证闭环图源文件 | datapath/control path/verification flow 改变 |
-| `docs/synthesis_vivado_summary.md` | Vivado 综合结果短版汇总 | 每次新的 Vivado OOC/full-top 结果产生后 |
-| `docs/synthesis_verification_report.md` | 综合验证长报告，解释资源风险和阻塞点 | 新增 full-top synthesis、timing、post-route、关键资源结论 |
+| `docs/reports/synthesis_vivado_summary.md` | Vivado 综合结果短版汇总 | 每次新的 Vivado OOC/full-top 结果产生后 |
+| `docs/reports/synthesis_verification_report.md` | 综合验证长报告，解释资源风险和阻塞点 | 新增 full-top synthesis、timing、post-route、关键资源结论 |
 
 ## 有条件保留文档
 
@@ -45,8 +45,8 @@
 | `docs/dw_tile_buffer_bram.md` | 记录 BRAM tile buffer 的 layout、接口、Vivado 证据 | 接入主路径后仍可保留，作为 BRAM buffer 专题设计说明 |
 | `docs/quantization.md` | 量化格式短规格 | 当前太短，建议扩写为完整量化规格；否则并入 README 和 module contracts |
 | `docs/isa_custom.md` | custom instruction 和 NPC custom port 说明 | 若 ISA 稳定，可保留；若 README 已覆盖全部内容，可并入 README 的 CPU/Firmware 部分 |
-| `docs/synthesis_initial.md` | Yosys 未安装的真实尝试记录 | 安装 Yosys 并产出真实报告后替换；否则可并入 `synthesis_verification_report.md` 的历史段落 |
-| `docs/synthesis_vivado_initial.md` | full `cnn_top` Vivado 初次尝试快照 | 新 full-top 结果产生后归档或删除，由 `synthesis_vivado_summary.md` 取代 |
+| `docs/reports/synthesis_initial.md` | Yosys 未安装的真实尝试记录 | 安装 Yosys 并产出真实报告后替换；否则可并入 `docs/reports/synthesis_verification_report.md` 的历史段落 |
+| `docs/reports/synthesis_vivado_initial.md` | full `cnn_top` Vivado 初次尝试快照 | 新 full-top 结果产生后归档或删除，由 `docs/reports/synthesis_vivado_summary.md` 取代 |
 
 ## 可合并、归档或删除的文档
 
@@ -59,16 +59,16 @@
 | `Project/项目描述.txt` | 当前为空文件 | 删除 |
 | `Project/改动说明以及一些问题.txt` | 临时问题单，内容已被 `development_log.md` 和 `module_design_contracts.md` 覆盖 | 删除；若仍有未解决问题，迁移到 `known_limits_next_steps.md` |
 | `docs/rv32i_int8_cnn_project_ppt.pptx` | 二进制 PPT，不适合作为源文档；当前工作区中已被删除 | 若需要 PPT，保留生成脚本和可编辑源；否则从 git 删除 |
-| `docs/synthesis_vivado_<module>.md` 单模块快照 | 多数是脚本生成模板，内容与 `build/reports/vivado_<module>/` 和 summary 重复 | 可迁移到 `build/` 作为生成物；`docs/` 下只保留 summary 和必要的特殊设计说明 |
+| `docs/reports/synthesis_vivado_<module>.md` 单模块快照 | 多数是脚本生成模板，内容与 `build/reports/vivado_<module>/` 和 summary 重复 | 可迁移到 `build/` 作为生成物；`docs/` 下只保留 summary 和必要的特殊设计说明 |
 
 ## 当前单模块综合快照处理建议
 
-`docs/synthesis_vivado_requant_activation_unit.md`、`docs/synthesis_vivado_pw_systolic_array_8x8.md`、`docs/synthesis_vivado_dw_mac_lanes.md`、`docs/synthesis_vivado_feature_sram_bank.md`、`docs/synthesis_vivado_dw_tile_buffer.md`、`docs/synthesis_vivado_dw_tile_fusion_engine.md`、`docs/synthesis_vivado_ds_block_tile_engine.md`、`docs/synthesis_vivado_dw_tile_buffer_bram.md` 均属于单模块 Vivado OOC 快照。
+`docs/reports/synthesis_vivado_requant_activation_unit.md`、`docs/reports/synthesis_vivado_pw_systolic_array_8x8.md`、`docs/reports/synthesis_vivado_dw_mac_lanes.md`、`docs/reports/synthesis_vivado_feature_sram_bank.md`、`docs/reports/synthesis_vivado_dw_tile_buffer.md`、`docs/reports/synthesis_vivado_dw_tile_fusion_engine.md`、`docs/reports/synthesis_vivado_ds_block_tile_engine.md`、`docs/reports/synthesis_vivado_dw_tile_buffer_bram.md` 均属于单模块 Vivado OOC 快照。
 
 建议规则：
 
 - 若这些文件由脚本自动生成，则不要长期人工维护，后续可移动到 `build/reports/`。
-- `docs/synthesis_vivado_summary.md` 保留表格摘要和结论。
+- `docs/reports/synthesis_vivado_summary.md` 保留表格摘要和结论。
 - 对有架构意义的结果，在专题设计文档中保留解释，例如 `dw_tile_buffer_bram.md` 中保留 BRAM 映射证据。
 - 重新跑综合后，先更新 summary，再决定是否保留某个单模块快照。
 
@@ -148,8 +148,8 @@ git commit -m "Update documentation for <topic>"
 
 第二轮：综合报告归档。
 
-1. 保留 `docs/synthesis_vivado_summary.md` 和 `docs/synthesis_verification_report.md`。
-2. 把单模块 `docs/synthesis_vivado_<module>.md` 迁移到 `build/reports/` 或 `docs/archive/synthesis/`。
+1. 保留 `docs/reports/synthesis_vivado_summary.md` 和 `docs/reports/synthesis_verification_report.md`。
+2. 把单模块 `docs/reports/synthesis_vivado_<module>.md` 迁移到 `build/reports/` 或 `docs/archive/synthesis/`。
 3. 若要保留可复现实验证据，确保脚本能重新生成这些快照。
 4. README 只引用 summary，不逐个引用单模块快照。
 

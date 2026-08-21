@@ -63,7 +63,11 @@ for ((n = 0; n < SAMPLES; n++)); do
 
   run_args="+expected_logits_hex=$vectors_dir/expected_fullnet_logits.hex +expected_argmax_hex=$vectors_dir/expected_argmax.hex"
   if [[ "$compiled" -eq 0 ]]; then
-    MODEL_INCLUDE_DIR="$model_dir" RUN_ARGS="$run_args" ./scripts/run_sim.sh "$TOP" | tee "$log_path"
+    # Each sample already has its own freshly exported vectors under WORK_DIR.
+    # Do not let the generic simulator entrypoint rewrite the tracked canonical
+    # tests/vectors tree as an unrelated side effect of this regression.
+    GENERATE_TEST_VECTORS=0 MODEL_INCLUDE_DIR="$model_dir" RUN_ARGS="$run_args" \
+      ./scripts/run_sim.sh "$TOP" | tee "$log_path"
     compiled=1
   else
     MODEL_INCLUDE_DIR="$model_dir" ./scripts/build_firmware_rom.sh >/dev/null

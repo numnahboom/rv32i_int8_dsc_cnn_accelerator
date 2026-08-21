@@ -24,6 +24,10 @@ module tb_cnn_top_tiled_stem_datapath;
     reg [31:0] mem [0:MEM_WORDS-1];
     reg [31:0] expected_addr [0:MAX_EXPECTED-1];
     reg [7:0] expected_data [0:MAX_EXPECTED-1];
+    reg expected_write_valid [0:MEM_WORDS-1];
+    reg expected_write_seen [0:MEM_WORDS-1];
+    reg [31:0] expected_write_addr [0:MEM_WORDS-1];
+    reg [7:0] expected_write_data [0:MEM_WORDS-1];
 
     integer fd;
     integer scan_count;
@@ -36,9 +40,22 @@ module tb_cnn_top_tiled_stem_datapath;
     integer timeout;
     integer total_checks;
     integer error_count;
+    integer responder_cycle;
+    integer accepted_reads;
+    integer returned_reads;
+    integer accepted_writes;
+    integer response_delay;
     reg [31:0] tmp_addr;
     reg [31:0] tmp_data;
     reg [7:0] tmp_i8;
+    reg pending_read;
+    reg [31:0] pending_rdata;
+    reg saw_ready_stall;
+    reg [3:0] delay_coverage;
+    reg stalled_request;
+    reg stalled_write;
+    reg [31:0] stalled_addr;
+    reg [31:0] stalled_wdata;
 
     cnn_top dut (
         .clk(clk),
@@ -63,18 +80,112 @@ module tb_cnn_top_tiled_stem_datapath;
         forever #5 clk = ~clk;
     end
 
+    // The responder accepts one external read at a time.  Read replies are
+    // deliberately delayed by 0..3 idle cycles, while ready follows a fixed
+    // pattern.  This makes the tiled loader prove its ready/valid behaviour,
+    // instead of relying on the old always-ready, one-cycle memory model.
     always @(posedge clk) begin
         if (!rst_n) begin
+            mem_req_ready <= 1'b1;
             mem_resp_valid <= 1'b0;
             mem_resp_rdata <= 32'd0;
+            responder_cycle <= 0;
+            accepted_reads <= 0;
+            returned_reads <= 0;
+            accepted_writes <= 0;
+            response_delay <= 0;
+            pending_read <= 1'b0;
+            pending_rdata <= 32'd0;
+            saw_ready_stall <= 1'b0;
+            delay_coverage <= 4'b0000;
+            stalled_request <= 1'b0;
+            stalled_write <= 1'b0;
+            stalled_addr <= 32'd0;
+            stalled_wdata <= 32'd0;
         end else begin
+            responder_cycle <= responder_cycle + 1;
+            case (responder_cycle % 7)
+                2, 5: mem_req_ready <= 1'b0;
+                default: mem_req_ready <= 1'b1;
+            endcase
+
             mem_resp_valid <= 1'b0;
+            if (pending_read) begin
+                if (response_delay == 0) begin
+                    mem_resp_valid <= 1'b1;
+                    mem_resp_rdata <= pending_rdata;
+                    pending_read <= 1'b0;
+                    returned_reads <= returned_reads + 1;
+                end else begin
+                    response_delay <= response_delay - 1;
+                end
+            end
+
+            if (stalled_request) begin
+                if (!mem_req_valid ||
+                    mem_req_write !== stalled_write ||
+                    mem_req_addr !== stalled_addr ||
+                    mem_req_wdata !== stalled_wdata) begin
+                    $display("FAIL tb_cnn_top_tiled_stem_datapath unstable request while stalled case=%0d", case_idx);
+                    $fatal;
+                end
+            end
+            if (mem_req_valid && !mem_req_ready) begin
+                saw_ready_stall <= 1'b1;
+                stalled_request <= 1'b1;
+                stalled_write <= mem_req_write;
+                stalled_addr <= mem_req_addr;
+                stalled_wdata <= mem_req_wdata;
+            end else begin
+                stalled_request <= 1'b0;
+            end
+
             if (mem_req_valid && mem_req_ready) begin
                 if (mem_req_write) begin
+                    if (accepted_writes >= expected_count) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath unexpected extra write case=%0d index=%0d addr=%08x data=%08x",
+                                 case_idx, accepted_writes, mem_req_addr, mem_req_wdata);
+                        $fatal;
+                    end
+                    if (!expected_write_valid[mem_req_addr[17:2]]) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath write to unexpected address case=%0d index=%0d addr=%08x data=%08x",
+                                 case_idx, accepted_writes, mem_req_addr, mem_req_wdata);
+                        $fatal;
+                    end
+                    if (mem_req_addr !== expected_write_addr[mem_req_addr[17:2]]) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath aliased write address case=%0d index=%0d addr=%08x expected_addr=%08x",
+                                 case_idx, accepted_writes, mem_req_addr,
+                                 expected_write_addr[mem_req_addr[17:2]]);
+                        $fatal;
+                    end
+                    if (expected_write_seen[mem_req_addr[17:2]]) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath duplicate write case=%0d index=%0d addr=%08x data=%08x",
+                                 case_idx, accepted_writes, mem_req_addr, mem_req_wdata);
+                        $fatal;
+                    end
+                    if (mem_req_wdata !==
+                        {{24{expected_write_data[mem_req_addr[17:2]][7]}},
+                          expected_write_data[mem_req_addr[17:2]]}) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath write data mismatch case=%0d index=%0d addr=%08x data=%08x expected_data=%08x",
+                                 case_idx, accepted_writes, mem_req_addr,
+                                 mem_req_wdata,
+                                 {{24{expected_write_data[mem_req_addr[17:2]][7]}},
+                                   expected_write_data[mem_req_addr[17:2]]});
+                        $fatal;
+                    end
                     mem[mem_req_addr[17:2]] <= mem_req_wdata;
+                    expected_write_seen[mem_req_addr[17:2]] <= 1'b1;
+                    accepted_writes <= accepted_writes + 1;
                 end else begin
-                    mem_resp_valid <= 1'b1;
-                    mem_resp_rdata <= mem[mem_req_addr[17:2]];
+                    if (pending_read) begin
+                        $display("FAIL tb_cnn_top_tiled_stem_datapath second accepted read before reply case=%0d addr=%08x", case_idx, mem_req_addr);
+                        $fatal;
+                    end
+                    pending_read <= 1'b1;
+                    pending_rdata <= mem[mem_req_addr[17:2]];
+                    response_delay <= accepted_reads % 4;
+                    delay_coverage[accepted_reads % 4] <= 1'b1;
+                    accepted_reads <= accepted_reads + 1;
                 end
             end
         end
@@ -87,20 +198,21 @@ module tb_cnn_top_tiled_stem_datapath;
             cmd_type = 2'd0;
             mem_resp_valid = 1'b0;
             mem_resp_rdata = 32'd0;
-            repeat (5) @(posedge clk);
+            repeat (5) @(negedge clk);
             rst_n = 1'b1;
-            @(posedge clk);
+            @(negedge clk);
         end
     endtask
 
     task start_and_wait_done;
         begin
             while (!cmd_ready) begin
-                @(posedge clk);
+                @(negedge clk);
             end
             cmd_valid = 1'b1;
             cmd_type = 2'd0;
             @(posedge clk);
+            @(negedge clk);
             cmd_valid = 1'b0;
 
             timeout = 0;
@@ -110,6 +222,29 @@ module tb_cnn_top_tiled_stem_datapath;
             end
             if (timeout >= 1000000) begin
                 $display("FAIL tb_cnn_top_tiled_stem_datapath timeout case=%0d status=%08x", case_idx, status);
+                $fatal;
+            end
+        end
+    endtask
+
+    task check_bus_protocol;
+        begin
+            @(negedge clk);
+            if (accepted_reads != returned_reads || pending_read) begin
+                $display("FAIL tb_cnn_top_tiled_stem_datapath incomplete reads case=%0d accepted=%0d returned=%0d pending=%0d", case_idx, accepted_reads, returned_reads, pending_read);
+                $fatal;
+            end
+            if (accepted_writes != expected_count) begin
+                $display("FAIL tb_cnn_top_tiled_stem_datapath write count case=%0d accepted=%0d expected=%0d",
+                         case_idx, accepted_writes, expected_count);
+                $fatal;
+            end
+            if (!saw_ready_stall) begin
+                $display("FAIL tb_cnn_top_tiled_stem_datapath did not exercise ready stall case=%0d", case_idx);
+                $fatal;
+            end
+            if (delay_coverage !== 4'b1111) begin
+                $display("FAIL tb_cnn_top_tiled_stem_datapath incomplete response-delay coverage case=%0d coverage=%b", case_idx, delay_coverage);
                 $fatal;
             end
         end
@@ -130,13 +265,17 @@ module tb_cnn_top_tiled_stem_datapath;
         fd = $fopen("tests/vectors/cnn_top_tiled_stem_cases.hex", "r");
         if (fd == 0) begin
             $display("ERROR: cannot open tests/vectors/cnn_top_tiled_stem_cases.hex");
-            $finish;
+            $fatal;
         end
         scan_count = $fscanf(fd, "%d\n", num_cases);
 
         for (case_idx = 0; case_idx < num_cases; case_idx = case_idx + 1) begin
             for (i = 0; i < MEM_WORDS; i = i + 1) begin
                 mem[i] = 32'd0;
+                expected_write_valid[i] = 1'b0;
+                expected_write_seen[i] = 1'b0;
+                expected_write_addr[i] = 32'd0;
+                expected_write_data[i] = 8'd0;
             end
             for (i = 0; i < MAX_EXPECTED; i = i + 1) begin
                 expected_addr[i] = 32'd0;
@@ -167,10 +306,19 @@ module tb_cnn_top_tiled_stem_datapath;
                 end
                 expected_addr[i] = tmp_addr;
                 expected_data[i] = tmp_i8;
+                if (expected_write_valid[tmp_addr[17:2]]) begin
+                    $display("ERROR: duplicate expected write address case=%0d index=%0d addr=%08x",
+                             case_idx, i, tmp_addr);
+                    $fatal;
+                end
+                expected_write_valid[tmp_addr[17:2]] = 1'b1;
+                expected_write_addr[tmp_addr[17:2]] = tmp_addr;
+                expected_write_data[tmp_addr[17:2]] = tmp_i8;
             end
 
             reset_dut();
             start_and_wait_done();
+            check_bus_protocol();
 
             if (status[2]) begin
                 $display("MISMATCH case=%0d unexpected error status=%08x", case_idx, status);

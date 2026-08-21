@@ -24,6 +24,13 @@ if (-not (Test-Path $Vivado)) {
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
+# Vivado 2021.2 otherwise derives a malformed local Tcl-store path ("C")
+# from HOMEDRIVE on this Windows setup and emits Common 17-741.  HOME is
+# inherited only by this wrapper and its child process.
+if (-not $env:HOME -and $env:USERPROFILE) {
+    $env:HOME = $env:USERPROFILE
+}
+
 Push-Location $ProjectRoot
 try {
     & $Vivado -mode batch -notrace -log $LogFile -journal $JournalFile -source $TclScript -tclargs $Top $Part *> $ConsoleFile
@@ -35,7 +42,7 @@ try {
 }
 
 if ($Top -eq "cnn_top") {
-    Get-Content (Join-Path $ProjectRoot "docs\synthesis_vivado_initial.md")
+    Get-Content (Join-Path $ProjectRoot "docs\reports\synthesis_vivado_initial.md")
 } else {
-    Get-Content (Join-Path $ProjectRoot "docs\synthesis_vivado_$Top.md")
+    Get-Content (Join-Path $ProjectRoot "docs\reports\synthesis_vivado_$Top.md")
 }

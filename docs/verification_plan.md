@@ -143,15 +143,50 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\run_cnn_xsim.ps1
 ```
 
-It compiles the CNN/common RTL from `sim/filelist.f` and runs 13 critical tests:
-new DSBlock, feature SRAM, normal/tiled/SRAM DS, tiled stem, ops, multilayer,
-GAP/FC, stem→DS, tail, end-to-end, and full-network SRAM datapaths.
+It compiles the CNN/common RTL from `sim/filelist_cnn_current.f`; the RTL is
+compiled once and each selected TB is compiled incrementally.  The current gate
+contains the refactored datapath tests, including bounds and tiled backpressure
+coverage.  The exact final test count is emitted by the script rather than
+hard-coded here.
 
 Acceptance standard:
 
-- the final line is `PASS cnn_xsim_regression tests=13`;
-- `tb_ds_block_tile_engine_new` reports 3 cases / 1792 checks;
-- tiled stem reports 16384 checks;
-- normal and tiled DS top tests report 768 and 2256 checks;
-- full-network SRAM logits match all 10 golden values;
+- every selected TB prints its own PASS token and the wrapper prints its PASS
+  token only after all selected TBs pass;
+- full-network SRAM logits match all 10 golden values and report the fresh
+  `944568`-cycle / `0x0e69b882` result when run on the fixed reference vector;
+- the fullnet oracle checks 78602 payload external reads plus 288 descriptor
+  reads, 10 external writes, 115808 SRAM reads, and 102656 SRAM writes;
+- bounds tests check every SRAM address transaction-by-transaction;
+- tiled backpressure tests cover a single outstanding external read, 0..3
+  idle-cycle response delay, ready stalls, and payload stability while stalled;
 - a synthesis result is not accepted as a replacement for this functional gate.
+
+At the time of this document update, the complete XSim run is complete:
+`PASS cnn_xsim_regression tests=16` after recompiling 27 RTL files.  WSL
+Verilator 5.020 independently passes the three high-risk current testbenches:
+tiled Stem (16384 checks), tiled DSBlock (2256 checks), and the 7-case / 2191-
+check tail-channel tile engine.  The full 38-test Verilator aggregation is not
+yet an accepted gate because its controller invocation was time-limited; do
+not represent the three directed passes as full-suite coverage.
+
+## Memory Interface Assumptions
+
+The external read interface permits one outstanding request.  A read response
+may be arbitrarily delayed after its request handshake, but cannot be returned
+in the same cycle; the earliest legal response is the next cycle.  Writes have
+no response.  A stalled write keeps `{write, address, data}` stable.  AXI and
+combinational-RAM adapters must register read data to provide this contract.
+
+The phrase “0 idle-cycle response delay” in a backpressure test means that the
+response appears in the first cycle *after* the handshake; it does not permit a
+combinational same-cycle response.
+
+`cnn_out_buffer` has a synchronous behavioral model for ordinary XSim and
+Verilator.  Its XPM implementation is validated through synthesis structure;
+ordinary simulators do not directly execute the XPM branch.
+
+For a reproducible evidence set, preserve the wrapper log, `summary.csv` (for
+Verilator), the fullnet metrics/CSV, and `git rev-parse HEAD` together.  A PASS
+line from a previous commit, a different vector export, or an OOC synthesis run
+is not a substitute for the corresponding gate on the exact RTL under review.

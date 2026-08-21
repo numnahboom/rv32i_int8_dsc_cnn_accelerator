@@ -1455,6 +1455,15 @@ def generate_dsblock_cases(out_dir: Path) -> Path:
         (8, 8, 10, 10, 8, 8, 1, True),
         (4, 4, 9, 9, 16, 16, 2, True),
         (2, 2, 4, 4, 8, 256, 1, False),
+        # Directed tail-lane and BRAM lookahead cases for the streaming engine:
+        # 1/1 closes both lane groups immediately; 7/9 closes both partial
+        # groups with stride two; 17/9 crosses the 16-channel DW BRAM tile.
+        (3, 3, 5, 5, 1, 1, 1, False),
+        (3, 2, 7, 5, 7, 9, 2, False),
+        (3, 3, 5, 5, 17, 9, 1, False),
+        # Exercise the final physical input/weight BRAM entries without
+        # making the compute tile itself unnecessarily large.
+        (1, 1, 3, 3, 127, 255, 1, False),
     ]
     cases = []
     for out_h, out_w, in_h, in_w, channels, out_c, stride, padded_border in specs:

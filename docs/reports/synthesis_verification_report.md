@@ -136,9 +136,9 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 
 ## 8. 相关产物
 
-- `docs/synthesis_vivado_initial.md`
-- `docs/synthesis_vivado_summary.md`
-- `docs/synthesis_vivado_ds_block_tile_engine_new.md`
+- `docs/reports/synthesis_vivado_initial.md`
+- `docs/reports/synthesis_vivado_summary.md`
+- `docs/reports/synthesis_vivado_ds_block_tile_engine_new.md`
 - `build/reports/vivado_cnn_top/utilization.txt`
 - `build/reports/vivado_cnn_top/utilization_hierarchical.txt`
 - `scripts/vivado_cnn_top_synth.tcl`

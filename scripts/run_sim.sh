@@ -7,7 +7,17 @@ OBJ_DIR="$ROOT/build/verilator/$TOP"
 
 cd "$ROOT"
 
-python3 python/generate_test_vectors.py >/dev/null
+case "${GENERATE_TEST_VECTORS:-1}" in
+  1)
+    python3 python/generate_test_vectors.py >/dev/null
+    ;;
+  0)
+    ;;
+  *)
+    echo "GENERATE_TEST_VECTORS must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 if [[ "$TOP" == "tb_npc_rv_core_cnn_top_fullnet" ]]; then
   ./scripts/build_firmware_rom.sh >/dev/null
 fi

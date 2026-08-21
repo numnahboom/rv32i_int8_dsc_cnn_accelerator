@@ -5,8 +5,9 @@
  * Resource-oriented 3x3 stem.
  *
  * Input/parameter payloads are written through a scalar configuration port.
- * One signed 8x8 MAC is reused across the 27 kernel terms of every output,
- * removing the packed-vector write network and 27-way combinational datapath.
+ * Three signed 8x8 MACs process the three input channels in parallel.  The
+ * datapath therefore needs nine cycles per output instead of 27 while still
+ * avoiding the original 27-way combinational expansion.
  */
 module conv3x3_stem_engine_new (
     input  wire               clk,
@@ -61,38 +62,46 @@ module conv3x3_stem_engine_new (
     reg signed [31:0] activation_max_reg;
     reg [5:0] pixel_idx;
     reg [3:0] channel_idx;
-    reg [4:0] kernel_idx;
+    reg [3:0] out_y_idx;
+    reg [3:0] out_x_idx;
+    reg [1:0] kernel_y_idx;
+    reg [1:0] kernel_x_idx;
     reg signed [31:0] acc_reg;
 
-    wire [3:0] out_y;
-    wire [3:0] out_x;
-    wire [1:0] kernel_y;
-    wire [1:0] kernel_x;
-    wire [1:0] kernel_c;
-    wire [8:0] input_addr;
-    wire [8:0] weight_addr;
-    wire signed [7:0] act_value;
-    wire signed [7:0] weight_value;
-    wire signed [15:0] product_value;
+    wire [8:0] input_addr_base;
+    wire [8:0] weight_addr_base;
+    wire signed [7:0] act_value_0;
+    wire signed [7:0] act_value_1;
+    wire signed [7:0] act_value_2;
+    wire signed [7:0] weight_value_0;
+    wire signed [7:0] weight_value_1;
+    wire signed [7:0] weight_value_2;
+    wire signed [15:0] product_value_0;
+    wire signed [15:0] product_value_1;
+    wire signed [15:0] product_value_2;
+    wire signed [17:0] product_sum;
     wire signed [31:0] acc_next;
-    wire [7:0] output_pixels;
 
     integer cfg_addr;
 
     assign cfg_ready = !busy;
-    assign output_pixels = out_h_reg * out_w_reg;
-    assign out_y = (out_w_reg == 4'd0) ? 4'd0 : (pixel_idx / out_w_reg);
-    assign out_x = (out_w_reg == 4'd0) ? 4'd0 : (pixel_idx % out_w_reg);
-    assign kernel_y = kernel_idx / 5'd9;
-    assign kernel_x = (kernel_idx / 5'd3) % 3;
-    assign kernel_c = kernel_idx % 3;
-    assign input_addr = (((out_y + kernel_y) * 10) +
-                         (out_x + kernel_x)) * 3 + kernel_c;
-    assign weight_addr = (channel_idx * 27) + kernel_idx;
-    assign act_value = input_mem[input_addr];
-    assign weight_value = weight_mem[weight_addr];
-    assign product_value = act_value * weight_value;
-    assign acc_next = acc_reg + {{16{product_value[15]}}, product_value};
+    assign input_addr_base = (((out_y_idx + kernel_y_idx) * 10) +
+                              (out_x_idx + kernel_x_idx)) * 3;
+    assign weight_addr_base = (channel_idx * 27) +
+                              (((kernel_y_idx * 3) + kernel_x_idx) * 3);
+    assign act_value_0 = input_mem[input_addr_base];
+    assign act_value_1 = input_mem[input_addr_base + 9'd1];
+    assign act_value_2 = input_mem[input_addr_base + 9'd2];
+    assign weight_value_0 = weight_mem[weight_addr_base];
+    assign weight_value_1 = weight_mem[weight_addr_base + 9'd1];
+    assign weight_value_2 = weight_mem[weight_addr_base + 9'd2];
+    assign product_value_0 = act_value_0 * weight_value_0;
+    assign product_value_1 = act_value_1 * weight_value_1;
+    assign product_value_2 = act_value_2 * weight_value_2;
+    assign product_sum = {{2{product_value_0[15]}}, product_value_0} +
+                         {{2{product_value_1[15]}}, product_value_1} +
+                         {{2{product_value_2[15]}}, product_value_2};
+    assign acc_next = acc_reg + {{14{product_sum[17]}}, product_sum};
 
     function signed [63:0] round_shift_s64;
         input signed [63:0] value;
@@ -196,7 +205,10 @@ module conv3x3_stem_engine_new (
             activation_max_reg <= 32'sd127;
             pixel_idx <= 6'd0;
             channel_idx <= 4'd0;
-            kernel_idx <= 5'd0;
+            out_y_idx <= 4'd0;
+            out_x_idx <= 4'd0;
+            kernel_y_idx <= 2'd0;
+            kernel_x_idx <= 2'd0;
             acc_reg <= 32'sd0;
             out_wr_en <= 1'b0;
             out_wr_pixel_idx <= 6'd0;
@@ -224,7 +236,10 @@ module conv3x3_stem_engine_new (
                             activation_max_reg <= activation_max;
                             pixel_idx <= 6'd0;
                             channel_idx <= 4'd0;
-                            kernel_idx <= 5'd0;
+                            out_y_idx <= 4'd0;
+                            out_x_idx <= 4'd0;
+                            kernel_y_idx <= 2'd0;
+                            kernel_x_idx <= 2'd0;
                             acc_reg <= 32'sd0;
                             state <= ST_MAC;
                         end
@@ -232,26 +247,39 @@ module conv3x3_stem_engine_new (
                 end
 
                 ST_MAC: begin
-                    if (kernel_idx == 5'd26) begin
+                    if ((kernel_y_idx == 2'd2) && (kernel_x_idx == 2'd2)) begin
                         out_wr_en <= 1'b1;
                         out_wr_pixel_idx <= pixel_idx;
                         out_wr_channel_idx <= channel_idx;
                         out_wr_data_int8 <= requant_stem(acc_next, channel_idx);
-                        kernel_idx <= 5'd0;
+                        kernel_y_idx <= 2'd0;
+                        kernel_x_idx <= 2'd0;
                         acc_reg <= 32'sd0;
                         if (channel_idx == 4'd15) begin
                             channel_idx <= 4'd0;
-                            if (({2'd0, pixel_idx} + 8'd1) >= output_pixels) begin
+                            if ((out_y_idx + 4'd1 >= out_h_reg) &&
+                                (out_x_idx + 4'd1 >= out_w_reg)) begin
                                 state <= ST_DONE;
                             end else begin
                                 pixel_idx <= pixel_idx + 6'd1;
+                                if ((out_x_idx + 4'd1) >= out_w_reg) begin
+                                    out_x_idx <= 4'd0;
+                                    out_y_idx <= out_y_idx + 4'd1;
+                                end else begin
+                                    out_x_idx <= out_x_idx + 4'd1;
+                                end
                             end
                         end else begin
                             channel_idx <= channel_idx + 4'd1;
                         end
                     end else begin
                         acc_reg <= acc_next;
-                        kernel_idx <= kernel_idx + 5'd1;
+                        if (kernel_x_idx == 2'd2) begin
+                            kernel_x_idx <= 2'd0;
+                            kernel_y_idx <= kernel_y_idx + 2'd1;
+                        end else begin
+                            kernel_x_idx <= kernel_x_idx + 2'd1;
+                        end
                     end
                 end
 

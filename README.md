@@ -113,9 +113,9 @@ Optional debug/control path:
 MMIO bus -> cnn_mmio_regs -> cnn_top
 ```
 
-`cnn_top` 由 descriptor 驱动，每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。
+`cnn_top` 由 descriptor 驱动，每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。Stem 使用 3 个复用 int8 MAC；DS 路径使用 BRAM buffer、DW stream 和 PW 阵列。
 
-当前外部 memory 仿真格式仍是“一 int8 element 一 32-bit word，低 8 位有效”。这是为了简化仿真和调试，后续需要改为 packed NHWC byte layout。
+当前外部 memory 仿真格式仍是“一 int8 element 一 32-bit word，低 8 位有效”。这是为了简化仿真和调试，后续需要改为 packed NHWC byte layout。读端最多一个 outstanding：请求在 ready/valid 握手后，响应可任意延迟但最早下一拍、不能同拍返回；写端没有响应。适配 AXI 或组合 RAM 时必须寄存读响应以保持这一契约。
 
 ## CPU 和 Firmware 接口
 
@@ -265,43 +265,24 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 
 该脚本会为每个样本重新导出 headers/vectors，并复用 `tb_npc_rv_core_cnn_top_fullnet` 检查 RTL logits 和 Python int8 golden 是否逐元素一致。
 
-## 最近验证快照
+## 当前验证快照
 
-最近保存的完整回归目录为 `build/reports/sim_logs_full_20260621`，包含 35 个 testbench，全部 PASS。
-
-| 用例 | 状态 | 关键结果 |
-| --- | --- | --- |
-| `tb_cnn_top_fullnet_sram_datapath` | PASS | `hw_cycles=3501306`, `checks=10`, `errors=0`, `status=356cfa82` |
-| `tb_mmio_cnn_top_fullnet` | PASS | `polls=1750654`, `status=356cfa82`, `hw_cycles=3501306`, `checks=10` |
-| `tb_rv_custom_if_cnn_top_fullnet` | PASS | custom instruction -> `cnn_top` fullnet 闭环 |
-| `tb_npc_bridge_cnn_top_fullnet` | PASS | `polls=3501308`, `status=356cfa82`, `hw_cycles=3501306`, `checks=10` |
-| `tb_npc_rv_core_cnn_top_fullnet` | PASS | `cycles=3501306`, `status=356cfa82`, `start_count=1`, `stat_count=1`, `argmax=4` |
-
-当前 fullnet logits compare：
+当前工作树的 fixed full-network SRAM datapath 已新鲜验证 10/10 logits 与 Python golden bit-exact：
 
 ```text
-expected: fb fd 08 fd 02 f5 fe fe 04 f5
-hardware: fb fd 08 fd 02 f5 fe fe 04 f5
+hw_cycles=944568
+status=0x0e69b882
+payload_external_reads=78602
+descriptor_reads=288
+external_writes=10
+sram_reads=115808
+sram_writes=102656
+throughput=5.438 MAC/cycle
 ```
 
-按 int8 解释为：
+相对于 1138900-cycle 的已冻结前版本基线，这一轮 compact/tiled/PW loader lookahead 少 194332 cycles（17.06%）。CPU 联合 harness 也得到相同的 `944568` cycles 与 `0x0e69b882` status；3 个未改 tracked vectors 的样本均逐元素 bit-exact，argmax 分别为 3、8、8。
 
-```text
--5 -3 8 -3 2 -11 -2 -2 4 -11
-```
-
-当前保存的 fullnet metrics：
-
-```text
-hw_cycles=3501306
-mem_reads=78890
-mem_writes=10
-desc_reads=288
-checks=10
-errors=0
-```
-
-最近保存的多样本联合仿真工作目录 `build/multi_sample_rtl` 显示 sample `0,1,2` 均 PASS，且 `expected_argmax == rtl_argmax`。
+逐笔 bounds 测试已通过。tiled external-memory backpressure 用例覆盖单 outstanding、0..3 拍响应延迟、ready stall、stalled write payload 稳定性和写序列 oracle。2026-08-21 fresh XSim 16/16 PASS，包含 tail-channel cases 与 fullnet；独立 WSL/Verilator 定向回归也通过 tiled Stem（16384 checks）、tiled DSBlock（2256 checks）和 tile engine（7 cases / 2191 checks）。
 
 ## 资源估算
 
@@ -329,11 +310,11 @@ Wide requant multipliers: 4
 Conservative DSP risk estimate: 178 DSPs
 ```
 
-这只是 RTL 参数级静态估算，不能替代综合报告。当前分支已移除
-`cnn_layer_runner.v` 中的大型 packed staging 向量；2026-07-17 的完整
-`cnn_top` Vivado OOC synthesis 结果为 45830 CLB LUT、18387 FF、
-42 BRAM36、60 DSP。正式口径见 `docs/synthesis_vivado_initial.md` 和
-`build/reports/vivado_cnn_top/utilization.txt`。
+这只是 RTL 参数级静态估算，不能替代综合报告。2026-08-18 对当前
+lookahead/output-buffer RTL 的 fresh Vivado OOC synthesis 得到 30451 CLB LUT、
+18558 CLB registers、46 Block RAM tiles 和 65 DSPs；其中 `cnn_out_buffer` 映射为
+4 个 BRAM、6 LUT。详见 `docs/reports/synthesis_vivado_initial.md`。这仍只是结构/资源
+证据，不是 post-route timing 或板级性能结果。
 
 ## 关键已实现模块
 
@@ -353,8 +334,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\run_cnn_xsim.ps1
 ```
 
-当前 `refactor/streaming-dsblock-bram` 分支实测为 13/13 PASS。详细架构、
-cycle/resource 数据、综合命令和从 main 复现顺序见
+当前脚本会以 `sim/filelist_cnn_current.f` 编译 CNN RTL，并逐 TB 增量编译。2026-08-21
+fresh gate 为 `PASS cnn_xsim_regression tests=16`。详细架构、cycle/resource 数据、
+综合命令和从 main 复现顺序见
 `docs/streaming_engine_refactor_guide.md`。
 
 ## 已知限制
@@ -362,10 +344,12 @@ cycle/resource 数据、综合命令和从 main 复现顺序见
 - 当前是固定 EdgeDSCNet-C10 shape 的功能型 v1，不是通用 CNN/NPU。
 - 当前模型精度足够做硬件功能验证，但不是最终 ML 质量目标。
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
-- new DSBlock、顺序式 stem/GAP/FC 和 BRAM feature SRAM 已接入；13 项 XSim 关键回归全部通过。
-- new DSBlock OOC 为 24281 CLB LUT、15649 FF、26 BRAM36、14 DSP。
-- post-refactor `cnn_top` 综合通过：45830 CLB LUT（39.13%）、18387 FF（7.85%）、42 BRAM36（29.17%）、60 DSP（4.81%）。
-- 当前 K26 device support 不能生成 timing report，因此上述数字只证明资源可装入，不证明 WNS/Fmax 或 place-and-route closure。
+- 3-MAC Stem、同步预取 `cnn_out_buffer`（综合/XPM 为 4 BRAM）、compact/tiled loader lookahead 与 PW BRAM lookahead 已接入。
+- 普通 XSim/Verilator 使用 output buffer 的同步 behavioral model；XPM 分支仅由综合结构验证。
+- fresh Vivado OOC synthesis 和 XSim 16-test gate 均已完成；完整 38-test Verilator
+  batch 仍应在不受单次命令超时限制的环境中归档，但其三个本轮高风险定向用例已 clean PASS。
+  不得把 OOC 结果写成 timing closure。
+- 当前 K26 device database 不能生成 timing report，因此不能给出 WNS/Fmax 或声称 place-and-route closure。
 - Requant 当前优先 bit-exact 对齐 Python golden，后续仍需要根据 DSP/时序压力做位宽收敛、共享或流水化。
 - 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
 - 缺少形式验证和更强的 constrained-random/backpressure 压力测试。
@@ -373,7 +357,7 @@ cycle/resource 数据、综合命令和从 main 复现顺序见
 ## 下一步
 
 1. 使用 timing-capable part/device support 跑 place-and-route，获得 WNS/Fmax、拥塞和功耗数据。
-2. 将异步 `cnn_out_buffer` 改成带预取状态的同步 BRAM，预计可减少约 3.4K LUT，但必须保持 store 时序契约。
+2. 在 timing-capable device 上完成 implementation，并根据结果优化 DSP/LUT 取舍和关键路径。
 3. 将 word-per-int8 外部 memory 布局改成 packed NHWC byte addressing 和 burst-friendly loader。
 4. 对 requant multiplier、PW array fanout、valid/control 信号做综合后的时序优化。
 5. 用更强的 PTQ/QAT checkpoint 重新导出 firmware headers，并扩大多样本 RTL 回归。

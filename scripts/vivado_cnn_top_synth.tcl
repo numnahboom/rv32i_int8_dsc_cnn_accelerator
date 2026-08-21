@@ -21,10 +21,10 @@ file mkdir $out_dir
 set_param general.maxThreads 4
 
 if {$top_name eq "cnn_top"} {
-    set report_md [file join $project_root "docs" "synthesis_vivado_initial.md"]
+    set report_md [file join $project_root "docs" "reports" "synthesis_vivado_initial.md"]
     set build_md [file join $project_root "build" "reports" "synthesis_vivado_initial.md"]
 } else {
-    set report_md [file join $project_root "docs" "synthesis_vivado_$top_name.md"]
+    set report_md [file join $project_root "docs" "reports" "synthesis_vivado_$top_name.md"]
     set build_md [file join $project_root "build" "reports" "synthesis_vivado_$top_name.md"]
 }
 
@@ -48,6 +48,17 @@ proc write_failure_report {report_md build_md top_name part_name msg} {
     file copy -force $report_md $build_md
 }
 
+proc utilization_used {report_path row_pattern} {
+    set fh [open $report_path "r"]
+    set content [read $fh]
+    close $fh
+    set pattern [format {\|[[:space:]]*%s[[:space:]]*\|[[:space:]]*([0-9]+)} $row_pattern]
+    if {[regexp $pattern $content -> used]} {
+        return $used
+    }
+    return "unknown"
+}
+
 set rtl_files [list \
     "rtl/common/round_shift.v" \
     "rtl/common/saturate_int8.v" \
@@ -56,21 +67,14 @@ set rtl_files [list \
     "rtl/cnn/systolic_pe.v" \
     "rtl/cnn/pw_systolic_array_8x8.v" \
     "rtl/cnn/dw_line_buffer.v" \
-    "rtl/cnn/dw_window_generator.v" \
     "rtl/cnn/dw_mac_lanes.v" \
-    "rtl/cnn/dw_tile_buffer.v" \
     "rtl/cnn/dw_tile_buffer_bram.v" \
     "rtl/cnn/ds_input_tile_buffer_bram.v" \
     "rtl/cnn/pw_weight_buffer_bram.v" \
-    "rtl/cnn/dw_tile_fusion_engine.v" \
     "rtl/cnn/dw_tile_fusion_engine_new.v" \
-    "rtl/cnn/ds_block_tile_engine.v" \
     "rtl/cnn/ds_block_tile_engine_new.v" \
-    "rtl/cnn/conv3x3_stem_engine.v" \
     "rtl/cnn/conv3x3_stem_engine_new.v" \
-    "rtl/cnn/gap_unit.v" \
     "rtl/cnn/gap_unit_new.v" \
-    "rtl/cnn/fc_unit.v" \
     "rtl/cnn/fc_unit_new.v" \
     "rtl/cnn/tile_scheduler.v" \
     "rtl/cnn/feature_sram_bank.v" \
@@ -101,6 +105,7 @@ if {[llength [get_ports -quiet clk]] > 0} {
 
 report_utilization -file [file join $out_dir "utilization.txt"]
 report_utilization -hierarchical -file [file join $out_dir "utilization_hierarchical.txt"]
+set utilization_report [file join $out_dir "utilization.txt"]
 set timing_status "PASSED"
 set timing_msg ""
 if {[catch {report_timing_summary -file [file join $out_dir "timing_summary.txt"]} timing_msg]} {
@@ -131,6 +136,12 @@ set lut_count [llength [get_cells -hier -filter {REF_NAME =~ LUT*}]]
 set ff_count [llength [get_cells -hier -filter {REF_NAME =~ FD*}]]
 set bram_count [expr {[llength [get_cells -hier -filter {REF_NAME =~ RAMB*}]] + [llength [get_cells -hier -filter {REF_NAME =~ FIFO*}]]}]
 set dsp_count [llength [get_cells -hier -filter {REF_NAME == DSP48E2}]]
+set site_lut_count [utilization_used $utilization_report {CLB LUTs\*}]
+set logic_lut_count [utilization_used $utilization_report {LUT as Logic}]
+set lutram_count [utilization_used $utilization_report {LUT as Memory}]
+set site_ff_count [utilization_used $utilization_report {CLB Registers}]
+set bram_tile_count [utilization_used $utilization_report {Block RAM Tile}]
+set site_dsp_count [utilization_used $utilization_report {DSPs}]
 
 set fh [open $report_md "w"]
 puts $fh "# Vivado Initial Synthesis Report"
@@ -145,7 +156,18 @@ puts $fh "- Timing summary: $timing_status"
 puts $fh "- Clock utilization report: $clock_status"
 puts $fh "- Checkpoint write: $checkpoint_status"
 puts $fh ""
-puts $fh "## Quick Counts"
+puts $fh "## Primary Site Utilization"
+puts $fh ""
+puts $fh "| Metric | Used |"
+puts $fh "| --- | ---: |"
+puts $fh "| CLB LUTs | $site_lut_count |"
+puts $fh "| LUT as logic | $logic_lut_count |"
+puts $fh "| LUT as memory | $lutram_count |"
+puts $fh "| CLB registers | $site_ff_count |"
+puts $fh "| Block RAM tiles | $bram_tile_count |"
+puts $fh "| DSPs | $site_dsp_count |"
+puts $fh ""
+puts $fh "## Primitive Instance Quick Counts"
 puts $fh ""
 puts $fh "| Metric | Value |"
 puts $fh "| --- | ---: |"
@@ -164,6 +186,8 @@ puts $fh "- `build/reports/vivado_$top_name/clock_utilization.txt`"
 puts $fh "- `build/reports/vivado_$top_name/${top_name}_synth.dcp` if checkpoint write passed"
 puts $fh ""
 puts $fh "## Notes"
+puts $fh ""
+puts $fh "The primary resource figures above come from report_utilization site rows. Primitive-instance counts use get_cells and are a different accounting basis; do not report them as CLB LUT utilization."
 puts $fh ""
 puts $fh "This is an initial synthesis-only result. It is not post-place-and-route timing and does not include board-level IO constraints."
 close $fh

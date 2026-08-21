@@ -157,7 +157,9 @@ module ds_block_tile_engine_new #(
 
     reg [5:0] pw_pixel_base;
     reg [8:0] pw_cout_base;
+    reg [7:0] pw_read_idx;
     reg [7:0] pw_k_idx;
+    wire pw_read_issue;
     wire pw_valid_in;
     wire pw_ready_in;
     wire pw_valid_out;
@@ -215,8 +217,16 @@ module ds_block_tile_engine_new #(
         dw_output_accept && ({1'b0, dw_out_channel_idx} < channels_reg);
 
     assign output_pixels = out_h_reg * out_w_reg;
-    assign dw_buf_rd_en = (state == ST_PW_READ);
-    assign pw_weight_rd_en = (state == ST_PW_READ);
+    // Prime both synchronous BRAMs once, then issue the next K entry in the
+    // same cycle that the current entry is accepted by the MAC array.  Keeping
+    // the read and feed indices separate removes the former READ/FEED bubble
+    // without changing the BRAM's one-cycle read contract.
+    assign pw_read_issue =
+        (state == ST_PW_READ) ||
+        ((state == ST_PW_FEED) && pw_fire &&
+         ({1'b0, pw_read_idx} < channels_reg));
+    assign dw_buf_rd_en = pw_read_issue;
+    assign pw_weight_rd_en = pw_read_issue;
     assign pw_valid_in = (state == ST_PW_FEED) &&
                          dw_buf_rd_valid && pw_weight_rd_valid;
     assign pw_fire = pw_valid_in && pw_ready_in;
@@ -275,7 +285,7 @@ module ds_block_tile_engine_new #(
         .wr_data_int8(cfg_data[7:0]),
         .rd_en(pw_weight_rd_en),
         .rd_cout_base(pw_cout_base),
-        .rd_channel_idx(pw_k_idx),
+        .rd_channel_idx(pw_read_idx),
         .rd_valid(pw_weight_rd_valid),
         .rd_data_vector(pw_weight_rd_data)
     );
@@ -319,7 +329,7 @@ module ds_block_tile_engine_new #(
         .wr_data_int8(dw_out_data_int8),
         .rd_en(dw_buf_rd_en),
         .rd_pixel_base(pw_pixel_base),
-        .rd_channel_idx(pw_k_idx[6:0]),
+        .rd_channel_idx(pw_read_idx[6:0]),
         .rd_valid(dw_buf_rd_valid),
         .rd_data_vector(dw_buf_rd_data)
     );
@@ -429,6 +439,7 @@ module ds_block_tile_engine_new #(
             dw_shift_vec <= {(DW_LANES*6){1'b0}};
             pw_pixel_base <= 6'd0;
             pw_cout_base <= 9'd0;
+            pw_read_idx <= 8'd0;
             pw_k_idx <= 8'd0;
             rq_psum_shift <= 2048'sd0;
             rq_scan_idx <= 7'd0;
@@ -602,21 +613,25 @@ module ds_block_tile_engine_new #(
                 ST_PW_INIT: begin
                     pw_pixel_base <= 6'd0;
                     pw_cout_base <= 9'd0;
+                    pw_read_idx <= 8'd0;
                     pw_k_idx <= 8'd0;
                     state <= ST_PW_READ;
                 end
 
                 ST_PW_READ: begin
+                    pw_read_idx <= 8'd1;
                     state <= ST_PW_FEED;
                 end
 
                 ST_PW_FEED: begin
                     if (pw_fire) begin
+                        if ({1'b0, pw_read_idx} < channels_reg) begin
+                            pw_read_idx <= pw_read_idx + 8'd1;
+                        end
                         if ((pw_k_idx + 8'd1) >= channels_reg) begin
                             state <= ST_PW_WAIT;
                         end else begin
                             pw_k_idx <= pw_k_idx + 8'd1;
-                            state <= ST_PW_READ;
                         end
                     end
                 end
@@ -649,6 +664,7 @@ module ds_block_tile_engine_new #(
                 end
 
                 ST_ADVANCE: begin
+                    pw_read_idx <= 8'd0;
                     pw_k_idx <= 8'd0;
                     if ((pw_cout_base + PW_LANES) < out_channels_reg) begin
                         pw_cout_base <= pw_cout_base + PW_LANES;

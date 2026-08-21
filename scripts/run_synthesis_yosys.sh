@@ -4,7 +4,7 @@ set -euo pipefail
 mkdir -p build/reports
 
 REPORT=build/reports/synthesis_initial.md
-DOC_REPORT=docs/synthesis_initial.md
+DOC_REPORT=docs/reports/synthesis_initial.md
 LOG=build/reports/yosys_cnn_top.log
 
 {

@@ -69,6 +69,7 @@ module tb_ds_block_tile_engine_new;
     integer timeout;
     integer idx;
     integer expected_pw_issue_cycles;
+    integer expected_dw_feed_cycles;
     reg signed [7:0] tmp_i8;
     reg signed [31:0] tmp_i32;
     reg [7:0] tmp_u8;
@@ -379,6 +380,37 @@ module tb_ds_block_tile_engine_new;
                     case_idx,
                     expected_pw_issue_cycles,
                     perf_pw_issue_cycles
+                );
+                error_count = error_count + 1;
+            end
+
+            // The streaming DW path consumes every input position once per
+            // 16-channel tile, and the PW path cannot finish in fewer cycles
+            // than its accepted K issues.  These lower bounds make the
+            // non-aligned channel cases cover the BRAM lookahead boundary as
+            // well as checking their output values.
+            expected_dw_feed_cycles =
+                ((channels + 15) / 16) *
+                (((out_h - 1) * stride + 3) * ((out_w - 1) * stride + 3));
+            if (perf_dw_cycles < expected_dw_feed_cycles) begin
+                $display(
+                    "MISMATCH case=%0d dw_cycles lower_bound=%0d actual=%0d",
+                    case_idx,
+                    expected_dw_feed_cycles,
+                    perf_dw_cycles
+                );
+                error_count = error_count + 1;
+            end
+            if (perf_pw_cycles < expected_pw_issue_cycles ||
+                perf_total_cycles < (expected_dw_feed_cycles + expected_pw_issue_cycles)) begin
+                $display(
+                    "MISMATCH case=%0d perf lower_bound dw=%0d pw_issue=%0d total=%0d/%0d pw=%0d",
+                    case_idx,
+                    expected_dw_feed_cycles,
+                    expected_pw_issue_cycles,
+                    perf_total_cycles,
+                    expected_dw_feed_cycles + expected_pw_issue_cycles,
+                    perf_pw_cycles
                 );
                 error_count = error_count + 1;
             end

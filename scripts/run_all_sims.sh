@@ -21,7 +21,10 @@ TESTS=(
   tb_feature_sram_bank
   tb_feature_sram_pingpong
   tb_cnn_top
+  tb_cnn_top_ctrl_bounds
+  tb_cnn_layer_runner_sram_bounds
   tb_cnn_top_dsblock_datapath
+  tb_cnn_top_backpressure
   tb_cnn_top_tiled_stem_datapath
   tb_cnn_top_tiled_dsblock_datapath
   tb_cnn_top_sram_tiled_dsblock_datapath
@@ -134,9 +137,15 @@ for test in "${SELECTED_TESTS[@]}"; do
   echo "==> [$idx/$total] $test"
 
   set +e
-  ./scripts/run_sim.sh "$test" 2>&1 | tee "$log_file"
+  bash ./scripts/run_sim.sh "$test" 2>&1 | tee "$log_file"
   status=${PIPESTATUS[0]}
   set -e
+
+  if [[ "$status" == "0" ]] &&
+     ! grep -Eq "PASS[[:space:]]+${test}([[:space:]]|$)" "$log_file"; then
+    echo "simulation exited 0 without required PASS marker: $test" | tee -a "$log_file" >&2
+    status=2
+  fi
 
   end_time="$(date +%s)"
   elapsed=$((end_time - start_time))

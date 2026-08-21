@@ -37,7 +37,7 @@ descriptor / external memory / feature SRAM
         |             |               |               |
         v             v               v               v
   stem_new       ds_block_new      gap_new         fc_new
-  1 MAC reuse    input BRAM        load-time       load-time
+  3 MAC reuse    input BRAM        load-time       load-time
                  -> DW stream      accumulation    accumulation
                  -> DW BRAM
                  -> PW 8x8
@@ -80,8 +80,8 @@ scalar input loader
 
 ### Stem、GAP、FC
 
-- `conv3x3_stem_engine_new`：保存 300 B input 与 432 B weight，用一个 int8 MAC
-  顺序处理 27 个 kernel 项；面积优先，约每个输出 27 个 MAC 周期。
+- `conv3x3_stem_engine_new`：保存 300 B input 与 432 B weight，用 3 个复用 int8
+  MAC 顺序处理 kernel 项，在面积和 stem 吞吐之间取折中。
 - `gap_unit_new`：4096 个输入在加载时直接累计到 256 个 13-bit sum；不再保存
   4 KiB packed feature。
 - `fc_unit_new`：保存 256 B input；2560 个 weight 在加载时直接进入 10 个
@@ -89,34 +89,31 @@ scalar input loader
 - `feature_sram_bank`：综合时使用 XPM simple-dual-port BRAM；同地址读写语义由
   `read_first` BRAM 加显式 bypass 保持，仿真模型接口不变。
 
-## 3. 功能验证结果
+## 3. 当前功能证据
 
-Windows/Vivado XSim 统一回归：
+固定 full-network SRAM datapath 已得到 10/10 logits bit-exact 的 fresh 结果：
 
 ```text
-PASS tb_ds_block_tile_engine_new cases=3 checks=1792
-PASS tb_feature_sram_bank ops=160 checks=96
-PASS tb_cnn_top_dsblock_datapath cases=2 checks=768
-PASS tb_cnn_top_tiled_stem_datapath cases=1 checks=16384
-PASS tb_cnn_top_tiled_dsblock_datapath cases=2 checks=2256
-PASS tb_cnn_top_sram_tiled_dsblock_datapath cases=1 checks=480
-PASS tb_cnn_top_ops_datapath cases=3 checks=1290
-PASS tb_cnn_top_multilayer_datapath cases=2 checks=1866
-PASS tb_cnn_top_sram_gap_fc_datapath cases=1 checks=10
-PASS tb_cnn_top_sram_stem_dsblock_datapath cases=1 checks=576
-PASS tb_cnn_top_tail_sram_datapath cases=1 checks=10
-PASS tb_cnn_top_e2e_sram_datapath cases=1 checks=10
-PASS tb_cnn_top_fullnet_sram_datapath cases=1 checks=10
-PASS cnn_xsim_regression tests=13
+cycles=944568
+status=0x0e69b882
+external payload reads=78602
+descriptor reads=288
+external writes=10
+SRAM reads=115808
+SRAM writes=102656
+throughput=5.438 MAC/cycle
 ```
 
-这些测试覆盖：
+这比 1138900-cycle 的冻结旧基线少 194332 cycles（17.06%）。CPU harness 对同一
+fixed vector 也得到 `944568` / `0x0e69b882`。三样本 CPU+RTL 联合验证（tracked
+vectors 未变）对所有 logits bit-exact，argmax 依次为 3、8、8。
 
-- 普通和 tiled DSBlock；
-- stride/padding、非 16 倍数 channel；
-- external memory 和 feature SRAM 输入；
-- stem、GAP、FC 独立 top-level 路径；
-- stem→DS、GAP→FC、多层和 full-network 链。
+新 bounds TB 逐笔检查 SRAM 地址。tiled 外部读 TB 覆盖单 outstanding、0..3 个
+idle-cycle 响应延迟、ready stall、stalled payload 稳定性与写序列 oracle。2026-08-21
+fresh XSim 重新编译 27 个 RTL 文件后为 16/16 PASS。独立 WSL Verilator 5.020 定向
+回归也 clean PASS：tiled Stem 16384 checks、tiled DSBlock 2256 checks、tile engine
+7 cases / 2191 checks。完整 38-test Verilator aggregation 仍是后续归档项，不能把
+这些定向结果误称为其替代品。
 
 接入时还修复了一个旧的仿真器可移植性问题：`output_byte_for()` 通过函数隐式读取
 全局 signal，XSim 会让输出数据相对地址滞后一拍。现在输出选择使用显式连续赋值，
@@ -141,13 +138,13 @@ PASS cnn_xsim_regression tests=13
 
 模块级 cycle counter：
 
-| case | shape 摘要 | total | DW | PW | PW issue |
+| case | shape 摘要 | total | DW | PW | PW issue theoretical |
 | ---: | --- | ---: | ---: | ---: | ---: |
 | 0 | 8x8 output, Cin=8, Cout=8 | 2937 | 2240 | 697 | 64 |
 | 1 | 4x4 output, Cin=16, Cout=16 | 1113 | 700 | 413 | 64 |
 | 2 | 8x8 output, Cin=32, Cout=32 | 2985 | 296 | 2689 | 256 |
 
-`PW issue` 等于理论阵列工作拍：
+`PW issue theoretical` 是理论阵列工作拍，不是实测的 loader 周期：
 
 ```text
 ceil(pixels/8) * ceil(Cout/8) * Cin
@@ -158,31 +155,30 @@ DW 流、requant 扫描和 tile/channel 切换。
 
 ## 5. 当前综合证据边界
 
-已经确认：
+本工作树已经引入同步预取 `cnn_out_buffer`（综合/XPM 为 4 BRAM）、compact/tiled
+loader lookahead 和 PW BRAM lookahead。2026-08-18 的 fresh `cnn_top` OOC synthesis
+得到 30451 CLB LUT、18558 CLB registers、46 Block RAM tiles 和 65 DSPs；层级中
+`u_out_buffer` 为 6 LUT / 4 BRAM，证明输出 buffer 已从先前 LUTRAM 方案收敛为 XPM
+BRAM。旧的 45830-LUT report 仅作历史对照，不能再作为本工作树资源口径。
 
-- `ds_block_tile_engine_new` OOC synthesis PASS；
-- 26 个 BRAM36 分别来自 input buffer 16、PW weight 8、DW tile 2；
-- 仅接入 new DS 的 `cnn_top` 能完成 synthesis，但因旧 stem/GAP/FC packed loader
-  仍使用 446272 LUT，不能装入 K26；
-- 后续已移除 runner 中这些 packed payload，并把 feature SRAM 改成 XPM BRAM；
-- post-refactor 13 项功能回归全部 PASS；
-- post-refactor `cnn_top` OOC synthesis PASS，0 error、0 critical warning；
-- 顶层使用 45830 CLB LUT（39.13%）、18387 FF（7.85%）、
-  42 BRAM36（29.17%）、60 DSP（4.81%）；
-- `feature_sram_pingpong` 使用 16 RAMB36 和 67 LUT；
-- `u_ds_block_engine` 使用 24283 LUT、15630 FF、26 RAMB36、14 DSP；
-- `cnn_layer_runner` 自身非子模块部分降至 14812 LUT，已消除原 333191 logic LUT
-  的 packed loader 资源爆炸。
+普通 XSim 和 Verilator 走 output buffer 的同步 behavioral model。XPM 分支只由
+synthesis 结构验证，普通仿真不会直接执行它。
 
-仍未确认的是 place-and-route、WNS/Fmax、拥塞、功耗和板级时序。旧的
-446272-LUT 报告只对应“替换 DS、尚未替换 stem/GAP/FC”的中间版本，不能用来评价
-当前 RTL。
-
-当前 Vivado 安装还会对 K26 part 报
-`Cannot run timing on a non-timing device`，所以即使 synthesis utilization 成功，也
-不能把它写成 timing closure。
+当前 Vivado 安装对 K26 part 报 `Cannot run timing on a non-timing device`。即使
+获得 utilization 或 non-timing implementation 结果，也不能声称 WNS、Fmax 或
+place-and-route timing closure。需要 timing-capable part/device database 才能完成
+这一口径。
 
 ## 6. 一键复现
+
+下面的“fresh”指在同一个 `git rev-parse HEAD`、未改动 RTL/TB/vector 输入的
+工作树中重新执行命令；不要把不同提交或被测试重写过的 vectors 的结果混在一起。
+建议在每轮开始和结束各执行一次：
+
+```powershell
+git rev-parse HEAD
+git status --short
+```
 
 ### 6.1 Windows XSim 回归
 
@@ -213,7 +209,24 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 Verilator flow。XSim 编译整个 NPC 时，旧 `rv_core.v` 的 implicit-net 声明顺序会
 触发独立的 XSim 错误，与本次 CNN 重构无关。
 
-### 6.2 new DSBlock OOC 综合
+### 6.2 Verilator 完整回归（保留已跟踪 vectors）
+
+在 WSL/MSYS2 bash 中：
+
+```bash
+cd /mnt/d/Stuff/Project
+GENERATE_TEST_VECTORS=0 \
+SIM_LOG_DIR=build/reports/verilator_current \
+./scripts/run_all_sims.sh
+```
+
+`run_sim.sh` 默认会调用 vector generator；`GENERATE_TEST_VECTORS=0` 是复现
+已验证 fixed-vector 结果的必要条件，避免回归过程意外重写 `tests/vectors/`。
+验收 `build/reports/verilator_current/summary.csv` 的每一行均为 `PASS`，并保存其中
+fullnet 的 metrics/CSV。需要刻意重新生成 vectors 时，单独运行 generator 后检查
+diff，再进行新一轮回归，而不要把两个证据集混用。
+
+### 6.3 new DSBlock OOC 综合（历史对照）
 
 ```powershell
 & D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat `
@@ -222,32 +235,48 @@ Verilator flow。XSim 编译整个 NPC 时，旧 `rv_core.v` 的 implicit-net �
   -tclargs ds_block_tile_engine_new xck26-sfvc784-2LV-c
 ```
 
-结果：
+这些路径可用于历史对照；当前 loader/output-buffer RTL 已变化，必须重新运行后才可
+作为当前资源结论。结果目录为：
 
-- `docs/synthesis_vivado_ds_block_tile_engine_new.md`
+- `docs/reports/synthesis_vivado_ds_block_tile_engine_new.md`
 - `build/reports/vivado_ds_block_tile_engine_new/utilization.txt`
 - `build/reports/vivado_ds_block_tile_engine_new/utilization_hierarchical.txt`
 
-### 6.3 最终 `cnn_top` 综合
+### 6.4 当前 `cnn_top` 综合
 
 ```powershell
-& D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat `
-  -mode batch `
-  -source scripts\vivado_cnn_top_synth.tcl `
-  -tclargs cnn_top xck26-sfvc784-2LV-c
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_synthesis_vivado.ps1 `
+  -Top cnn_top `
+  -Part xck26-sfvc784-2LV-c
 ```
 
-验收时先看：
+对当前工作树，验收时先看：
 
-1. `docs/synthesis_vivado_initial.md` 中 `Status`；
+1. `docs/reports/synthesis_vivado_initial.md` 中 `Status`；
 2. `build/reports/vivado_cnn_top/utilization.txt` 的 CLB LUT/FF/BRAM/DSP；
 3. hierarchical report 中 `cnn_layer_runner` 不应再出现数十万 logic LUT；
 4. `feature_sram_pingpong` 应出现 16 个 RAMB36 左右，而不是 10240 LUTRAM；
 5. `u_ds_block_engine` 应保持约 24K LUT、26 BRAM 的数量级。
 
-本分支的 2026-07-17 实测结果满足以上五项。顶层报告在
-`docs/synthesis_vivado_initial.md`，详细层级在
-`build/reports/vivado_cnn_top/utilization_hierarchical.txt`。
+此前归档结果不能替代这次重跑。`run_synthesis_vivado.ps1` 将当前 run 的日志放在
+`build/reports/vivado_cnn_top/`，并更新 `docs/reports/synthesis_vivado_initial.md`。
+这一步只接受 utilization/结构结论；K26 non-timing database 产生的 timing 报错不应
+被解读为负 slack，也不能据此给出 Fmax。
+
+### 6.5 Implementation 尝试与结论口径
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_cnn_impl.ps1 `
+  -Top cnn_top `
+  -Part xck26-sfvc784-2LV-c
+```
+
+该 wrapper 为每次运行创建独立 manifest。只有 manifest 的
+`status: PASSED_TIMING_CLOSURE`，并且报告来自带真实时序模型和 XDC 的
+timing-capable target，才可报告 WNS/Fmax 或“时序闭合”。本机 K26 database 下预期
+不会满足该条件；这仍是有价值的流程健壮性检查，不是实现成功或失败的性能结论。
 
 ## 7. 如何从 main 复现这条分支的思路
 
@@ -266,8 +295,8 @@ git switch -c refactor/streaming-dsblock-bram
 6. 跑普通/tiled/SRAM DS top-level tests；
 7. 将 stem/GAP/FC packed loader 改为顺序式 new engine；
 8. 把 feature SRAM 改为 XPM BRAM，并用 bypass 保持同地址读写契约；
-9. 跑 13 项 XSim 回归；
-10. 最后跑完整 `cnn_top` synthesis，而不是只看子模块。
+9. 跑当前 XSim/Verilator gate，并逐日志确认 PASS token；
+10. 最后为该 exact tree 跑完整 `cnn_top` synthesis，而不是只看子模块。
 
 理解代码时建议按这个顺序阅读：
 
@@ -287,14 +316,13 @@ tb_ds_block_tile_engine_new.v
 必须先完成：
 
 1. 换可做 timing 的目标 part/完整 Vivado device support，跑 place-and-route；
-2. 将 `cnn_out_buffer` 改为同步 BRAM，并给 store 通路增加显式预取状态；
-3. 用真实 full-network layer counter 做逐层 cycle profile。
+2. 用真实 full-network layer counter 做逐层 cycle profile。
 
 随后优化：
 
 1. 若 DW 的 16 个 int8 multiplier 仍主要映射 LUT，可比较强制 DSP 与 LUT 的取舍；
 2. 给 input/PW/DW BRAM 输出增加可选寄存器，改善高频路径；
-3. 依据真实模型 layer cycle counter 决定是否把 stem 从单 MAC 扩到 3 或 9 MAC；
+3. 依据真实模型 layer cycle counter 决定 3-MAC stem 是否需要继续扩到 9 MAC；
 4. 把外部 word-per-int8 改成 packed NHWC byte/burst loader；
 5. 加入随机 backpressure、跨 tile 边界和非法 cfg 的 assertions；
 6. 完成 CPU/NPC 联合回归和 FPGA SoC top/AXI 接入。

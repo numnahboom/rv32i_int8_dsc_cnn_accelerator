@@ -27,6 +27,31 @@ DS_SPECS = [
     (8, 8, 128, 256, 2),
 ]
 
+REQUIRED_METRIC_KEYS = {
+    "case",
+    "hw_cycles",
+    "checks",
+    "errors",
+    "status",
+    "mem_reads",
+    "mem_writes",
+    "desc_reads",
+    "layer_reads",
+    "layer_writes",
+    "sram_reads",
+    "sram_writes",
+}
+
+REQUIRED_LAYER_COLUMNS = {
+    "case",
+    "layer",
+    "cycles",
+    "mem_reads",
+    "mem_writes",
+    "sram_reads",
+    "sram_writes",
+}
+
 
 def parse_hex_file(path: Path, bits: int = 8) -> list[int]:
     values: list[int] = []
@@ -63,25 +88,40 @@ def parse_metrics(path: Path) -> dict[str, int | str]:
                     metrics[key] = value
                 else:
                     metrics[key] = int(value, 0)
-    if "hw_cycles" not in metrics:
-        raise ValueError(f"{path}: missing hw_cycles")
+    missing = REQUIRED_METRIC_KEYS - metrics.keys()
+    if missing:
+        raise ValueError(f"{path}: missing required metrics: {sorted(missing)}")
     return metrics
 
 
 def parse_layer_metrics(path: Path) -> dict[int, dict[str, int]]:
     if not path.exists():
-        return {}
+        raise FileNotFoundError(f"required per-layer metrics not found: {path}")
 
     rows: dict[int, dict[str, int]] = {}
+    cases: set[int] = set()
     with path.open("r", encoding="ascii", newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        missing = REQUIRED_LAYER_COLUMNS - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path}: missing required columns: {sorted(missing)}")
+        for line_no, row in enumerate(reader, start=2):
+            case = int(row["case"])
             layer = int(row["layer"])
+            if layer in rows:
+                raise ValueError(f"{path}:{line_no}: duplicate layer index {layer}")
+            cases.add(case)
             rows[layer] = {
                 "cycles": int(row["cycles"]),
                 "mem_reads": int(row["mem_reads"]),
                 "mem_writes": int(row["mem_writes"]),
+                "sram_reads": int(row["sram_reads"]),
+                "sram_writes": int(row["sram_writes"]),
             }
+    if not rows:
+        raise ValueError(f"{path}: per-layer metrics are empty")
+    if len(cases) != 1:
+        raise ValueError(f"{path}: expected one fullnet case, found cases={sorted(cases)}")
     return rows
 
 
@@ -112,7 +152,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
             "fc_macs": 0,
             "requant_outputs": stem_outputs,
             "gap_adds": 0,
-            "pw_active_cycles": 0,
+            "pw_min_issue_cycles": 0,
         }
     )
 
@@ -121,7 +161,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
         out_w = (in_w + stride - 1) // stride
         dw_macs = out_h * out_w * in_c * 9
         pw_macs = out_h * out_w * out_c * in_c
-        pw_active_cycles = math.ceil((out_h * out_w) / 8) * math.ceil(out_c / 8) * in_c
+        pw_min_issue_cycles = math.ceil((out_h * out_w) / 8) * math.ceil(out_c / 8) * in_c
         rows.append(
             {
                 "layer_idx": idx,
@@ -132,7 +172,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
                 "fc_macs": 0,
                 "requant_outputs": out_h * out_w * (in_c + out_c),
                 "gap_adds": 0,
-                "pw_active_cycles": pw_active_cycles,
+                "pw_min_issue_cycles": pw_min_issue_cycles,
             }
         )
 
@@ -147,7 +187,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
             "fc_macs": 0,
             "requant_outputs": 0,
             "gap_adds": gap_adds,
-            "pw_active_cycles": 0,
+            "pw_min_issue_cycles": 0,
         }
     )
 
@@ -162,7 +202,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
             "fc_macs": fc_macs,
             "requant_outputs": 10,
             "gap_adds": 0,
-            "pw_active_cycles": 0,
+            "pw_min_issue_cycles": 0,
         }
     )
 
@@ -173,7 +213,7 @@ def network_operation_counts() -> tuple[list[dict[str, int | str]], dict[str, in
         "fc_macs": sum(int(row["fc_macs"]) for row in rows),
         "requant_outputs": sum(int(row["requant_outputs"]) for row in rows),
         "gap_adds": sum(int(row["gap_adds"]) for row in rows),
-        "pw_active_cycles": sum(int(row["pw_active_cycles"]) for row in rows),
+        "pw_min_issue_cycles": sum(int(row["pw_min_issue_cycles"]) for row in rows),
     }
     totals["total_macs"] = (
         totals["stem_macs"] + totals["dw_macs"] + totals["pw_macs"] + totals["fc_macs"]
@@ -188,12 +228,33 @@ def make_report(args: argparse.Namespace) -> str:
     actual = parse_hex_file(args.hw_logits, 8)
     rows, totals = network_operation_counts()
 
+    if int(metrics.get("errors", 0)) != 0:
+        raise ValueError(f"hardware metrics report errors={metrics['errors']}")
+
+    status = int(str(metrics["status"]), 16)
+    if (status & 0x7) != 0x2:
+        raise ValueError(
+            "hardware status is not cleanly done: "
+            f"status=0x{status:08x} busy={status & 1} done={(status >> 1) & 1} "
+            f"error={(status >> 2) & 1}"
+        )
+
     if len(expected) != len(actual):
         raise ValueError(f"logit length mismatch expected={len(expected)} actual={len(actual)}")
+    if not expected:
+        raise ValueError("logit files are empty")
+    if "checks" in metrics and int(metrics["checks"]) != len(expected):
+        raise ValueError(
+            f"hardware check count mismatch metrics={metrics['checks']} logits={len(expected)}"
+        )
 
     diffs = [abs(a - b) for a, b in zip(actual, expected)]
     exact = sum(1 for diff in diffs if diff == 0)
     mismatches = len(diffs) - exact
+    if mismatches:
+        raise ValueError(
+            f"hardware logits are not bit-exact: mismatches={mismatches} max_abs_diff={max(diffs)}"
+        )
     max_abs_diff = max(diffs) if diffs else 0
     mean_abs_diff = sum(diffs) / len(diffs) if diffs else 0.0
     rmse = math.sqrt(sum(diff * diff for diff in diffs) / len(diffs)) if diffs else 0.0
@@ -207,8 +268,90 @@ def make_report(args: argparse.Namespace) -> str:
     )
     cpu_ideal_lower_bound = totals["total_macs"] + totals["requant_outputs"] + totals["gap_adds"]
     hw_cycles = int(metrics["hw_cycles"])
+    if hw_cycles <= 0:
+        raise ValueError(f"invalid hardware cycle count: {hw_cycles}")
+    if ((status >> 8) & 0x00FF_FFFF) != hw_cycles:
+        raise ValueError(
+            "status/metric cycle mismatch: "
+            f"status_cycles={(status >> 8) & 0x00FF_FFFF} metrics={hw_cycles}"
+        )
+    if args.max_hw_cycles > 0 and hw_cycles > args.max_hw_cycles:
+        raise ValueError(
+            f"hardware cycle budget exceeded: actual={hw_cycles} max={args.max_hw_cycles}"
+        )
+    layer_cycle_sum = sum(item["cycles"] for item in layer_metrics.values())
+    if layer_metrics:
+        expected_layers = set(range(len(rows)))
+        actual_layers = set(layer_metrics)
+        if actual_layers != expected_layers:
+            raise ValueError(
+                f"layer metrics indices mismatch expected={sorted(expected_layers)} "
+                f"actual={sorted(actual_layers)}"
+            )
+        if layer_cycle_sum > hw_cycles:
+            raise ValueError(
+                f"layer cycles exceed full inference: layers={layer_cycle_sum} full={hw_cycles}"
+            )
+        layer_mem_read_sum = sum(item["mem_reads"] for item in layer_metrics.values())
+        layer_mem_write_sum = sum(item["mem_writes"] for item in layer_metrics.values())
+        layer_sram_read_sum = sum(item["sram_reads"] for item in layer_metrics.values())
+        layer_sram_write_sum = sum(item["sram_writes"] for item in layer_metrics.values())
+        if layer_mem_read_sum != int(metrics["layer_reads"]):
+            raise ValueError(
+                "layer/full external read mismatch: "
+                f"layers={layer_mem_read_sum} full={metrics['layer_reads']}"
+            )
+        if layer_mem_write_sum != int(metrics["layer_writes"]):
+            raise ValueError(
+                "layer/full external write mismatch: "
+                f"layers={layer_mem_write_sum} full={metrics['layer_writes']}"
+            )
+        if layer_sram_read_sum != int(metrics["sram_reads"]):
+            raise ValueError(
+                "layer/full SRAM read mismatch: "
+                f"layers={layer_sram_read_sum} full={metrics['sram_reads']}"
+            )
+        if layer_sram_write_sum != int(metrics["sram_writes"]):
+            raise ValueError(
+                "layer/full SRAM write mismatch: "
+                f"layers={layer_sram_write_sum} full={metrics['sram_writes']}"
+            )
+        if int(metrics["mem_reads"]) != (
+            int(metrics["desc_reads"]) + int(metrics["layer_reads"])
+        ):
+            raise ValueError(
+                "external read accounting mismatch: "
+                f"all={metrics['mem_reads']} descriptors={metrics['desc_reads']} "
+                f"layers={metrics['layer_reads']}"
+            )
+        if int(metrics["mem_writes"]) != int(metrics["layer_writes"]):
+            raise ValueError(
+                "external write accounting mismatch: "
+                f"all={metrics['mem_writes']} layers={metrics['layer_writes']}"
+            )
+        allowed_overhead = max(10_000, hw_cycles // 100)
+        if (hw_cycles - layer_cycle_sum) > allowed_overhead:
+            raise ValueError(
+                f"layer/full cycle gap too large: layers={layer_cycle_sum} full={hw_cycles}"
+            )
+        stem_min_cycles = math.ceil(totals["stem_macs"] / args.stem_mac_lanes)
+        if layer_metrics[0]["cycles"] < stem_min_cycles:
+            raise ValueError(
+                "stem layer cycles violate MAC-lane lower bound: "
+                f"cycles={layer_metrics[0]['cycles']} minimum={stem_min_cycles}"
+            )
+        for row in rows:
+            layer_idx = int(row["layer_idx"])
+            pw_min_issue = int(row["pw_min_issue_cycles"])
+            if layer_metrics[layer_idx]["cycles"] < pw_min_issue:
+                raise ValueError(
+                    "layer cycles violate PW theoretical issue lower bound: "
+                    f"layer={layer_idx} cycles={layer_metrics[layer_idx]['cycles']} "
+                    f"minimum={pw_min_issue}"
+                )
     speedup = cpu_cycles / hw_cycles if hw_cycles else 0.0
     ideal_speedup = cpu_ideal_lower_bound / hw_cycles if hw_cycles else 0.0
+    aggregate_macs_per_cycle = totals["total_macs"] / hw_cycles if hw_cycles else 0.0
 
     lines: list[str] = []
     lines.append("# Inference Accuracy and Cycle Report")
@@ -242,9 +385,14 @@ def make_report(args: argparse.Namespace) -> str:
     lines.append("")
     lines.append("## Cycle Estimate")
     lines.append("")
-    lines.append("| Metric | Cycles |")
+    lines.append("| Metric | Value |")
     lines.append("| --- | ---: |")
     lines.append(f"| Hardware RTL full inference | {hw_cycles} |")
+    if args.max_hw_cycles > 0:
+        lines.append(f"| Regression cycle ceiling | {args.max_hw_cycles} |")
+    if layer_metrics:
+        lines.append(f"| Sum of per-layer cycles | {layer_cycle_sum} |")
+        lines.append(f"| Network control/descriptor overhead | {hw_cycles - layer_cycle_sum} |")
     lines.append(f"| RV32I-only theoretical estimate | {cpu_cycles} |")
     lines.append(f"| RV32I ideal 1-op lower bound | {cpu_ideal_lower_bound} |")
     if "mem_reads" in metrics:
@@ -253,11 +401,16 @@ def make_report(args: argparse.Namespace) -> str:
         lines.append(f"| External memory writes | {int(metrics['mem_writes'])} |")
     if "desc_reads" in metrics:
         lines.append(f"| Descriptor reads | {int(metrics['desc_reads'])} |")
+    if "sram_reads" in metrics:
+        lines.append(f"| Feature SRAM reads | {int(metrics['sram_reads'])} |")
+    if "sram_writes" in metrics:
+        lines.append(f"| Feature SRAM writes | {int(metrics['sram_writes'])} |")
     lines.append("")
     lines.append("| Comparison | Value |")
     lines.append("| --- | ---: |")
     lines.append(f"| Estimated RV32I / RTL speedup | {speedup:.2f}x |")
     lines.append(f"| Ideal lower-bound / RTL ratio | {ideal_speedup:.2f}x |")
+    lines.append(f"| Aggregate network MACs / RTL cycle | {aggregate_macs_per_cycle:.3f} |")
     lines.append("")
     lines.append("Default RV32I model:")
     lines.append("")
@@ -265,6 +418,7 @@ def make_report(args: argparse.Namespace) -> str:
     lines.append(f"cycles_per_mac={args.cycles_per_mac}")
     lines.append(f"cycles_per_requant={args.cycles_per_requant}")
     lines.append(f"cycles_per_gap_add={args.cycles_per_gap_add}")
+    lines.append(f"stem_mac_lanes={args.stem_mac_lanes}")
     lines.append("single-cycle memory and no pipeline stalls are assumed")
     lines.append("```")
     lines.append("")
@@ -272,17 +426,18 @@ def make_report(args: argparse.Namespace) -> str:
         lines.append("## Per-Layer Hardware Metrics")
         lines.append("")
         lines.append(
-            "| Layer | HW cycles | Mem reads | Mem writes | PW active cycles | PW e2e utilization |"
+            "| Layer | HW cycles | Ext reads | Ext writes | SRAM reads | SRAM writes | PW theoretical minimum issue cycles | Minimum-issue/layer ratio |"
         )
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         for row in rows:
             layer_idx = int(row["layer_idx"])
             hw = layer_metrics.get(layer_idx, {"cycles": 0, "mem_reads": 0, "mem_writes": 0})
-            pw_active = int(row["pw_active_cycles"])
-            util = (100.0 * pw_active / hw["cycles"]) if hw["cycles"] else 0.0
+            pw_min_issue = int(row["pw_min_issue_cycles"])
+            issue_ratio = (100.0 * pw_min_issue / hw["cycles"]) if hw["cycles"] else 0.0
             lines.append(
                 f"| {row['layer']} | {hw['cycles']} | {hw['mem_reads']} | "
-                f"{hw['mem_writes']} | {pw_active} | {util:.2f}% |"
+                f"{hw['mem_writes']} | {hw['sram_reads']} | {hw['sram_writes']} | "
+                f"{pw_min_issue} | {issue_ratio:.2f}% |"
             )
         lines.append("")
     lines.append("## Operation Counts")
@@ -342,6 +497,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cycles-per-mac", type=int, default=64)
     parser.add_argument("--cycles-per-requant", type=int, default=80)
     parser.add_argument("--cycles-per-gap-add", type=int, default=3)
+    parser.add_argument("--stem-mac-lanes", type=int, default=3)
+    parser.add_argument(
+        "--max-hw-cycles",
+        type=int,
+        default=950_000,
+        help="fail if fullnet exceeds this deterministic cycle budget; use 0 to disable",
+    )
     return parser.parse_args()
 
 
