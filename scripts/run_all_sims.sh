@@ -56,6 +56,7 @@ Environment controls:
   SIM_TO=tb_b                        run from the start, or SIM_FROM, through tb_b
   SIM_LOG_DIR=path                   write per-test logs and summary.csv to path
   SIM_CONTINUE_ON_FAIL=1             keep running selected tests after a failure
+  SIM_RESUME=1                       reuse PASS tests from an interrupted batch
 EOF
 }
 
@@ -126,13 +127,36 @@ if [[ "$total" == "0" ]]; then
 fi
 
 SUMMARY="$LOG_DIR/summary.csv"
-printf 'test,status,seconds,log\n' > "$SUMMARY"
+RESUME_SUMMARY_TMP=""
+if [[ "${SIM_RESUME:-0}" == "1" ]]; then
+  RESUME_SUMMARY_TMP="$SUMMARY.tmp.$$"
+  trap 'rm -f "$RESUME_SUMMARY_TMP"' EXIT
+  printf 'test,status,seconds,log\n' > "$RESUME_SUMMARY_TMP"
+else
+  printf 'test,status,seconds,log\n' > "$SUMMARY"
+fi
 
 idx=0
 failures=0
 for test in "${SELECTED_TESTS[@]}"; do
   idx=$((idx + 1))
   log_file="$LOG_DIR/${test}.log"
+
+  if [[ "${SIM_RESUME:-0}" == "1" ]] && [[ -f "$log_file" ]] &&
+     grep -Eq "PASS[[:space:]]+${test}([[:space:]]|$)" "$log_file"; then
+    prior_row=""
+    if [[ -f "$SUMMARY" ]]; then
+      prior_row="$(awk -F, -v test="$test" '$1 == test && $2 == "PASS" { print; exit }' "$SUMMARY")"
+    fi
+    if [[ -n "$prior_row" ]]; then
+      printf '%s\n' "$prior_row" >> "$RESUME_SUMMARY_TMP"
+    else
+      printf '%s,%s,%s,%s\n' "$test" "PASS" "0" "$log_file" >> "$RESUME_SUMMARY_TMP"
+    fi
+    echo "==> [$idx/$total] REUSE PASS $test (log marker)"
+    continue
+  fi
+
   start_time="$(date +%s)"
   echo "==> [$idx/$total] $test"
 
@@ -151,11 +175,15 @@ for test in "${SELECTED_TESTS[@]}"; do
   elapsed=$((end_time - start_time))
 
   if [[ "$status" == "0" ]]; then
-    printf '%s,%s,%s,%s\n' "$test" "PASS" "$elapsed" "$log_file" >> "$SUMMARY"
+    summary_out="${SUMMARY}"
+    [[ "${SIM_RESUME:-0}" == "1" ]] && summary_out="$RESUME_SUMMARY_TMP"
+    printf '%s,%s,%s,%s\n' "$test" "PASS" "$elapsed" "$log_file" >> "$summary_out"
     echo "==> [$idx/$total] PASS $test (${elapsed}s)"
   else
     failures=$((failures + 1))
-    printf '%s,%s,%s,%s\n' "$test" "FAIL" "$elapsed" "$log_file" >> "$SUMMARY"
+    summary_out="${SUMMARY}"
+    [[ "${SIM_RESUME:-0}" == "1" ]] && summary_out="$RESUME_SUMMARY_TMP"
+    printf '%s,%s,%s,%s\n' "$test" "FAIL" "$elapsed" "$log_file" >> "$summary_out"
     echo "==> [$idx/$total] FAIL $test (${elapsed}s), log: $log_file" >&2
     if [[ "${SIM_CONTINUE_ON_FAIL:-0}" != "1" ]]; then
       echo "simulation failed; summary: $SUMMARY" >&2
@@ -163,6 +191,11 @@ for test in "${SELECTED_TESTS[@]}"; do
     fi
   fi
 done
+
+if [[ "${SIM_RESUME:-0}" == "1" ]]; then
+  mv -f "$RESUME_SUMMARY_TMP" "$SUMMARY"
+  RESUME_SUMMARY_TMP=""
+fi
 
 if [[ "$failures" != "0" ]]; then
   echo "$failures selected simulation(s) failed; summary: $SUMMARY" >&2

@@ -117,6 +117,17 @@ SIM_TO=tb_cnn_top_fullnet_sram_datapath ./scripts/run_all_sims.sh
 SIM_CONTINUE_ON_FAIL=1 ./scripts/run_all_sims.sh
 ```
 
+若 Verilator 批处理被终端或控制器超时中断，可在保留同一 `SIM_LOG_DIR` 的前提下
+设置 `SIM_RESUME=1` 重跑。脚本只会复用包含该测试精确 `PASS <test>` 标记的旧日志；
+其余测试照常执行，并在全部选定测试处理完后更新 `summary.csv`：
+
+```bash
+GENERATE_TEST_VECTORS=0 SIM_LOG_DIR=build/reports/verilator_final \
+  SIM_RESUME=1 SIM_CONTINUE_ON_FAIL=1 ./scripts/run_all_sims.sh
+```
+
+默认不设置 `SIM_RESUME` 时，批处理行为和原有流程相同，`summary.csv` 会从本次运行重新开始。
+
 Each selected test writes:
 
 ```text
