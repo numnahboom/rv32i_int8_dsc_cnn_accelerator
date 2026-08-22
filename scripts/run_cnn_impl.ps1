@@ -1,7 +1,9 @@
 param(
     [string]$Vivado = "D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat",
     [string]$Part = "xck26-sfvc784-2LV-c",
-    [string]$Top = "cnn_top"
+    [string]$Top = "cnn_top",
+    [ValidateSet("Explore", "RuntimeOptimized")]
+    [string]$Directive = "Explore"
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,9 +58,11 @@ if (-not (Test-Path -LiteralPath $TclScript)) {
 
 $previousOutDir = $env:VIVADO_IMPL_OUT_DIR
 $previousRunId = $env:VIVADO_IMPL_RUN_ID
+$previousDirective = $env:VIVADO_IMPL_DIRECTIVE
 $previousHome = $env:HOME
 $env:VIVADO_IMPL_OUT_DIR = $OutDir
 $env:VIVADO_IMPL_RUN_ID = $RunId
+$env:VIVADO_IMPL_DIRECTIVE = $Directive
 if ([string]::IsNullOrWhiteSpace($env:HOME) -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
     # Vivado otherwise falls back to the drive root for its local Tcl store,
     # which is commonly non-writable on managed Windows installations.
@@ -79,13 +83,20 @@ try {
     $wrapperError = $_
 } finally {
     Pop-Location
-    $env:VIVADO_IMPL_OUT_DIR = $previousOutDir
-    $env:VIVADO_IMPL_RUN_ID = $previousRunId
-    $env:HOME = $previousHome
+    if ($null -eq $previousOutDir) { Remove-Item Env:VIVADO_IMPL_OUT_DIR -ErrorAction SilentlyContinue } else { $env:VIVADO_IMPL_OUT_DIR = $previousOutDir }
+    if ($null -eq $previousRunId) { Remove-Item Env:VIVADO_IMPL_RUN_ID -ErrorAction SilentlyContinue } else { $env:VIVADO_IMPL_RUN_ID = $previousRunId }
+    if ($null -eq $previousDirective) { Remove-Item Env:VIVADO_IMPL_DIRECTIVE -ErrorAction SilentlyContinue } else { $env:VIVADO_IMPL_DIRECTIVE = $previousDirective }
+    if ($null -eq $previousHome) { Remove-Item Env:HOME -ErrorAction SilentlyContinue } else { $env:HOME = $previousHome }
 }
 
 if ($wrapperError) {
-    Write-WrapperManifest -Status "FAILED_WRAPPER_START" -Detail $wrapperError.ToString()
+    # A native Vivado .bat can surface a late stderr/exit exception after Tcl
+    # has already written a final manifest.  Never overwrite that evidence
+    # with a misleading wrapper-start status.
+    $existingManifest = if (Test-Path -LiteralPath $ManifestFile) { Get-Content -LiteralPath $ManifestFile -Raw } else { "" }
+    if ($existingManifest -match "(?m)^status:\s*RUNNING\s*$" -or [string]::IsNullOrWhiteSpace($existingManifest)) {
+        Write-WrapperManifest -Status "FAILED_WRAPPER_START" -Detail $wrapperError.ToString()
+    }
     throw $wrapperError
 }
 

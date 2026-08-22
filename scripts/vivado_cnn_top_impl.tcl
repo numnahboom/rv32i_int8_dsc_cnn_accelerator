@@ -36,6 +36,11 @@ file mkdir $out_dir
 set manifest_file [file join $out_dir "manifest.txt"]
 set constraint_file [file join $project_root "constraints" "cnn_top_ooc.xdc"]
 set_param general.maxThreads 4
+if {[info exists ::env(VIVADO_IMPL_DIRECTIVE)] && [string length $::env(VIVADO_IMPL_DIRECTIVE)] > 0} {
+    set impl_directive $::env(VIVADO_IMPL_DIRECTIVE)
+} else {
+    set impl_directive Explore
+}
 
 if {[info exists ::env(VIVADO_IMPL_RUN_ID)] && [string length $::env(VIVADO_IMPL_RUN_ID)] > 0} {
     set run_id $::env(VIVADO_IMPL_RUN_ID)
@@ -175,6 +180,24 @@ proc get_design_status {property_name} {
     return $value
 }
 
+proc count_located_cells {} {
+    # Vivado 2025.2 may leave current_design.PLACE_STATUS empty even after a
+    # successful placer run.  Cell LOC assignments are a portable, concrete
+    # placement proof and do not depend on that optional design property.
+    return [llength [get_cells -hierarchical -quiet -filter {LOC != ""}]]
+}
+
+proc route_report_is_complete {route_file} {
+    set fh [open $route_file "r"]
+    set text [read $fh]
+    close $fh
+    # report_route_status has used both "Fully routed" and "fully routed" in
+    # supported Vivado releases.  Require the report's explicit completion
+    # wording; a successful Tcl return alone is not sufficient.
+    return [expr {[regexp -nocase {fully routed} $text] &&
+                  ![regexp -nocase {unrouted\s+nets\s*:\s*[1-9]} $text]}]
+}
+
 proc parse_timing_summary {timing_file first_header second_header first_key second_key} {
     set fh [open $timing_file "r"]
     set text [read $fh]
@@ -234,6 +257,7 @@ proc no_unconstrained_paths {unconstrained_file} {
 set invocation "[info nameofexecutable] -mode batch -source scripts/vivado_cnn_top_impl.tcl -tclargs $top_name $part_name"
 set source_metadata [git_metadata $project_root]
 set stage_status(manifest_initialized) "PASSED"
+set stage_status(implementation_directive) $impl_directive
 write_manifest $manifest_file $project_root $top_name $part_name $invocation "RUNNING" "Vivado flow started; this manifest belongs only to run $run_id." [array get stage_status]
 
 # Keep this list deliberately identical to scripts/vivado_cnn_top_synth.tcl.
@@ -344,29 +368,35 @@ if {$timing_property_known && ![string is true -strict $timing_property]} {
 }
 set stage_status(timing_device) "UNREPORTED: implementation commands will prove timing capability"
 
-if {[run_stage opt_design [list opt_design -directive Explore]]} {
+if {[run_stage opt_design [list opt_design -directive $impl_directive]]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation [classify_implementation_failure $stage_status(opt_design)] $stage_status(opt_design) [array get stage_status]
 }
-if {[run_stage place_design [list place_design -directive Explore]]} {
+if {[run_stage place_design [list place_design -directive $impl_directive]]} {
     set failure_status [classify_implementation_failure $stage_status(place_design)]
     fail_flow $manifest_file $project_root $top_name $part_name $invocation $failure_status $stage_status(place_design) [array get stage_status]
 }
 set place_status [get_design_status PLACE_STATUS]
-set stage_status(place_status) $place_status
-if {$place_status eq "UNAVAILABLE" || [lsearch -exact {PLACED PLACED_AND_FIXED} $place_status] < 0} {
-    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" "place_design returned successfully but PLACE_STATUS is '$place_status', not PLACED." [array get stage_status]
+set located_cells [count_located_cells]
+set stage_status(place_status_property) $place_status
+set stage_status(placed_cell_count) $located_cells
+if {$located_cells == 0} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" "place_design returned successfully but no cells have LOC assignments; placement cannot be proven." [array get stage_status]
 }
-if {[run_stage phys_opt_design [list phys_opt_design -directive Explore]]} {
+if {[run_stage phys_opt_design [list phys_opt_design -directive $impl_directive]]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation [classify_implementation_failure $stage_status(phys_opt_design)] $stage_status(phys_opt_design) [array get stage_status]
 }
-if {[run_stage route_design [list route_design -directive Explore]]} {
+if {[run_stage route_design [list route_design -directive $impl_directive]]} {
     set failure_status [classify_implementation_failure $stage_status(route_design)]
     fail_flow $manifest_file $project_root $top_name $part_name $invocation $failure_status $stage_status(route_design) [array get stage_status]
 }
 set route_status [get_design_status ROUTE_STATUS]
-set stage_status(route_status) $route_status
-if {$route_status eq "UNAVAILABLE" || [lsearch -exact {ROUTED FULLY_ROUTED} $route_status] < 0} {
-    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" "route_design returned successfully but ROUTE_STATUS is '$route_status', not ROUTED." [array get stage_status]
+set route_status_file [file join $out_dir "route_status_pre_signoff.txt"]
+if {[run_stage route_status_pre_signoff [list report_route_status -file $route_status_file]]} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" $stage_status(route_status_pre_signoff) [array get stage_status]
+}
+set stage_status(route_status_property) $route_status
+if {![route_report_is_complete $route_status_file]} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" "route_design returned successfully but route_status report does not prove a fully routed design." [array get stage_status]
 }
 set stage_status(timing_device) "PASSED_BY_IMPLEMENTATION"
 
