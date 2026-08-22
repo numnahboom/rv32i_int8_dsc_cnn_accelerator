@@ -23,6 +23,7 @@ TESTS=(
   tb_cnn_top
   tb_cnn_top_ctrl_bounds
   tb_cnn_layer_runner_sram_bounds
+  tb_cnn_layer_runner_packed_input
   tb_cnn_top_dsblock_datapath
   tb_cnn_top_backpressure
   tb_cnn_top_tiled_stem_datapath

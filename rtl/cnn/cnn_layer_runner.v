@@ -43,6 +43,8 @@ module cnn_layer_runner #(
     localparam FLAG_OUTPUT_TO_SRAM  = 2;
     localparam FLAG_TILED_DS_BLOCK  = 5;
     localparam FLAG_TILED_STEM      = FLAG_TILED_DS_BLOCK;
+    // External non-tiled Stem/DS input is four NHWC bytes per memory word.
+    localparam FLAG_PACKED_INPUT    = 6;
 
     localparam PH_INPUT     = 4'd0;
     localparam PH_DW_WEIGHT = 4'd1;
@@ -119,6 +121,9 @@ module cnn_layer_runner #(
     reg signed [31:0] pw_activation_min_reg;
     reg signed [31:0] pw_activation_max_reg;
     reg [31:0] flags_reg;
+    reg        packed_word_valid;
+    reg [31:0] packed_word_addr;
+    reg [31:0] packed_word_data;
 
     reg [3:0] phase_idx;
     reg [31:0] phase_count;
@@ -242,6 +247,8 @@ module cnn_layer_runner #(
     wire tiled_stem_mode;
     wire tiled_ds_mode;
     wire tiled_spatial_mode;
+    wire packed_input_config_supported;
+    wire packed_input_mode;
     wire [7:0] tiled_out_h;
     wire [7:0] tiled_out_w;
     wire [3:0] stem_engine_out_h;
@@ -290,6 +297,13 @@ module cnn_layer_runner #(
     assign tiled_stem_mode = (op_type_reg == OP_CONV3X3_STEM) && flags_reg[FLAG_TILED_STEM];
     assign tiled_ds_mode = (op_type_reg == OP_DS_BLOCK) && flags_reg[FLAG_TILED_DS_BLOCK];
     assign tiled_spatial_mode = tiled_stem_mode || tiled_ds_mode;
+    assign packed_input_config_supported = flags_reg[FLAG_PACKED_INPUT] &&
+                               !flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                               !tiled_spatial_mode &&
+                               ((op_type_reg == OP_CONV3X3_STEM) ||
+                                (op_type_reg == OP_DS_BLOCK));
+    assign packed_input_mode = packed_input_config_supported &&
+                               (phase_idx == PH_INPUT);
     assign tiled_out_h = same_out_dim(in_h_reg, effective_stride);
     assign tiled_out_w = same_out_dim(in_w_reg, effective_stride);
     assign tiled_load_channel_wrap =
@@ -1109,6 +1123,9 @@ module cnn_layer_runner #(
             pw_activation_min_reg <= -32'sd128;
             pw_activation_max_reg <= 32'sd127;
             flags_reg <= 32'd0;
+            packed_word_valid <= 1'b0;
+            packed_word_addr <= 32'd0;
+            packed_word_data <= 32'd0;
         end else begin
             done <= 1'b0;
             stem_start <= 1'b0;
@@ -1162,6 +1179,10 @@ module cnn_layer_runner #(
                 ST_VALIDATE: begin
                     if (flags_reg[FLAG_SKIP_EXEC]) begin
                         state <= ST_DONE;
+                    end else if (flags_reg[FLAG_PACKED_INPUT] &&
+                                 !packed_input_config_supported) begin
+                        error <= 1'b1;
+                        state <= ST_ERROR;
                     end else if (!valid_config()) begin
                         error <= 1'b1;
                         state <= ST_ERROR;
@@ -1190,6 +1211,13 @@ module cnn_layer_runner #(
                 end
 
                 ST_LOAD_SETUP: begin
+                    // A request belongs to exactly one load phase.  Clear both
+                    // the bus request and the packed-word cache at ownership
+                    // transfer so a response from the prior phase cannot be
+                    // mistaken for the first request of this phase.
+                    mem_req_valid <= 1'b0;
+                    mem_req_write <= 1'b0;
+                    packed_word_valid <= 1'b0;
                     phase_count <= phase_count_for(op_type_reg, phase_idx);
                     phase_base_addr <= phase_addr_for(op_type_reg, phase_idx);
                     load_idx <= 32'd0;
@@ -1220,6 +1248,38 @@ module cnn_layer_runner #(
                         sram_input_rd_en <= 1'b1;
                         sram_input_rd_addr <= sram_addr_for_index(phase_base_addr, load_idx);
                         state <= ST_READ_RESP;
+                    end else if (packed_input_mode) begin
+                        // Packed input requests are aligned word reads.  A
+                        // cached response supplies the other three byte lanes
+                        // without issuing another external transaction.
+                        if (packed_word_valid &&
+                            (packed_word_addr ==
+                             ((phase_base_addr + load_idx) & 32'hffff_fffc))) begin
+                            store_response_word(
+                                phase_idx, load_idx,
+                                (packed_word_data >>
+                                 ((load_idx[1:0]) * 8)));
+                            if ((load_idx + 32'd1) >= phase_count) begin
+                                state <= (phase_idx == last_phase_for(op_type_reg)) ?
+                                         ST_ENGINE_START : ST_LOAD_SETUP;
+                                if (phase_idx != last_phase_for(op_type_reg))
+                                    phase_idx <= phase_idx + 4'd1;
+                            end else begin
+                                load_idx <= load_idx + 32'd1;
+                                advance_compact_load_position(phase_idx);
+                                state <= ST_READ_REQ;
+                            end
+                        end else begin
+                            mem_req_valid <= 1'b1;
+                            mem_req_write <= 1'b0;
+                            mem_req_addr <= (phase_base_addr + load_idx) &
+                                            32'hffff_fffc;
+                            mem_req_wdata <= 32'd0;
+                            if (mem_req_valid && mem_req_ready) begin
+                                mem_req_valid <= 1'b0;
+                                state <= ST_READ_RESP;
+                            end
+                        end
                     end else begin
                         mem_req_valid <= 1'b1;
                         mem_req_write <= 1'b0;
@@ -1263,7 +1323,20 @@ module cnn_layer_runner #(
                             end
                         end
                     end else if (mem_resp_valid) begin
-                        store_response_word(phase_idx, load_idx, mem_resp_rdata);
+                        // Consume the outstanding request before changing
+                        // phase; ST_LOAD_SETUP owns creation of the next one.
+                        mem_req_valid <= 1'b0;
+                        if (packed_input_mode) begin
+                            packed_word_valid <= 1'b1;
+                            packed_word_addr <= (phase_base_addr + load_idx) &
+                                                32'hffff_fffc;
+                            packed_word_data <= mem_resp_rdata;
+                        end
+                        store_response_word(
+                            phase_idx, load_idx,
+                            packed_input_mode ?
+                            (mem_resp_rdata >> ((load_idx[1:0]) * 8)) :
+                            mem_resp_rdata);
                         if ((load_idx + 32'd1) >= phase_count) begin
                             if (phase_idx == last_phase_for(op_type_reg)) begin
                                 state <= (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
@@ -1274,16 +1347,16 @@ module cnn_layer_runner #(
                         end else begin
                             load_idx <= load_idx + 32'd1;
                             advance_compact_load_position(phase_idx);
-                            // Pre-arm the next single-outstanding request while
-                            // consuming this response.  ST_READ_REQ then sees
-                            // valid already asserted and can handshake in one
-                            // cycle when ready, instead of spending an extra
-                            // cycle merely raising mem_req_valid.
-                            mem_req_valid <= 1'b1;
-                            mem_req_write <= 1'b0;
-                            mem_req_addr <= phase_base_addr +
-                                            ((load_idx + 32'd1) << 2);
-                            mem_req_wdata <= 32'd0;
+                            if (!packed_input_mode) begin
+                                // Preserve the scalar lookahead path.  Packed
+                                // requests are issued only by ST_READ_REQ so
+                                // their word address cannot cross a phase.
+                                mem_req_valid <= 1'b1;
+                                mem_req_write <= 1'b0;
+                                mem_req_addr <= phase_base_addr +
+                                                ((load_idx + 32'd1) << 2);
+                                mem_req_wdata <= 32'd0;
+                            end
                             state <= ST_READ_REQ;
                         end
                     end

@@ -47,6 +47,10 @@
 ## External Read Contract
 
 - At most one external read may be outstanding.
+- Descriptor flag bit 6 enables a bounded packed-input slice: non-tiled Stem/DS
+  `PH_INPUT` uses NHWC bytes in aligned 32-bit words, with byte 0 at
+  `mem_resp_rdata[7:0]` and a four-byte response cache.  It rejects SRAM,
+  tiled, GAP, and FC combinations; weights and outputs remain scalar.
 - A request is accepted only on its ready/valid handshake.  Its response may
   be delayed arbitrarily, but must not arrive in that same handshake cycle;
   the earliest legal response is the following cycle.
