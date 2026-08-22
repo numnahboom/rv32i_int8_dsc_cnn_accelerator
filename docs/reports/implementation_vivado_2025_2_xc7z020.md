@@ -1,12 +1,13 @@
-# Vivado 2025.2 `xc7z020clg400-1` OOC implementation
+# Vivado 2025.2 `xc7z020clg400-1` routed implementation
 
 Date: 2026-08-23
 Top: `cnn_top`
 Part: `xc7z020clg400-1`
 Vivado: 2025.2 (build 6299465)
-Scope: 100 MHz generic core-clock, out-of-context FPGA-fabric evidence only.
+Clock constraint: generic `clk` at 100 MHz (10.000 ns)
+Scope: out-of-context FPGA-fabric implementation evidence only.
 
-## Result and flow compatibility
+## Result
 
 The standard wrapper was run with:
 
@@ -16,61 +17,67 @@ The standard wrapper was run with:
   -Part xc7z020clg400-1 -Top cnn_top -Directive RuntimeOptimized
 ```
 
-Run directories:
+Run directory: `build/reports/vivado_cnn_top_impl/runs/20260823T014945105-53876/`
 
-- `build/reports/vivado_cnn_top_impl/runs/20260822T142930310-49364/` (original compatibility failure)
-- `build/reports/vivado_cnn_top_impl/runs/20260823T013523276-36852/` (compatibility-fixed rerun)
+Vivado 2025.2 accepted the timing-capable Zynq-7020 part. Synthesis,
+optimization, placement, physical optimization, routing, timing reporting,
+power reporting, and checkpoint writing all completed. The final manifest is
+`FAILED_TIMING_CLOSURE`: routing succeeded, but the generic 100 MHz setup
+constraint is not met.
 
-Vivado accepted the timing-capable Zynq-7020 part and synthesis completed. The
-The original wrapper Tcl stopped after a successful `place_design` because its
-`get_property PLACE_STATUS [current_design]` query returned an empty string in
-Vivado 2025.2. The compatibility fix no longer trusts that optional property:
-it checks placed-cell LOC assignments and validates the explicit
-`report_route_status` output. The wrapper also preserves a final Tcl manifest
-when a native Vivado launch reports a late wrapper exception, instead of
-overwriting it as `FAILED_WRAPPER_START`.
+Post-route timing from `timing_summary.txt`:
 
-The retained log contains the following independent evidence:
+| Metric | Result |
+|---|---:|
+| WNS | -40.264 ns |
+| TNS | -88930.469 ns |
+| Setup failing endpoints | 19,449 / 53,185 |
+| WHS | +0.082 ns |
+| THS | 0.000 ns |
+| Hold failing endpoints | 0 / 53,185 |
+| Clock | 100.000 MHz, 10.000 ns |
 
-- `place_design completed successfully`
-- post-placement estimated WNS `-37.328 ns`
-- physical-optimization estimated WNS/TNS `-37.314 ns` / `-20202.882 ns`
-- the standard flow did not reach `route_design`, so no routed timing closure,
-  post-route utilization, power, or board result is claimed.
+The worst setup path has 50.211 ns data delay, 68 logic levels, and runs from
+`u_layer_runner/u_stem_engine/kernel_y_idx_reg[0]_replica/C` to
+`u_layer_runner/u_stem_engine/out_wr_data_int8_reg[4]/D`. The timing report
+shows no unconstrained internal endpoints; it does show 102 inputs and 98
+outputs without I/O delay constraints, as expected for this OOC wrapper. The
+unconstrained-path table has only the unconstrained-port clock group entries.
 
-The compatibility-fixed rerun completed synthesis and placement, then reached
-`route_design`. It was intentionally interrupted after route initialization
-while the host run was being bounded; its log ends with `route_design was
-cancelled`, so it is not post-route signoff evidence. No WNS/TNS/WHS/THS or
-post-route resource claim is made from this run.
+## Routed resource and power snapshots
 
-## Synthesis resource snapshot
-
-From `utilization_synth.txt` in the run directory:
+From `utilization_post_route.txt` in the run directory:
 
 | Resource | Used | xc7z020 available | Utilization |
 |---|---:|---:|---:|
-| Slice LUTs | 29,933 | 53,200 | 56.27% |
-| Slice registers | 18,355 | 106,400 | 17.25% |
+| Slice LUTs | 29,416 | 53,200 | 55.29% |
+| Slice registers | 17,891 | 106,400 | 16.81% |
 | Block RAM tiles | 46 | 140 | 32.86% |
 | DSPs | 65 | 220 | 29.55% |
 
-These are synthesis/OOC values, not post-route values.
+The vectorless Vivado power estimate in `power.txt` is 0.189 W total
+(0.083 W dynamic, 0.106 W static), with Medium confidence. This is a tool
+estimate under default assumptions, not a board measurement or a power
+closure result.
+
+`route_status.txt` reports 45,993/45,993 routable nets fully routed and zero
+routing errors. `cnn_top_impl.dcp` is the routed checkpoint (18,299,744
+bytes).
 
 ## Evidence files
 
-- Original `manifest.txt`: `FAILED_IMPLEMENTATION_STATUS`, with `place_status` empty.
-- `vivado.log`: complete standard-flow log through successful placement.
-- Compatibility-fixed run `vivado_console.txt`/`vivado.log`: synthesis, placement, and route initialization; route was cancelled by interruption.
-- `utilization_synth.txt`, `clocks_synth.txt`: synthesis reports.
+The run directory contains `manifest.txt`, `vivado.log`, `timing_summary.txt`,
+`timing_maxpaths.txt`, `utilization_post_route.txt`, `route_status.txt`,
+`power.txt`, and the routed `cnn_top_impl.dcp` checkpoint.
 
 ## Checks and limits
 
-`git diff --check` passed. PowerShell AST parsing of
-`scripts/run_cnn_impl.ps1` reported zero errors. No RTL was changed for this
-experiment. This result is not K26 evidence, not board-level I/O or clock
-closure, not power measurement, and not hardware validation.
+This run is useful evidence that the current RTL fits the xc7z020 resources and
+can be fully routed by Vivado 2025.2. It does not demonstrate timing closure:
+the reported 100 MHz setup slack is substantially negative. It is also not
+K26 evidence, board-level I/O or clock closure, measured power, or hardware
+validation. No board pin constraints, external memory timing, activity file,
+or physical board were used.
 
-The next implementation run should be allowed to finish `route_design` and
-signoff reports. Any future timing claim must use post-route WNS/TNS/WHS/THS
-and explicitly retain the generic OOC scope.
+Checks performed: `git diff --check` and PowerShell AST parsing of the wrapper
+reported no errors. No RTL was changed for this implementation run.
