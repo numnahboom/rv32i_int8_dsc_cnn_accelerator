@@ -37,7 +37,8 @@ module fc_unit_new (
 
     localparam ST_IDLE = 2'd0;
     localparam ST_RUN  = 2'd1;
-    localparam ST_DONE = 2'd2;
+    localparam ST_DRAIN = 2'd2;
+    localparam ST_DONE = 2'd3;
 
     (* ram_style = "distributed" *)
     reg signed [7:0] input_mem [0:255];
@@ -52,6 +53,12 @@ module fc_unit_new (
     reg signed [31:0] output_zero_point_reg;
     reg signed [31:0] activation_min_reg;
     reg signed [31:0] activation_max_reg;
+    // Requantization is split across two cycles.  The full 64-bit product is
+    // retained so the following round/shift stage has exactly the same
+    // arithmetic inputs as the original combinational function.
+    reg signed [63:0] product_reg;
+    reg [3:0] product_class_reg;
+    reg [5:0] product_shift_reg;
 
     wire [3:0] weight_class;
     wire [7:0] weight_input;
@@ -89,19 +96,15 @@ module fc_unit_new (
         end
     endfunction
 
-    function signed [7:0] requant_fc;
-        input [3:0] co;
+    function signed [7:0] requant_fc_product;
+        input signed [63:0] product;
+        input [5:0] shift_amount;
         reg signed [63:0] x;
-        reg signed [63:0] product;
         reg signed [63:0] act_min_ext;
         reg signed [63:0] act_max_ext;
         begin
-            x = {{32{acc_mem[co][31]}}, acc_mem[co]} +
-                {{32{bias_mem[co][31]}}, bias_mem[co]};
-            product = x *
-                {{32{multiplier_mem[co][31]}}, multiplier_mem[co]};
             x = round_shift_s64(product, 6'd31);
-            x = x >>> shift_mem[co];
+            x = x >>> shift_amount;
             x = x +
                 {{32{output_zero_point_reg[31]}}, output_zero_point_reg};
             if (x > 64'sd127) begin
@@ -116,7 +119,7 @@ module fc_unit_new (
             end else if (x > act_max_ext) begin
                 x = act_max_ext;
             end
-            requant_fc = x[7:0];
+            requant_fc_product = x[7:0];
         end
     endfunction
 
@@ -172,6 +175,9 @@ module fc_unit_new (
             output_zero_point_reg <= 32'sd0;
             activation_min_reg <= -32'sd128;
             activation_max_reg <= 32'sd127;
+            product_reg <= 64'sd0;
+            product_class_reg <= 4'd0;
+            product_shift_reg <= 6'd0;
         end else begin
             done <= 1'b0;
             case (state)
@@ -189,12 +195,29 @@ module fc_unit_new (
                 end
 
                 ST_RUN: begin
-                    output_mem[class_idx] <= requant_fc(class_idx);
+                    // Drain the preceding product while forming the next
+                    // one.  The first product is drained by ST_DRAIN below.
+                    if (class_idx != 4'd0) begin
+                        output_mem[product_class_reg] <=
+                            requant_fc_product(product_reg, product_shift_reg);
+                    end
+                    product_reg <=
+                        ({{32{acc_mem[class_idx][31]}}, acc_mem[class_idx]} +
+                         {{32{bias_mem[class_idx][31]}}, bias_mem[class_idx]}) *
+                        {{32{multiplier_mem[class_idx][31]}}, multiplier_mem[class_idx]};
+                    product_class_reg <= class_idx;
+                    product_shift_reg <= shift_mem[class_idx];
                     if (class_idx == 4'd9) begin
-                        state <= ST_DONE;
+                        state <= ST_DRAIN;
                     end else begin
                         class_idx <= class_idx + 4'd1;
                     end
+                end
+
+                ST_DRAIN: begin
+                    output_mem[product_class_reg] <=
+                        requant_fc_product(product_reg, product_shift_reg);
+                    state <= ST_DONE;
                 end
 
                 ST_DONE: begin
