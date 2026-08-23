@@ -185,3 +185,44 @@ Stem and FC pipeline drains. This was a budget-policy failure, not a simulation
 mismatch. The separate Verilator batch was independently rerun in
 `build/reports/xsim_full_20260823_fc_pipeline/summary.csv` with 39/39 PASS;
 its fullnet SRAM test reports 10 checks and 960953 hardware cycles.
+
+## Current HEAD rerun after the nine-stage requantization work
+
+At HEAD `769d2f825c26b34ff833a9452a13ccea12cced6c`, the complete routed flow
+was rerun with Vivado 2025.2, `xc7z020clg400-1`, and
+`-Directive RuntimeOptimized`:
+
+```text
+run: build/reports/vivado_cnn_top_impl/runs/20260823T153035995-10512/
+status: FAILED_TIMING_CLOSURE
+```
+
+Synthesis, optimization, placement, physical optimization, routing, timing,
+power, and checkpoint generation all completed. The design is fully routed
+(`46156/46156` routable nets, zero routing errors), but the generic 100 MHz
+clock is not met. Post-route timing is:
+
+| Metric | Result | Baseline `f2bf6f7` | Delta |
+|---|---:|---:|---:|
+| WNS | -18.008 ns | -25.022 ns | +7.014 ns |
+| TNS | -56922.496 ns | -78970.894 ns | +22048.398 ns |
+| Setup failing endpoints | 15569 / 54174 | 19462 | improved |
+| WHS | +0.028 ns | +0.040 ns | -0.012 ns |
+| THS | 0.000 ns | 0.000 ns | 0 |
+
+The worst setup path is from `u_layer_runner/stride_reg_reg[7]/C` to
+`u_layer_runner/mem_req_addr_reg[31]/D`, with 27.955 ns data-path delay and
+28 logic levels. There are zero unconstrained internal endpoints; the report
+contains only the expected unconstrained-port clock-group entries from this
+OOC wrapper.
+
+The post-route resource snapshot is 29373 Slice LUTs (55.21%), 18121 Slice
+registers (17.03%), 46 Block RAM tiles (32.86%), and 65 DSPs (29.55%). The
+vectorless power estimate is 0.235 W total (0.128 W dynamic, 0.107 W static,
+medium confidence). It is a tool estimate under default activity assumptions,
+not measured board power.
+
+This run is stronger routed FPGA-fabric evidence than the requested `f2bf6f7`
+snapshot, and shows a 7.014 ns WNS improvement, but it is not timing closure,
+board-level I/O/clock closure, K26 timing, power closure, or hardware
+validation. No RTL was changed for this rerun.
