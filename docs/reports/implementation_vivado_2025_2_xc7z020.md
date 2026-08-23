@@ -178,10 +178,10 @@ K26 timing, or hardware validation.
 
 Vivado 2025.2 XSim recompiled 27 RTL files and ran the complete 16-test gate
 from `scripts/run_cnn_xsim.ps1`; all 16 testbenches passed. The current fullnet
-test reports 10/10 logits bit-exact and 960953 hardware cycles. The wrapper's
-final ancillary report gate rejected that run because its historical default
-budget is 950000 cycles; rerunning `python/inference_accuracy_perf_report.py`
-with `--max-hw-cycles 0` generated the report successfully. This is a budget
-policy failure, not a simulation mismatch. The separate Verilator batch was independently rerun in
+test reports 10/10 logits bit-exact and 960953 hardware cycles. The former
+950000-cycle ancillary-report budget rejected that valid run; it was raised to
+the still-finite 1000000-cycle regression ceiling to accommodate the intentional
+Stem and FC pipeline drains. This was a budget-policy failure, not a simulation
+mismatch. The separate Verilator batch was independently rerun in
 `build/reports/xsim_full_20260823_fc_pipeline/summary.csv` with 39/39 PASS;
 its fullnet SRAM test reports 10 checks and 960953 hardware cycles.

@@ -501,7 +501,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-hw-cycles",
         type=int,
-        default=950_000,
+        # The bit-exact Stem and FC pipeline drains raise the measured fullnet
+        # latency from 944,568 to 960,953 cycles.  Keep a finite regression
+        # guard with enough headroom for those intentional stages.
+        default=1_000_000,
         help="fail if fullnet exceeds this deterministic cycle budget; use 0 to disable",
     )
     return parser.parse_args()
