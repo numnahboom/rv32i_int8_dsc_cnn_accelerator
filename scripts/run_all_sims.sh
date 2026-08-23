@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${SIM_LOG_DIR:-$ROOT/build/reports/sim_logs}"
 TESTS=(
+  tb_requant_activation_core
   tb_requant_activation_unit
   tb_requant_activation_pipeline
   tb_pw_systolic_array_8x8

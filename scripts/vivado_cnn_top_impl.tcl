@@ -264,6 +264,7 @@ write_manifest $manifest_file $project_root $top_name $part_name $invocation "RU
 set rtl_files [list \
     "rtl/common/round_shift.v" \
     "rtl/common/saturate_int8.v" \
+    "rtl/common/requant_activation_core.v" \
     "rtl/cnn/requant_activation_unit.v" \
     "rtl/cnn/requant_activation_pipeline.v" \
     "rtl/cnn/systolic_pe.v" \

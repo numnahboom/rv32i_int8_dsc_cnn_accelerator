@@ -74,6 +74,7 @@ module fc_unit_new (
     wire [7:0] weight_input;
     wire signed [7:0] cfg_weight;
     wire signed [15:0] cfg_product;
+    wire signed [7:0] requant_core_out;
     integer clear_i;
 
     assign cfg_ready = !busy;
@@ -84,54 +85,14 @@ module fc_unit_new (
     assign out_rd_data =
         (out_rd_index < 4'd10) ? output_mem[out_rd_index] : 8'sd0;
 
-    function signed [63:0] round_shift_s64;
-        input signed [63:0] value;
-        input [5:0] shift_amount;
-        reg signed [63:0] abs_value;
-        reg signed [63:0] rounded_abs;
-        reg signed [63:0] offset;
-        begin
-            if (shift_amount == 6'd0) begin
-                round_shift_s64 = value;
-            end else begin
-                offset = 64'sd1 <<< (shift_amount - 6'd1);
-                if (value >= 64'sd0) begin
-                    round_shift_s64 = (value + offset) >>> shift_amount;
-                end else begin
-                    abs_value = -value;
-                    rounded_abs = (abs_value + offset) >>> shift_amount;
-                    round_shift_s64 = -rounded_abs;
-                end
-            end
-        end
-    endfunction
-
-    function signed [7:0] requant_fc_product;
-        input signed [63:0] product;
-        input [5:0] shift_amount;
-        reg signed [63:0] x;
-        reg signed [63:0] act_min_ext;
-        reg signed [63:0] act_max_ext;
-        begin
-            x = round_shift_s64(product, 6'd31);
-            x = x >>> shift_amount;
-            x = x +
-                {{32{output_zero_point_reg[31]}}, output_zero_point_reg};
-            if (x > 64'sd127) begin
-                x = 64'sd127;
-            end else if (x < -64'sd128) begin
-                x = -64'sd128;
-            end
-            act_min_ext = {{32{activation_min_reg[31]}}, activation_min_reg};
-            act_max_ext = {{32{activation_max_reg[31]}}, activation_max_reg};
-            if (x < act_min_ext) begin
-                x = act_min_ext;
-            end else if (x > act_max_ext) begin
-                x = act_max_ext;
-            end
-            requant_fc_product = x[7:0];
-        end
-    endfunction
+    requant_activation_core u_requant_core (
+        .product_int64(product_reg),
+        .shift(product_shift_reg),
+        .output_zero_point_int32(output_zero_point_reg),
+        .activation_min_int32(activation_min_reg),
+        .activation_max_int32(activation_max_reg),
+        .output_int8(requant_core_out)
+    );
 
     always @(posedge clk) begin
         if (cfg_wr_en && cfg_ready) begin
@@ -218,8 +179,7 @@ module fc_unit_new (
                         output_mem[requant_class_reg] <= requant_reg;
                     end
                     if (product_valid) begin
-                        requant_reg <=
-                            requant_fc_product(product_reg, product_shift_reg);
+                        requant_reg <= requant_core_out;
                         requant_class_reg <= product_class_reg;
                     end
                     requant_valid <= product_valid;
@@ -242,8 +202,7 @@ module fc_unit_new (
                         output_mem[requant_class_reg] <= requant_reg;
                     end
                     if (product_valid) begin
-                        requant_reg <=
-                            requant_fc_product(product_reg, product_shift_reg);
+                        requant_reg <= requant_core_out;
                         requant_class_reg <= product_class_reg;
                     end
                     product_valid <= 1'b0;
