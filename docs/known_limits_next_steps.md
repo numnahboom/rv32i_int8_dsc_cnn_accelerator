@@ -17,6 +17,11 @@
 - The same 944568-cycle/status result is confirmed through the CPU harness.
   A three-sample CPU+RTL run is bit-exact with argmax values 3, 8, and 8;
   tracked vectors were not changed for that evidence.
+- Stem requantization now has explicit `RQ_PRODUCT`, `RQ_SHIFT`, and
+  `RQ_WRITE` cycles.  This adds two cycles per output element (32 cycles per
+  pixel) while keeping the signed-64 product and bit-exact rounding order;
+  a direct directed TB covers positive/negative half-ties, shift 0/63,
+  int8 saturation, activation bounds, write order, and `done`.
 - The fullnet transaction oracle reports 78602 payload external reads plus 288
   descriptor reads, 10 external writes, 115808 SRAM reads, and 102656 SRAM
   writes.  Bounds testing checks every SRAM address transaction-by-transaction.

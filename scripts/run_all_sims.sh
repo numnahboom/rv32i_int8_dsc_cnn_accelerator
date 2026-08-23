@@ -15,6 +15,7 @@ TESTS=(
   tb_ds_block_tile_engine
   tb_ds_block_tile_engine_new
   tb_conv3x3_stem_engine
+  tb_conv3x3_stem_engine_new_requant
   tb_gap_unit
   tb_fc_unit
   tb_tile_scheduler
