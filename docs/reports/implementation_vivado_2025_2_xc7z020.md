@@ -131,3 +131,57 @@ regression as `PASS cnn_xsim_regression tests=16`. Its fullnet test reports
 `build/reports/xsim_full_20260823/summary.csv` is a 38/38 PASS aggregate; its
 individual logs include the broader mixed simulator batch and should not be
 substituted for the raw 16-test XSim gate above.
+
+## Current HEAD rerun after FC product pipeline
+
+At HEAD `d4dcf827e759e986554fedd964e7f23f32a16383`, the routed flow was rerun
+with Vivado 2025.2 and `-Directive RuntimeOptimized`:
+
+```text
+run: build/reports/vivado_cnn_top_impl/runs/20260823T150022008-12540/
+status: FAILED_TIMING_CLOSURE
+```
+
+Routing and report generation completed. The generic 100 MHz OOC timing
+constraint remains unmet, but the FC pipeline improves setup slack relative to
+the preceding `518e958` baseline:
+
+| Metric | `518e958` baseline | `d4dcf82` current | Delta |
+|---|---:|---:|---:|
+| WNS | -26.997 ns | -25.022 ns | +1.975 ns |
+| TNS | -80980.352 ns | -78970.894 ns | +2009.458 ns |
+| WHS | +0.083 ns | +0.040 ns | -0.043 ns |
+| THS | 0.000 ns | 0.000 ns (derived) | 0 |
+| Slice LUTs | 29,350 | 29,495 | +145 |
+| Slice registers | 17,934 | 17,950 | +16 |
+| BRAM tiles | 46 | 46 | 0 |
+| DSPs | 65 | 65 | 0 |
+| Vectorless total power | 0.233 W | 0.211 W | -0.022 W |
+
+The implementation wrapper's manifest conservatively records the TNS field as
+`NEGATIVE_PATH_PRESENT`, but the Vivado timing summary provides the numeric
+aggregate above (19,462 setup-failing endpoints). The worst setup path is still in the Stem
+engine, from `u_layer_runner/u_stem_engine/channel_idx_reg[0]/C` to
+`u_layer_runner/u_stem_engine/out_wr_data_int8_reg[1]/D`, with 35.015 ns data
+path delay, 51 logic levels, and -25.022 ns slack. Thus the FC pipeline is
+functionally safe and improves the routed WNS, but it does not yet move the
+critical path out of Stem or close 100 MHz.
+
+The vectorless estimate is 0.104 W dynamic plus 0.107 W static, medium
+confidence, with no activity file. It is not a board measurement or power
+closure result. `route_status.txt` reports a fully routed design with no
+routing errors. As with the earlier sections, this is generic-clock,
+post-route FPGA-fabric evidence only: it is not board-level I/O closure,
+K26 timing, or hardware validation.
+
+## Current HEAD XSim gate
+
+Vivado 2025.2 XSim recompiled 27 RTL files and ran the complete 16-test gate
+from `scripts/run_cnn_xsim.ps1`; all 16 testbenches passed. The current fullnet
+test reports 10/10 logits bit-exact and 960953 hardware cycles. The wrapper's
+final ancillary report gate rejected that run because its historical default
+budget is 950000 cycles; rerunning `python/inference_accuracy_perf_report.py`
+with `--max-hw-cycles 0` generated the report successfully. This is a budget
+policy failure, not a simulation mismatch. The separate Verilator batch was independently rerun in
+`build/reports/xsim_full_20260823_fc_pipeline/summary.csv` with 39/39 PASS;
+its fullnet SRAM test reports 10 checks and 960953 hardware cycles.
