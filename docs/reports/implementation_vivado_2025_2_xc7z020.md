@@ -279,3 +279,53 @@ Vivado 2025.2 XSim recompiled the 27 RTL files and completed the full selected
 logits bit-exact. The fresh fullnet result is `993721` hardware cycles,
 `5513689` MACs, and `343.55x` RV32I estimate. The prior `944568`-cycle result
 belongs to an earlier HEAD and must not be mixed with this current run.
+
+## Current dirty-tree rerun after tiled address-base pipeline
+
+The tiled loader was then changed in the working tree to form its halo offsets,
+row/column bases, and initial flattened input index in three registered states.
+The SRAM and external-input requests use that registered index; the loader
+remains single-outstanding. Vivado 2025.2 was rerun with the same `xc7z020clg400-1`
+part and `RuntimeOptimized` directive:
+
+```text
+base git_head: 9ab6295e4c3c3db7d8f124f6178986b5345bac1a
+run: build/reports/vivado_cnn_top_impl/runs/20260823T170935332-3896/
+status: FAILED_TIMING_CLOSURE
+```
+
+The design is fully routed (`46365/46365` routable nets, zero route errors).
+The generic 100 MHz OOC timing constraint is still unmet, but WNS improved by
+3.424 ns relative to the `370e275` run:
+
+| Metric | `370e275` | Address-base pipeline | Delta |
+|---|---:|---:|---:|
+| WNS | -14.714 ns | -11.290 ns | +3.424 ns |
+| TNS | -63101.914 ns | -46783.293 ns | +16318.621 ns |
+| Setup failing endpoints | 16377 / 54303 | 16202 / 54811 | improved |
+| WHS | +0.028 ns | +0.014 ns | -0.014 ns |
+| THS | 0.000 ns | 0.000 ns | 0 |
+
+The prior `stride_reg -> sram_input_rd_addr_reg` worst path is no longer the
+reported maximum. The new worst setup path is
+`u_layer_runner/in_h_reg_reg[2]_replica/C` to
+`u_layer_runner/phase_idx_reg[0]/CE`, through tile/output-span validation and
+the phase enable, with 21.001 ns data-path delay and 26 logic levels. This is
+a timing diagnosis, not timing closure.
+
+Post-route utilization is 29,758 Slice LUTs (55.94%), 18,361 Slice registers
+(17.26%), 46 BRAM tiles (32.86%), and 55 DSPs (25.00%). Vivado's vectorless
+estimate is 0.252 W total (0.145 W dynamic, 0.107 W static), medium confidence;
+it is not measured board power.
+
+Fresh Vivado 2025.2 XSim compiled all 27 RTL files and passed the four
+address-sensitive directed tests (SRAM bounds, tiled Stem, tiled DSBlock, and
+SRAM tiled DSBlock). The separately rerun fullnet test passed 10/10 logits
+bit-exact in 993850 cycles, with 5,136,896 MACs and a 343.50x RV32I estimate.
+The 129-cycle increase relative to the immediately preceding 993721-cycle
+fullnet measurement is within the 1,000,000-cycle regression ceiling and is
+consistent with the fixed per-tile address preparation states.
+
+As with every section above, this is timing-capable xc7z020 routed
+FPGA-fabric evidence only. It is not 100 MHz timing closure, K26 evidence,
+board-level I/O or clock closure, hardware validation, or measured power.

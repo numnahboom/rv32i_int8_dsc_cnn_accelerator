@@ -90,6 +90,12 @@ module cnn_layer_runner #(
     localparam ST_TILED_START_WAIT    = 5'd21;
     localparam ST_STORE_PREFETCH      = 5'd22;
     localparam ST_TILED_STORE_PREFETCH = 5'd23;
+    // Build the tiled input base address over separate cycles so the
+    // tile-start/stride products do not feed the SRAM read-address register
+    // through one cascaded arithmetic cone.
+    localparam ST_TILED_ADDR_OFFSETS   = 5'd24;
+    localparam ST_TILED_ADDR_BASES     = 5'd25;
+    localparam ST_TILED_ADDR_INDEX     = 5'd26;
     localparam integer OUT_BUFFER_DEPTH = 64 * MAX_COUT;
     localparam integer OUT_BUFFER_ADDR_WIDTH =
         (OUT_BUFFER_DEPTH <= 2) ? 1 : $clog2(OUT_BUFFER_DEPTH);
@@ -148,6 +154,8 @@ module cnn_layer_runner #(
     reg signed [31:0] tiled_input_col_base_reg;
     reg signed [31:0] tiled_input_tile_col_base_reg;
     reg signed [31:0] tiled_input_row_stride_reg;
+    reg signed [31:0] tiled_input_halo_row_offset_reg;
+    reg signed [31:0] tiled_input_halo_col_offset_reg;
     reg [7:0] tiled_store_y;
     reg [7:0] tiled_store_x;
 
@@ -685,19 +693,6 @@ module cnn_layer_runner #(
         end
     endfunction
 
-    /* verilator lint_off BLKSEQ */
-    function [31:0] tiled_input_index_current;
-        integer src_y;
-        integer src_x;
-        begin
-            src_y = (tile_h_start_reg * effective_stride) + tiled_load_y - 1;
-            src_x = (tile_w_start_reg * effective_stride) + tiled_load_x - 1;
-            tiled_input_index_current =
-                (((src_y * in_w_reg) + src_x) * in_c_reg) +
-                tiled_load_channel;
-        end
-    endfunction
-
     function [31:0] tiled_input_index_next_reg;
         begin
             if (!tiled_load_channel_wrap) begin
@@ -722,20 +717,6 @@ module cnn_layer_runner #(
             tiled_input_current_is_padding =
                 (src_y < 0) || (src_x < 0) ||
                 (src_y >= in_h_reg) || (src_x >= in_w_reg);
-        end
-    endfunction
-
-    function [31:0] tiled_input_index_next;
-        integer src_y;
-        integer src_x;
-        begin
-            src_y = (tile_h_start_reg * effective_stride) +
-                    tiled_load_y_next - 1;
-            src_x = (tile_w_start_reg * effective_stride) +
-                    tiled_load_x_next - 1;
-            tiled_input_index_next =
-                (((src_y * in_w_reg) + src_x) * in_c_reg) +
-                tiled_load_channel_next;
         end
     endfunction
 
@@ -1133,6 +1114,8 @@ module cnn_layer_runner #(
             tiled_input_col_base_reg <= 32'sd0;
             tiled_input_tile_col_base_reg <= 32'sd0;
             tiled_input_row_stride_reg <= 32'sd0;
+            tiled_input_halo_row_offset_reg <= 32'sd0;
+            tiled_input_halo_col_offset_reg <= 32'sd0;
             tiled_store_y <= 8'd0;
             tiled_store_x <= 8'd0;
             op_type_reg <= 32'd0;
@@ -1525,42 +1508,43 @@ module cnn_layer_runner #(
                         tiled_load_y <= 8'd0;
                         tiled_load_x <= 8'd0;
                         tiled_load_channel <= 16'd0;
-                        tiled_input_row_base_reg <=
-                            (($signed({1'b0, sched_tile_h_start}) *
-                              $signed({1'b0, effective_stride})) - 32'sd1) *
-                            $signed({16'd0, in_w_reg}) *
-                            $signed({16'd0, in_c_reg});
-                        tiled_input_tile_col_base_reg <=
-                            (($signed({1'b0, sched_tile_w_start}) *
-                              $signed({1'b0, effective_stride})) - 32'sd1) *
-                            $signed({16'd0, in_c_reg});
-                        tiled_input_col_base_reg <=
-                            (($signed({1'b0, sched_tile_w_start}) *
-                              $signed({1'b0, effective_stride})) - 32'sd1) *
-                            $signed({16'd0, in_c_reg});
-                        tiled_input_row_stride_reg <=
-                            $signed({16'd0, in_w_reg}) *
-                            $signed({16'd0, in_c_reg});
-                        tiled_input_index_reg <=
-                            ((($signed({1'b0, sched_tile_h_start}) *
-                               $signed({1'b0, effective_stride})) - 32'sd1) *
-                             $signed({16'd0, in_w_reg}) *
-                             $signed({16'd0, in_c_reg})) +
-                            ((($signed({1'b0, sched_tile_w_start}) *
-                               $signed({1'b0, effective_stride})) - 32'sd1) *
-                             $signed({16'd0, in_c_reg}));
                         tiled_load_count <= {24'd0, sched_input_tile_h} *
                                             {24'd0, sched_input_tile_w} *
                                             {16'd0, in_c_reg};
-                        if (({24'd0, sched_input_tile_h} *
-                             {24'd0, sched_input_tile_w} *
-                             {16'd0, in_c_reg}) == 32'd0) begin
-                            state <= ST_TILED_ENGINE_START;
-                        end else begin
-                            state <= ST_TILED_LOAD_REQ;
-                        end
+                        state <= ST_TILED_ADDR_OFFSETS;
                     end else begin
                         state <= ST_TILED_LOAD_SETUP;
+                    end
+                end
+
+                ST_TILED_ADDR_OFFSETS: begin
+                    tiled_input_halo_row_offset_reg <=
+                        ($signed({1'b0, tile_h_start_reg}) *
+                         $signed({1'b0, effective_stride})) - 32'sd1;
+                    tiled_input_halo_col_offset_reg <=
+                        ($signed({1'b0, tile_w_start_reg}) *
+                         $signed({1'b0, effective_stride})) - 32'sd1;
+                    tiled_input_row_stride_reg <=
+                        $signed({16'd0, in_w_reg}) * $signed({16'd0, in_c_reg});
+                    state <= ST_TILED_ADDR_BASES;
+                end
+
+                ST_TILED_ADDR_BASES: begin
+                    tiled_input_row_base_reg <= tiled_input_halo_row_offset_reg *
+                                                tiled_input_row_stride_reg;
+                    tiled_input_tile_col_base_reg <= tiled_input_halo_col_offset_reg *
+                                                     $signed({16'd0, in_c_reg});
+                    state <= ST_TILED_ADDR_INDEX;
+                end
+
+                ST_TILED_ADDR_INDEX: begin
+                    tiled_input_col_base_reg <= tiled_input_tile_col_base_reg;
+                    tiled_input_index_reg <= tiled_input_row_base_reg +
+                                             tiled_input_tile_col_base_reg;
+                    if (tiled_load_count == 32'd0) begin
+                        state <= ST_TILED_ENGINE_START;
+                    end else begin
+                        state <= ST_TILED_LOAD_REQ;
                     end
                 end
 
@@ -1585,7 +1569,7 @@ module cnn_layer_runner #(
                                     sram_input_rd_en <= 1'b1;
                                     sram_input_rd_addr <= sram_addr_for_index(
                                         input_addr_reg,
-                                        tiled_input_index_next()
+                                        tiled_input_index_next_reg()
                                     );
                                     state <= ST_TILED_LOAD_RESP;
                                 end else begin
@@ -1603,7 +1587,7 @@ module cnn_layer_runner #(
                         sram_input_rd_en <= 1'b1;
                         sram_input_rd_addr <= sram_addr_for_index(
                             input_addr_reg,
-                            tiled_input_index_current()
+                            tiled_input_index_reg
                         );
                         state <= ST_TILED_LOAD_RESP;
                     end else begin
@@ -1638,7 +1622,7 @@ module cnn_layer_runner #(
                                     sram_input_rd_en <= 1'b1;
                                     sram_input_rd_addr <= sram_addr_for_index(
                                         input_addr_reg,
-                                        tiled_input_index_next()
+                                        tiled_input_index_next_reg()
                                     );
                                     state <= ST_TILED_LOAD_RESP;
                                 end
