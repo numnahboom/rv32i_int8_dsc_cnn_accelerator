@@ -66,15 +66,15 @@ module fc_unit_new (
     // local drain cycle does not alter any request, response, or ready/stall
     // transaction.
     (* keep = "true" *)
-    reg signed [7:0] requant_reg;
-    reg [3:0] requant_class_reg;
-    reg requant_valid;
+    reg [3:0] drain_count;
 
     wire [3:0] weight_class;
     wire [7:0] weight_input;
     wire signed [7:0] cfg_weight;
     wire signed [15:0] cfg_product;
     wire signed [7:0] requant_core_out;
+    wire requant_core_valid;
+    wire [3:0] requant_core_class;
     integer clear_i;
 
     assign cfg_ready = !busy;
@@ -85,13 +85,15 @@ module fc_unit_new (
     assign out_rd_data =
         (out_rd_index < 4'd10) ? output_mem[out_rd_index] : 8'sd0;
 
-    requant_activation_core u_requant_core (
+    requant_product_pipeline u_requant_core (
+        .clk(clk), .rst_n(rst_n), .valid_in(product_valid),
         .product_int64(product_reg),
         .shift(product_shift_reg),
         .output_zero_point_int32(output_zero_point_reg),
         .activation_min_int32(activation_min_reg),
         .activation_max_int32(activation_max_reg),
-        .output_int8(requant_core_out)
+        .tag_in(product_class_reg), .valid_out(requant_core_valid),
+        .tag_out(requant_core_class), .output_int8(requant_core_out)
     );
 
     always @(posedge clk) begin
@@ -150,9 +152,7 @@ module fc_unit_new (
             product_class_reg <= 4'd0;
             product_shift_reg <= 6'd0;
             product_valid <= 1'b0;
-            requant_reg <= 8'sd0;
-            requant_class_reg <= 4'd0;
-            requant_valid <= 1'b0;
+            drain_count <= 4'd0;
         end else begin
             done <= 1'b0;
             case (state)
@@ -166,7 +166,6 @@ module fc_unit_new (
                         activation_min_reg <= activation_min;
                         activation_max_reg <= activation_max;
                         product_valid <= 1'b0;
-                        requant_valid <= 1'b0;
                         state <= ST_RUN;
                     end
                 end
@@ -175,14 +174,9 @@ module fc_unit_new (
                     // Advance the product/requant/writeback pipeline while
                     // forming the next class product.  Each class result is
                     // written exactly once, in class order.
-                    if (requant_valid) begin
-                        output_mem[requant_class_reg] <= requant_reg;
+                    if (requant_core_valid) begin
+                        output_mem[requant_core_class] <= requant_core_out;
                     end
-                    if (product_valid) begin
-                        requant_reg <= requant_core_out;
-                        requant_class_reg <= product_class_reg;
-                    end
-                    requant_valid <= product_valid;
                     product_reg <=
                         ({{32{acc_mem[class_idx][31]}}, acc_mem[class_idx]} +
                          {{32{bias_mem[class_idx][31]}}, bias_mem[class_idx]}) *
@@ -198,24 +192,17 @@ module fc_unit_new (
                 end
 
                 ST_DRAIN_PRODUCT: begin
-                    if (requant_valid) begin
-                        output_mem[requant_class_reg] <= requant_reg;
-                    end
-                    if (product_valid) begin
-                        requant_reg <= requant_core_out;
-                        requant_class_reg <= product_class_reg;
-                    end
                     product_valid <= 1'b0;
-                    requant_valid <= product_valid;
+                    drain_count <= 4'd0;
                     state <= ST_DRAIN_REQUANT;
                 end
 
                 ST_DRAIN_REQUANT: begin
-                    if (requant_valid) begin
-                        output_mem[requant_class_reg] <= requant_reg;
+                    if (requant_core_valid) begin
+                        output_mem[requant_core_class] <= requant_core_out;
                     end
-                    requant_valid <= 1'b0;
-                    state <= ST_DONE;
+                    if (drain_count == 4'd7) state <= ST_DONE;
+                    else drain_count <= drain_count + 4'd1;
                 end
 
                 ST_DONE: begin

@@ -267,6 +267,7 @@ set rtl_files [list \
     "rtl/common/requant_activation_core.v" \
     "rtl/cnn/requant_activation_unit.v" \
     "rtl/cnn/requant_activation_pipeline.v" \
+    "rtl/cnn/requant_product_pipeline.v" \
     "rtl/cnn/systolic_pe.v" \
     "rtl/cnn/pw_systolic_array_8x8.v" \
     "rtl/cnn/dw_line_buffer.v" \
