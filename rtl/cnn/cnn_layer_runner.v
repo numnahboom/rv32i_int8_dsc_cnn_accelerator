@@ -96,6 +96,11 @@ module cnn_layer_runner #(
     localparam ST_TILED_ADDR_OFFSETS   = 5'd24;
     localparam ST_TILED_ADDR_BASES     = 5'd25;
     localparam ST_TILED_ADDR_INDEX     = 5'd26;
+    // Split descriptor SRAM-span validation across registered states.  In
+    // tiled mode the output count is a three-operand product, which must not
+    // also feed the span comparison and phase-index enable in one cycle.
+    localparam ST_VALIDATE_SPAN_COUNT  = 5'd27;
+    localparam ST_VALIDATE_SPAN_RESULT = 5'd28;
     localparam integer OUT_BUFFER_DEPTH = 64 * MAX_COUT;
     localparam integer OUT_BUFFER_ADDR_WIDTH =
         (OUT_BUFFER_DEPTH <= 2) ? 1 : $clog2(OUT_BUFFER_DEPTH);
@@ -127,6 +132,10 @@ module cnn_layer_runner #(
     reg signed [31:0] pw_activation_min_reg;
     reg signed [31:0] pw_activation_max_reg;
     reg [31:0] flags_reg;
+    reg [31:0] sram_input_count_reg;
+    reg [31:0] sram_output_count_reg;
+    reg        sram_input_span_valid_reg;
+    reg        sram_output_span_valid_reg;
     reg        packed_word_valid;
     reg [31:0] packed_word_addr;
     reg [31:0] packed_word_data;
@@ -1094,6 +1103,10 @@ module cnn_layer_runner #(
             phase_idx <= 4'd0;
             phase_count <= 32'd0;
             phase_base_addr <= 32'd0;
+            sram_input_count_reg <= 32'd0;
+            sram_output_count_reg <= 32'd0;
+            sram_input_span_valid_reg <= 1'b0;
+            sram_output_span_valid_reg <= 1'b0;
             load_idx <= 32'd0;
             compact_load_y <= 16'd0;
             compact_load_x <= 16'd0;
@@ -1206,18 +1219,33 @@ module cnn_layer_runner #(
                     end else if (!valid_config()) begin
                         error <= 1'b1;
                         state <= ST_ERROR;
-                    end else if (
-                        (flags_reg[FLAG_INPUT_FROM_SRAM] &&
-                         !sram_span_valid(
-                             input_addr_reg,
-                             phase_count_for(op_type_reg, PH_INPUT)
-                         )) ||
+                    end else begin
+                        // Keep the output-count product out of the span
+                        // comparison/phase-enable cone.  These values are
+                        // descriptor-local and are consumed only below.
+                        sram_input_count_reg <=
+                            phase_count_for(op_type_reg, PH_INPUT);
+                        sram_output_count_reg <=
+                            sram_output_count_for(op_type_reg);
+                        state <= ST_VALIDATE_SPAN_COUNT;
+                    end
+                end
+
+                ST_VALIDATE_SPAN_COUNT: begin
+                    sram_input_span_valid_reg <= sram_span_valid(
+                        input_addr_reg, sram_input_count_reg
+                    );
+                    sram_output_span_valid_reg <= sram_span_valid(
+                        output_addr_reg, sram_output_count_reg
+                    );
+                    state <= ST_VALIDATE_SPAN_RESULT;
+                end
+
+                ST_VALIDATE_SPAN_RESULT: begin
+                    if ((flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                         !sram_input_span_valid_reg) ||
                         (flags_reg[FLAG_OUTPUT_TO_SRAM] &&
-                         !sram_span_valid(
-                             output_addr_reg,
-                             sram_output_count_for(op_type_reg)
-                         ))
-                    ) begin
+                         !sram_output_span_valid_reg)) begin
                         // SRAM ports intentionally expose only
                         // SRAM_ADDR_WIDTH address bits.  Reject a descriptor
                         // whose logical tensor would otherwise alias through

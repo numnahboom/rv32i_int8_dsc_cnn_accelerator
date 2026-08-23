@@ -329,3 +329,56 @@ consistent with the fixed per-tile address preparation states.
 As with every section above, this is timing-capable xc7z020 routed
 FPGA-fabric evidence only. It is not 100 MHz timing closure, K26 evidence,
 board-level I/O or clock closure, hardware validation, or measured power.
+
+## Current HEAD rerun after registered SRAM span validation
+
+At HEAD `14d6c42`, the descriptor SRAM-span validation cone was split into
+two registered stages: one records the input/output element counts and the
+next records their span-valid results before the phase index is enabled. This
+keeps the tiled output-count product, 33-bit span comparison, and phase-enable
+logic out of a single cycle. The loader remains single-outstanding; no request
+or response state is active during these descriptor-local validation cycles.
+
+Vivado 2025.2 reran the full routed OOC flow with `xc7z020clg400-1` and
+`RuntimeOptimized`:
+
+```text
+run: build/reports/vivado_cnn_top_impl/runs/20260823T173802610-8900/
+status: FAILED_TIMING_CLOSURE
+```
+
+The design fully routed (`46336/46336` routable nets, zero route errors). The
+generic 100 MHz OOC constraint remains unmet, but the prior tiled span/phase
+critical path is no longer the reported maximum:
+
+| Metric | Address-base pipeline | Span-validation pipeline | Delta |
+|---|---:|---:|---:|
+| WNS | -11.290 ns | -9.776 ns | +1.514 ns |
+| TNS | -46783.293 ns | -37259.229 ns | +9524.064 ns |
+| Setup failing endpoints | 16202 / 54811 | 15565 / 54811 | improved |
+| WHS | +0.014 ns | +0.085 ns | +0.071 ns |
+| THS | 0.000 ns | 0.000 ns | 0 |
+| Slice LUTs | 29758 | 29834 | +76 |
+| Slice registers | 18361 | 18299 | -62 |
+| BRAM tiles | 46 | 46 | 0 |
+| DSPs | 55 | 55 | 0 |
+| Vectorless total power | 0.252 W | 0.211 W | -0.041 W |
+
+The new worst path is an FC accumulation write path, from
+`u_layer_runner/u_fc_unit/product_reg_reg__0/CLK` to
+`u_layer_runner/u_fc_unit/output_mem_reg_0_15_6_7/DP/I`, with 19.443 ns data
+delay and 43 logic levels. The former `in_h_reg -> phase_idx_reg/CE` tiled
+output-span validation path is absent from the maximum-path report. The power
+number is again Vivado's medium-confidence vectorless estimate, not measured
+board power or power closure.
+
+Fresh Vivado 2025.2 XSim compiled all 27 RTL files. The four address-sensitive
+directed tests (SRAM bounds, tiled Stem, tiled DSBlock, and SRAM tiled DSBlock)
+passed. The fullnet SRAM test remained 10/10 logits bit-exact in 993868 cycles
+with 5,136,896 MACs and a 343.50x RV32I estimate. The 18-cycle increase
+relative to the preceding 993850-cycle run is the two fixed validation cycles
+for each of the nine layer descriptors.
+
+This remains routed xc7z020 FPGA-fabric evidence only. It is not 100 MHz
+timing closure, K26 timing, board-level I/O/clock closure, hardware validation,
+or measured power.
