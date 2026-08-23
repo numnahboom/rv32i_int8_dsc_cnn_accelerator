@@ -141,6 +141,13 @@ module cnn_layer_runner #(
     reg [7:0] tiled_load_y;
     reg [7:0] tiled_load_x;
     reg [15:0] tiled_load_channel;
+    // Registered flattened input address state for tiled external loads.
+    // These are signed because the halo origin may be outside the image.
+    reg signed [31:0] tiled_input_index_reg;
+    reg signed [31:0] tiled_input_row_base_reg;
+    reg signed [31:0] tiled_input_col_base_reg;
+    reg signed [31:0] tiled_input_tile_col_base_reg;
+    reg signed [31:0] tiled_input_row_stride_reg;
     reg [7:0] tiled_store_y;
     reg [7:0] tiled_store_x;
 
@@ -691,6 +698,21 @@ module cnn_layer_runner #(
         end
     endfunction
 
+    function [31:0] tiled_input_index_next_reg;
+        begin
+            if (!tiled_load_channel_wrap) begin
+                tiled_input_index_next_reg = tiled_input_index_reg + 32'd1;
+            end else if (!tiled_load_x_wrap) begin
+                tiled_input_index_next_reg = tiled_input_index_reg +
+                                             32'd1;
+            end else begin
+                tiled_input_index_next_reg = tiled_input_row_base_reg +
+                    tiled_input_row_stride_reg +
+                    tiled_input_tile_col_base_reg;
+            end
+        end
+    endfunction
+
     function tiled_input_current_is_padding;
         integer src_y;
         integer src_x;
@@ -877,11 +899,21 @@ module cnn_layer_runner #(
                 if ((tiled_load_x + 8'd1) >= tile_input_w_reg) begin
                     tiled_load_x <= 8'd0;
                     tiled_load_y <= tiled_load_y + 8'd1;
+                    tiled_input_row_base_reg <= tiled_input_row_base_reg +
+                                                tiled_input_row_stride_reg;
+                    tiled_input_col_base_reg <= tiled_input_tile_col_base_reg;
+                    tiled_input_index_reg <= tiled_input_row_base_reg +
+                                             tiled_input_row_stride_reg +
+                                             tiled_input_tile_col_base_reg;
                 end else begin
                     tiled_load_x <= tiled_load_x + 8'd1;
+                    tiled_input_col_base_reg <= tiled_input_col_base_reg +
+                                               in_c_reg;
+                    tiled_input_index_reg <= tiled_input_index_reg + 32'd1;
                 end
             end else begin
                 tiled_load_channel <= tiled_load_channel + 16'd1;
+                tiled_input_index_reg <= tiled_input_index_reg + 32'd1;
             end
         end
     endtask
@@ -1096,6 +1128,11 @@ module cnn_layer_runner #(
             tiled_load_y <= 8'd0;
             tiled_load_x <= 8'd0;
             tiled_load_channel <= 16'd0;
+            tiled_input_index_reg <= 32'sd0;
+            tiled_input_row_base_reg <= 32'sd0;
+            tiled_input_col_base_reg <= 32'sd0;
+            tiled_input_tile_col_base_reg <= 32'sd0;
+            tiled_input_row_stride_reg <= 32'sd0;
             tiled_store_y <= 8'd0;
             tiled_store_x <= 8'd0;
             op_type_reg <= 32'd0;
@@ -1488,6 +1525,30 @@ module cnn_layer_runner #(
                         tiled_load_y <= 8'd0;
                         tiled_load_x <= 8'd0;
                         tiled_load_channel <= 16'd0;
+                        tiled_input_row_base_reg <=
+                            (($signed({1'b0, sched_tile_h_start}) *
+                              $signed({1'b0, effective_stride})) - 32'sd1) *
+                            $signed({16'd0, in_w_reg}) *
+                            $signed({16'd0, in_c_reg});
+                        tiled_input_tile_col_base_reg <=
+                            (($signed({1'b0, sched_tile_w_start}) *
+                              $signed({1'b0, effective_stride})) - 32'sd1) *
+                            $signed({16'd0, in_c_reg});
+                        tiled_input_col_base_reg <=
+                            (($signed({1'b0, sched_tile_w_start}) *
+                              $signed({1'b0, effective_stride})) - 32'sd1) *
+                            $signed({16'd0, in_c_reg});
+                        tiled_input_row_stride_reg <=
+                            $signed({16'd0, in_w_reg}) *
+                            $signed({16'd0, in_c_reg});
+                        tiled_input_index_reg <=
+                            ((($signed({1'b0, sched_tile_h_start}) *
+                               $signed({1'b0, effective_stride})) - 32'sd1) *
+                             $signed({16'd0, in_w_reg}) *
+                             $signed({16'd0, in_c_reg})) +
+                            ((($signed({1'b0, sched_tile_w_start}) *
+                               $signed({1'b0, effective_stride})) - 32'sd1) *
+                             $signed({16'd0, in_c_reg}));
                         tiled_load_count <= {24'd0, sched_input_tile_h} *
                                             {24'd0, sched_input_tile_w} *
                                             {16'd0, in_c_reg};
@@ -1531,7 +1592,7 @@ module cnn_layer_runner #(
                                     mem_req_valid <= 1'b1;
                                     mem_req_write <= 1'b0;
                                     mem_req_addr <= input_addr_reg +
-                                                    (tiled_input_index_next() << 2);
+                                                    (tiled_input_index_next_reg() << 2);
                                     mem_req_wdata <= 32'd0;
                                 end
                             end
@@ -1549,7 +1610,7 @@ module cnn_layer_runner #(
                         mem_req_valid <= 1'b1;
                         mem_req_write <= 1'b0;
                         mem_req_addr <= input_addr_reg +
-                                        (tiled_input_index_current() << 2);
+                                        (tiled_input_index_reg << 2);
                         mem_req_wdata <= 32'd0;
                         if (mem_req_valid && mem_req_ready) begin
                             mem_req_valid <= 1'b0;
@@ -1598,7 +1659,7 @@ module cnn_layer_runner #(
                                 mem_req_valid <= 1'b1;
                                 mem_req_write <= 1'b0;
                                 mem_req_addr <= input_addr_reg +
-                                                (tiled_input_index_next() << 2);
+                                                (tiled_input_index_next_reg() << 2);
                                 mem_req_wdata <= 32'd0;
                             end
                             state <= ST_TILED_LOAD_REQ;
