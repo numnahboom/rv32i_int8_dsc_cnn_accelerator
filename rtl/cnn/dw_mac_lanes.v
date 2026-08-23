@@ -28,20 +28,6 @@ module dw_mac_lanes #(
     wire input_fire;
     wire output_fire;
 
-    // Materialize each lane's row reduction once per cycle.  The final
-    // accumulation cycle consumes the same value both for the running
-    // accumulator and for acc_vec; keeping it as a shared net prevents two
-    // copies of the three-product/add reduction from appearing in the
-    // critical MAC-to-register path.
-    wire signed [31:0] row_sum_w [0:LANES-1];
-
-    genvar row_lane;
-    generate
-        for (row_lane = 0; row_lane < LANES; row_lane = row_lane + 1) begin : gen_row_sum
-            assign row_sum_w[row_lane] = row_sum(row_lane, cycle_idx);
-        end
-    endgenerate
-
     assign ready_in = !busy && (!valid_out || ready_out);
     assign input_fire = valid_in && ready_in;
     assign output_fire = valid_out && ready_out;
@@ -103,9 +89,9 @@ module dw_mac_lanes #(
             end else if (busy) begin
                 for (lane = 0; lane < LANES; lane = lane + 1) begin
                     if (lane_active_r[lane]) begin
-                        acc[lane] <= acc[lane] + row_sum_w[lane];
+                        acc[lane] <= acc[lane] + row_sum(lane, cycle_idx);
                         if (cycle_idx == 2'd2) begin
-                            acc_vec[(lane*32) +: 32] <= acc[lane] + row_sum_w[lane];
+                            acc_vec[(lane*32) +: 32] <= acc[lane] + row_sum(lane, cycle_idx);
                         end
                     end else if (cycle_idx == 2'd2) begin
                         acc_vec[(lane*32) +: 32] <= 32'sd0;
