@@ -37,8 +37,9 @@ module fc_unit_new (
 
     localparam ST_IDLE = 2'd0;
     localparam ST_RUN  = 2'd1;
-    localparam ST_DRAIN = 2'd2;
-    localparam ST_DONE = 2'd3;
+    localparam ST_DRAIN_PRODUCT = 3'd2;
+    localparam ST_DRAIN_REQUANT = 3'd3;
+    localparam ST_DONE = 3'd4;
 
     (* ram_style = "distributed" *)
     reg signed [7:0] input_mem [0:255];
@@ -48,7 +49,7 @@ module fc_unit_new (
     reg [5:0] shift_mem [0:9];
     reg signed [7:0] output_mem [0:9];
 
-    reg [1:0] state;
+    reg [2:0] state;
     reg [3:0] class_idx;
     reg signed [31:0] output_zero_point_reg;
     reg signed [31:0] activation_min_reg;
@@ -59,6 +60,15 @@ module fc_unit_new (
     reg signed [63:0] product_reg;
     reg [3:0] product_class_reg;
     reg [5:0] product_shift_reg;
+    reg product_valid;
+    // Keep the carry-heavy rounding/saturation result out of the LUTRAM
+    // write path.  The output memory is read only after done, so this extra
+    // local drain cycle does not alter any request, response, or ready/stall
+    // transaction.
+    (* keep = "true" *)
+    reg signed [7:0] requant_reg;
+    reg [3:0] requant_class_reg;
+    reg requant_valid;
 
     wire [3:0] weight_class;
     wire [7:0] weight_input;
@@ -178,6 +188,10 @@ module fc_unit_new (
             product_reg <= 64'sd0;
             product_class_reg <= 4'd0;
             product_shift_reg <= 6'd0;
+            product_valid <= 1'b0;
+            requant_reg <= 8'sd0;
+            requant_class_reg <= 4'd0;
+            requant_valid <= 1'b0;
         end else begin
             done <= 1'b0;
             case (state)
@@ -190,33 +204,58 @@ module fc_unit_new (
                         output_zero_point_reg <= output_zero_point;
                         activation_min_reg <= activation_min;
                         activation_max_reg <= activation_max;
+                        product_valid <= 1'b0;
+                        requant_valid <= 1'b0;
                         state <= ST_RUN;
                     end
                 end
 
                 ST_RUN: begin
-                    // Drain the preceding product while forming the next
-                    // one.  The first product is drained by ST_DRAIN below.
-                    if (class_idx != 4'd0) begin
-                        output_mem[product_class_reg] <=
-                            requant_fc_product(product_reg, product_shift_reg);
+                    // Advance the product/requant/writeback pipeline while
+                    // forming the next class product.  Each class result is
+                    // written exactly once, in class order.
+                    if (requant_valid) begin
+                        output_mem[requant_class_reg] <= requant_reg;
                     end
+                    if (product_valid) begin
+                        requant_reg <=
+                            requant_fc_product(product_reg, product_shift_reg);
+                        requant_class_reg <= product_class_reg;
+                    end
+                    requant_valid <= product_valid;
                     product_reg <=
                         ({{32{acc_mem[class_idx][31]}}, acc_mem[class_idx]} +
                          {{32{bias_mem[class_idx][31]}}, bias_mem[class_idx]}) *
                         {{32{multiplier_mem[class_idx][31]}}, multiplier_mem[class_idx]};
                     product_class_reg <= class_idx;
                     product_shift_reg <= shift_mem[class_idx];
+                    product_valid <= 1'b1;
                     if (class_idx == 4'd9) begin
-                        state <= ST_DRAIN;
+                        state <= ST_DRAIN_PRODUCT;
                     end else begin
                         class_idx <= class_idx + 4'd1;
                     end
                 end
 
-                ST_DRAIN: begin
-                    output_mem[product_class_reg] <=
-                        requant_fc_product(product_reg, product_shift_reg);
+                ST_DRAIN_PRODUCT: begin
+                    if (requant_valid) begin
+                        output_mem[requant_class_reg] <= requant_reg;
+                    end
+                    if (product_valid) begin
+                        requant_reg <=
+                            requant_fc_product(product_reg, product_shift_reg);
+                        requant_class_reg <= product_class_reg;
+                    end
+                    product_valid <= 1'b0;
+                    requant_valid <= product_valid;
+                    state <= ST_DRAIN_REQUANT;
+                end
+
+                ST_DRAIN_REQUANT: begin
+                    if (requant_valid) begin
+                        output_mem[requant_class_reg] <= requant_reg;
+                    end
+                    requant_valid <= 1'b0;
                     state <= ST_DONE;
                 end
 
