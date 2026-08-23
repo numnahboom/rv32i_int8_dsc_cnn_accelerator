@@ -41,10 +41,11 @@ module conv3x3_stem_engine_new (
     localparam CFG_MUL       = 4'd3;
     localparam CFG_SHIFT     = 4'd4;
 
-    localparam ST_IDLE = 2'd0;
-    localparam ST_MAC  = 2'd1;
-    localparam ST_DONE = 2'd2;
-    localparam ST_ERROR = 2'd3;
+    localparam ST_IDLE    = 3'd0;
+    localparam ST_MAC     = 3'd1;
+    localparam ST_REQUANT = 3'd2;
+    localparam ST_DONE    = 3'd3;
+    localparam ST_ERROR   = 3'd4;
 
     (* ram_style = "distributed" *)
     reg signed [7:0] input_mem [0:299];
@@ -54,7 +55,7 @@ module conv3x3_stem_engine_new (
     reg signed [31:0] multiplier_mem [0:15];
     reg [5:0] shift_mem [0:15];
 
-    reg [1:0] state;
+    reg [2:0] state;
     reg [3:0] out_h_reg;
     reg [3:0] out_w_reg;
     reg signed [31:0] output_zero_point_reg;
@@ -247,39 +248,50 @@ module conv3x3_stem_engine_new (
                 end
 
                 ST_MAC: begin
+                    // Keep the final MAC cycle limited to input/weight reads,
+                    // the three products, and the accumulator write.  The
+                    // wide requantization path runs in the next state.
+                    acc_reg <= acc_next;
                     if ((kernel_y_idx == 2'd2) && (kernel_x_idx == 2'd2)) begin
-                        out_wr_en <= 1'b1;
-                        out_wr_pixel_idx <= pixel_idx;
-                        out_wr_channel_idx <= channel_idx;
-                        out_wr_data_int8 <= requant_stem(acc_next, channel_idx);
-                        kernel_y_idx <= 2'd0;
-                        kernel_x_idx <= 2'd0;
-                        acc_reg <= 32'sd0;
-                        if (channel_idx == 4'd15) begin
-                            channel_idx <= 4'd0;
-                            if ((out_y_idx + 4'd1 >= out_h_reg) &&
-                                (out_x_idx + 4'd1 >= out_w_reg)) begin
-                                state <= ST_DONE;
-                            end else begin
-                                pixel_idx <= pixel_idx + 6'd1;
-                                if ((out_x_idx + 4'd1) >= out_w_reg) begin
-                                    out_x_idx <= 4'd0;
-                                    out_y_idx <= out_y_idx + 4'd1;
-                                end else begin
-                                    out_x_idx <= out_x_idx + 4'd1;
-                                end
-                            end
-                        end else begin
-                            channel_idx <= channel_idx + 4'd1;
-                        end
+                        state <= ST_REQUANT;
                     end else begin
-                        acc_reg <= acc_next;
                         if (kernel_x_idx == 2'd2) begin
                             kernel_x_idx <= 2'd0;
                             kernel_y_idx <= kernel_y_idx + 2'd1;
                         end else begin
                             kernel_x_idx <= kernel_x_idx + 2'd1;
                         end
+                    end
+                end
+
+                ST_REQUANT: begin
+                    // acc_reg contains the final-cycle acc_next here. Keep
+                    // channel/pixel context unchanged through this write.
+                    out_wr_en <= 1'b1;
+                    out_wr_pixel_idx <= pixel_idx;
+                    out_wr_channel_idx <= channel_idx;
+                    out_wr_data_int8 <= requant_stem(acc_reg, channel_idx);
+                    kernel_y_idx <= 2'd0;
+                    kernel_x_idx <= 2'd0;
+                    acc_reg <= 32'sd0;
+                    if (channel_idx == 4'd15) begin
+                        channel_idx <= 4'd0;
+                        if ((out_y_idx + 4'd1 >= out_h_reg) &&
+                            (out_x_idx + 4'd1 >= out_w_reg)) begin
+                            state <= ST_DONE;
+                        end else begin
+                            pixel_idx <= pixel_idx + 6'd1;
+                            if ((out_x_idx + 4'd1) >= out_w_reg) begin
+                                out_x_idx <= 4'd0;
+                                out_y_idx <= out_y_idx + 4'd1;
+                            end else begin
+                                out_x_idx <= out_x_idx + 4'd1;
+                            end
+                            state <= ST_MAC;
+                        end
+                    end else begin
+                        channel_idx <= channel_idx + 4'd1;
+                        state <= ST_MAC;
                     end
                 end
 
