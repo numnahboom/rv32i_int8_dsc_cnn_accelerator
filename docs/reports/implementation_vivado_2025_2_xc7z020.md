@@ -226,3 +226,56 @@ This run is stronger routed FPGA-fabric evidence than the requested `f2bf6f7`
 snapshot, and shows a 7.014 ns WNS improvement, but it is not timing closure,
 board-level I/O/clock closure, K26 timing, power closure, or hardware
 validation. No RTL was changed for this rerun.
+
+## Current HEAD rerun after tiled packed-input loader
+
+At HEAD `370e275dfe789205f5b293ba4cd5c61e7e69784d`, the complete routed flow
+was rerun with Vivado 2025.2, `xc7z020clg400-1`, and
+`-Directive RuntimeOptimized`:
+
+```text
+run: build/reports/vivado_cnn_top_impl/runs/20260823T155956525-2316/
+status: FAILED_TIMING_CLOSURE
+```
+
+Synthesis, optimization, placement, physical optimization, routing, timing,
+power, and checkpoint generation completed. The design is fully routed, but
+the generic 100 MHz OOC clock is not met. Post-route timing is:
+
+| Metric | Result | Previous `769d2f8` | Delta |
+|---|---:|---:|---:|
+| WNS | -14.714 ns | -18.008 ns | +3.294 ns |
+| TNS | -63101.914 ns | -56922.496 ns | -6179.418 ns |
+| Setup failing endpoints | 16377 / 54303 | 15569 / 54174 | increased |
+| WHS | +0.028 ns | +0.028 ns | 0 |
+| THS | 0.000 ns | 0.000 ns | 0 |
+
+The worst setup path remains in the tiled loader address-generation logic,
+from `u_layer_runner/stride_reg_reg[3]_replica_5/C` to
+`u_layer_runner/sram_input_rd_addr_reg[3]/D`. It has 24.709 ns data-path
+delay, 19 logic levels, and -14.714 ns slack. The earlier
+`stride_reg -> mem_req_addr` path is therefore not eliminated; in this routed
+run the corresponding critical endpoint is the internal SRAM input address
+register. The report shows zero unconstrained internal endpoints, while the
+102 input and 98 output ports lack I/O delay constraints as expected for this
+OOC wrapper.
+
+The post-route resource snapshot is 29465 Slice LUTs (55.39%), 18152 Slice
+registers (17.06%), 46 Block RAM tiles (32.86%), and 64 DSPs (29.09%). The
+vectorless power estimate is 0.209 W total (0.102 W dynamic, 0.107 W static,
+medium confidence), with no activity file. This is a tool estimate, not a
+board measurement or power closure result. `route_status.txt` reports a fully
+routed design with zero routing errors.
+
+This result is routed FPGA-fabric evidence for the timing-capable Zynq-7020
+part. It is not 100 MHz timing closure, board-level I/O or clock closure, K26
+timing, hardware validation, or measured power. No RTL was changed for this
+rerun.
+
+## Current HEAD XSim gate
+
+Vivado 2025.2 XSim recompiled the 27 RTL files and completed the full selected
+16-test gate. All 16 testbenches passed, including the fullnet test with 10/10
+logits bit-exact. The fresh fullnet result is `993721` hardware cycles,
+`5513689` MACs, and `343.55x` RV32I estimate. The prior `944568`-cycle result
+belongs to an earlier HEAD and must not be mixed with this current run.
