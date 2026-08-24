@@ -174,6 +174,11 @@ module cnn_layer_runner #(
     reg [31:0] tiled_store_addr_current;
     reg [31:0] tiled_store_addr_col_jump;
     reg [31:0] tiled_store_addr_row_jump;
+    // Registered tiled-store cursor for the internal SRAM output port.  The
+    // SRAM address is an element index (unlike the external byte address).
+    reg [31:0] tiled_store_sram_addr_current;
+    reg [31:0] tiled_store_sram_addr_col_jump;
+    reg [31:0] tiled_store_sram_addr_row_jump;
 
     wire out_buffer_wr_en;
     wire [OUT_BUFFER_ADDR_WIDTH-1:0] out_buffer_wr_addr;
@@ -1141,6 +1146,9 @@ module cnn_layer_runner #(
             tiled_store_addr_current <= 32'd0;
             tiled_store_addr_col_jump <= 32'd0;
             tiled_store_addr_row_jump <= 32'd0;
+            tiled_store_sram_addr_current <= 32'd0;
+            tiled_store_sram_addr_col_jump <= 32'd0;
+            tiled_store_sram_addr_row_jump <= 32'd0;
             op_type_reg <= 32'd0;
             input_addr_reg <= 32'd0;
             output_addr_reg <= 32'd0;
@@ -1726,6 +1734,16 @@ module cnn_layer_runner #(
                     tiled_store_addr_row_jump <=
                         (((({24'd0, tiled_out_w} - {24'd0, tile_w_size_reg} + 32'd1) *
                            {16'd0, out_c_reg}) - {16'd0, store_active_channels} + 32'd1) << 2);
+                    tiled_store_sram_addr_current <=
+                        output_addr_reg +
+                        (((({24'd0, tile_h_start_reg} * {24'd0, tiled_out_w}) +
+                            {24'd0, tile_w_start_reg}) * {16'd0, out_c_reg}) +
+                         32'd0);
+                    tiled_store_sram_addr_col_jump <=
+                        ({16'd0, out_c_reg} - {16'd0, store_active_channels} + 32'd1);
+                    tiled_store_sram_addr_row_jump <=
+                        (((({24'd0, tiled_out_w} - {24'd0, tile_w_size_reg} + 32'd1) *
+                           {16'd0, out_c_reg}) - {16'd0, store_active_channels} + 32'd1));
                     if (({24'd0, tile_h_size_reg} *
                          {24'd0, tile_w_size_reg} *
                          {16'd0, out_c_reg}) == 32'd0) begin
@@ -1738,6 +1756,9 @@ module cnn_layer_runner #(
                 ST_TILED_STORE_PREFETCH: begin
                     mem_req_valid <= 1'b0;
                     mem_req_write <= 1'b0;
+                    // Capture the first internal-SRAM address before entering
+                    // the write loop; subsequent writes use only cursor adds.
+                    sram_output_wr_addr <= tiled_store_sram_addr_current;
                     state <= ST_TILED_WRITE_REQ;
                 end
 
@@ -1746,16 +1767,24 @@ module cnn_layer_runner #(
                         mem_req_valid <= 1'b0;
                         mem_req_write <= 1'b0;
                         sram_output_wr_en <= 1'b1;
-                        sram_output_wr_addr <= sram_addr_for_index(
-                            output_addr_reg,
-                            tiled_store_global_index_current()
-                        );
+                        sram_output_wr_addr <= tiled_store_sram_addr_current;
                         sram_output_wr_data <= store_byte_current;
                         if ((store_idx + 32'd1) >= store_count) begin
                             state <= ST_TILED_ADVANCE;
                         end else begin
                             store_idx <= store_idx + 32'd1;
                             store_outbuf_addr <= store_outbuf_next_addr;
+                            if ((store_channel_pos + 16'd1) >= store_active_channels) begin
+                                if ((tiled_store_x + 8'd1) >= tile_w_size_reg)
+                                    tiled_store_sram_addr_current <=
+                                        tiled_store_sram_addr_current + tiled_store_sram_addr_row_jump;
+                                else
+                                    tiled_store_sram_addr_current <=
+                                        tiled_store_sram_addr_current + tiled_store_sram_addr_col_jump;
+                            end else begin
+                                tiled_store_sram_addr_current <=
+                                    tiled_store_sram_addr_current + 32'd1;
+                            end
                             advance_tiled_store_position();
                         end
                     end else begin
