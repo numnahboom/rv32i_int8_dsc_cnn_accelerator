@@ -69,6 +69,13 @@ module conv3x3_stem_engine_new (
     reg [3:0] out_x_idx;
     reg [1:0] kernel_y_idx;
     reg [1:0] kernel_x_idx;
+    // Address cursors are registered so the distributed-RAM read and three
+    // MACs do not depend on the out/kernel index arithmetic in the same
+    // cycle.  input_pixel_base remains at the top-left tap for the current
+    // output pixel; input_addr_cursor/weight_addr_cursor walk the 3x3 taps.
+    reg [8:0] input_pixel_base;
+    reg [8:0] input_addr_cursor;
+    reg [8:0] weight_addr_cursor;
     reg signed [31:0] acc_reg;
     reg signed [63:0] rq_product_reg;
     reg signed [63:0] rq_shifted_reg;
@@ -79,8 +86,6 @@ module conv3x3_stem_engine_new (
     reg [5:0] rq_pixel_idx;
     reg [3:0] rq_channel_idx;
 
-    wire [8:0] input_addr_base;
-    wire [8:0] weight_addr_base;
     wire signed [7:0] act_value_0;
     wire signed [7:0] act_value_1;
     wire signed [7:0] act_value_2;
@@ -94,20 +99,19 @@ module conv3x3_stem_engine_new (
     wire signed [31:0] acc_next;
     wire signed [63:0] acc_bias_s64;
     wire signed [63:0] rq_product_next;
+    wire [8:0] row_wrap_increment;
 
     integer cfg_addr;
 
     assign cfg_ready = !busy;
-    assign input_addr_base = (((out_y_idx + kernel_y_idx) * 10) +
-                              (out_x_idx + kernel_x_idx)) * 3;
-    assign weight_addr_base = (channel_idx * 27) +
-                              (((kernel_y_idx * 3) + kernel_x_idx) * 3);
-    assign act_value_0 = input_mem[input_addr_base];
-    assign act_value_1 = input_mem[input_addr_base + 9'd1];
-    assign act_value_2 = input_mem[input_addr_base + 9'd2];
-    assign weight_value_0 = weight_mem[weight_addr_base];
-    assign weight_value_1 = weight_mem[weight_addr_base + 9'd1];
-    assign weight_value_2 = weight_mem[weight_addr_base + 9'd2];
+    assign row_wrap_increment = 9'd30 -
+                                (({5'd0, out_w_reg} - 9'd1) * 9'd3);
+    assign act_value_0 = input_mem[input_addr_cursor];
+    assign act_value_1 = input_mem[input_addr_cursor + 9'd1];
+    assign act_value_2 = input_mem[input_addr_cursor + 9'd2];
+    assign weight_value_0 = weight_mem[weight_addr_cursor];
+    assign weight_value_1 = weight_mem[weight_addr_cursor + 9'd1];
+    assign weight_value_2 = weight_mem[weight_addr_cursor + 9'd2];
     assign product_value_0 = act_value_0 * weight_value_0;
     assign product_value_1 = act_value_1 * weight_value_1;
     assign product_value_2 = act_value_2 * weight_value_2;
@@ -228,6 +232,9 @@ module conv3x3_stem_engine_new (
             out_x_idx <= 4'd0;
             kernel_y_idx <= 2'd0;
             kernel_x_idx <= 2'd0;
+            input_pixel_base <= 9'd0;
+            input_addr_cursor <= 9'd0;
+            weight_addr_cursor <= 9'd0;
             acc_reg <= 32'sd0;
             rq_product_reg <= 64'sd0;
             rq_shifted_reg <= 64'sd0;
@@ -267,6 +274,9 @@ module conv3x3_stem_engine_new (
                             out_x_idx <= 4'd0;
                             kernel_y_idx <= 2'd0;
                             kernel_x_idx <= 2'd0;
+                            input_pixel_base <= 9'd0;
+                            input_addr_cursor <= 9'd0;
+                            weight_addr_cursor <= 9'd0;
                             acc_reg <= 32'sd0;
                             state <= ST_MAC;
                         end
@@ -284,9 +294,12 @@ module conv3x3_stem_engine_new (
                         if (kernel_x_idx == 2'd2) begin
                             kernel_x_idx <= 2'd0;
                             kernel_y_idx <= kernel_y_idx + 2'd1;
+                            input_addr_cursor <= input_addr_cursor + 9'd24;
                         end else begin
                             kernel_x_idx <= kernel_x_idx + 2'd1;
+                            input_addr_cursor <= input_addr_cursor + 9'd3;
                         end
+                        weight_addr_cursor <= weight_addr_cursor + 9'd3;
                     end
                 end
 
@@ -335,13 +348,20 @@ module conv3x3_stem_engine_new (
                             if ((out_x_idx + 4'd1) >= out_w_reg) begin
                                 out_x_idx <= 4'd0;
                                 out_y_idx <= out_y_idx + 4'd1;
+                                input_pixel_base <= input_pixel_base + row_wrap_increment;
+                                input_addr_cursor <= input_pixel_base + row_wrap_increment;
                             end else begin
                                 out_x_idx <= out_x_idx + 4'd1;
+                                input_pixel_base <= input_pixel_base + 9'd3;
+                                input_addr_cursor <= input_pixel_base + 9'd3;
                             end
+                            weight_addr_cursor <= 9'd0;
                             state <= ST_MAC;
                         end
                     end else begin
                         channel_idx <= channel_idx + 4'd1;
+                        input_addr_cursor <= input_pixel_base;
+                        weight_addr_cursor <= weight_addr_cursor + 9'd3;
                         state <= ST_MAC;
                     end
                 end
