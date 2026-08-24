@@ -40,6 +40,7 @@ module fc_unit_new (
     localparam ST_DRAIN_PRODUCT = 3'd2;
     localparam ST_DRAIN_REQUANT = 3'd3;
     localparam ST_DONE = 3'd4;
+    localparam ST_ISSUE_PRODUCT = 3'd5;
 
     (* ram_style = "distributed" *)
     reg signed [7:0] input_mem [0:255];
@@ -58,6 +59,11 @@ module fc_unit_new (
     // retained so the following round/shift stage has exactly the same
     // arithmetic inputs as the original combinational function.
     reg signed [63:0] product_reg;
+    // Descriptor-local pre-add register.  Keeping the accumulator+bias carry
+    // chain in the cycle before the DSP product removes class-index/LUTRAM
+    // selection from the critical product-register path.
+    reg signed [32:0] sum_reg;
+    reg [3:0] sum_class_reg;
     reg [3:0] product_class_reg;
     reg [5:0] product_shift_reg;
     reg product_valid;
@@ -149,6 +155,8 @@ module fc_unit_new (
             activation_min_reg <= -32'sd128;
             activation_max_reg <= 32'sd127;
             product_reg <= 64'sd0;
+            sum_reg <= 33'sd0;
+            sum_class_reg <= 4'd0;
             product_class_reg <= 4'd0;
             product_shift_reg <= 6'd0;
             product_valid <= 1'b0;
@@ -177,17 +185,29 @@ module fc_unit_new (
                     if (requant_core_valid) begin
                         output_mem[requant_core_class] <= requant_core_out;
                     end
-                    product_reg <=
+                    sum_reg <=
                         ({{32{acc_mem[class_idx][31]}}, acc_mem[class_idx]} +
-                         {{32{bias_mem[class_idx][31]}}, bias_mem[class_idx]}) *
-                        {{32{multiplier_mem[class_idx][31]}}, multiplier_mem[class_idx]};
-                    product_class_reg <= class_idx;
-                    product_shift_reg <= shift_mem[class_idx];
+                         {{32{bias_mem[class_idx][31]}}, bias_mem[class_idx]});
+                    sum_class_reg <= class_idx;
+                    product_valid <= 1'b0;
+                    state <= ST_ISSUE_PRODUCT;
+                end
+
+                ST_ISSUE_PRODUCT: begin
+                    if (requant_core_valid) begin
+                        output_mem[requant_core_class] <= requant_core_out;
+                    end
+                    product_reg <=
+                        {{31{sum_reg[32]}}, sum_reg} *
+                        {{32{multiplier_mem[sum_class_reg][31]}}, multiplier_mem[sum_class_reg]};
+                    product_class_reg <= sum_class_reg;
+                    product_shift_reg <= shift_mem[sum_class_reg];
                     product_valid <= 1'b1;
-                    if (class_idx == 4'd9) begin
+                    if (sum_class_reg == 4'd9) begin
                         state <= ST_DRAIN_PRODUCT;
                     end else begin
                         class_idx <= class_idx + 4'd1;
+                        state <= ST_RUN;
                     end
                 end
 
