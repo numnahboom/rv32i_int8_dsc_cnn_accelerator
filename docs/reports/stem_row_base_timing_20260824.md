@@ -27,9 +27,19 @@ checks.  No cycle or protocol changes were introduced.
 
 ## Timing verification status
 
-A fresh routed OOC run could not be produced in this environment.  The only
-installed Vivado is 2021.2 with an `xc_k26`-only device database; both
-`xc7z020clg400-1` and `7z020clg400-1` are rejected as invalid parts.  Therefore
-the candidate is functionally verified but not yet timing-accepted.  The
-previous accepted routed baseline remains WNS `-8.246 ns`, TNS `-37008.645 ns`,
-WHS `+0.078 ns`, THS `0 ns`.
+A fresh routed OOC run was subsequently completed with Vivado 2025.2,
+`xc7z020clg400-1`, and `RuntimeOptimized` (`20260824T113041158-23176`).  The
+candidate regressed the direct baseline and was rejected:
+
+| Run | WNS (ns) | TNS | WHS (ns) | THS (ns) | Route |
+|---|---:|---:|---:|---:|---|
+| baseline `b665a74` | -8.246 | -37008.645 | +0.078 | 0 | routed |
+| row-base candidate | -9.653 | -38094.851 | +0.076 | 0 | routed |
+
+The candidate had 16,416 setup-failing endpoints.  Its worst path was
+`kernel_y_idx_reg[0]_replica/C` to `acc_reg_reg[29]/D` (19.600 ns data delay,
+26 logic levels), replacing the baseline's `out_y_idx` path but with worse
+slack.  No functional change justified the 1.407 ns WNS loss.  The RTL
+candidate was reverted after this run.  This report is retained as negative
+timing evidence; no timing optimization commit is accepted from this
+experiment.

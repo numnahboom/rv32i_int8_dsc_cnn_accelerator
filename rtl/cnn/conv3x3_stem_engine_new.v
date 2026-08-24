@@ -67,10 +67,6 @@ module conv3x3_stem_engine_new (
     reg [3:0] channel_idx;
     reg [3:0] out_y_idx;
     reg [3:0] out_x_idx;
-    // The row component is stable for every 3x3 MAC sweep.  Keeping it in a
-    // register removes out_y_idx fanout from the accumulator timing cone;
-    // it is advanced only when the output pixel moves to the next row.
-    reg [8:0] input_row_base_reg;
     reg [1:0] kernel_y_idx;
     reg [1:0] kernel_x_idx;
     reg signed [31:0] acc_reg;
@@ -102,9 +98,8 @@ module conv3x3_stem_engine_new (
     integer cfg_addr;
 
     assign cfg_ready = !busy;
-    assign input_addr_base = input_row_base_reg +
-                             (kernel_y_idx * 9'd30) +
-                             ((out_x_idx + kernel_x_idx) * 3);
+    assign input_addr_base = (((out_y_idx + kernel_y_idx) * 10) +
+                              (out_x_idx + kernel_x_idx)) * 3;
     assign weight_addr_base = (channel_idx * 27) +
                               (((kernel_y_idx * 3) + kernel_x_idx) * 3);
     assign act_value_0 = input_mem[input_addr_base];
@@ -231,7 +226,6 @@ module conv3x3_stem_engine_new (
             channel_idx <= 4'd0;
             out_y_idx <= 4'd0;
             out_x_idx <= 4'd0;
-            input_row_base_reg <= 9'd0;
             kernel_y_idx <= 2'd0;
             kernel_x_idx <= 2'd0;
             acc_reg <= 32'sd0;
@@ -271,7 +265,6 @@ module conv3x3_stem_engine_new (
                             channel_idx <= 4'd0;
                             out_y_idx <= 4'd0;
                             out_x_idx <= 4'd0;
-                            input_row_base_reg <= 9'd0;
                             kernel_y_idx <= 2'd0;
                             kernel_x_idx <= 2'd0;
                             acc_reg <= 32'sd0;
@@ -342,7 +335,6 @@ module conv3x3_stem_engine_new (
                             if ((out_x_idx + 4'd1) >= out_w_reg) begin
                                 out_x_idx <= 4'd0;
                                 out_y_idx <= out_y_idx + 4'd1;
-                                input_row_base_reg <= input_row_base_reg + 9'd30;
                             end else begin
                                 out_x_idx <= out_x_idx + 4'd1;
                             end
