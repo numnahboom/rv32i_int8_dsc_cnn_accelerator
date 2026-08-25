@@ -41,13 +41,16 @@ module conv3x3_stem_engine_new (
     localparam CFG_MUL       = 4'd3;
     localparam CFG_SHIFT     = 4'd4;
 
-    localparam ST_IDLE    = 3'd0;
-    localparam ST_MAC     = 3'd1;
-    localparam ST_RQ_PRODUCT = 3'd2;
-    localparam ST_RQ_SHIFT   = 3'd3;
-    localparam ST_RQ_WRITE   = 3'd4;
-    localparam ST_DONE       = 3'd5;
-    localparam ST_ERROR      = 3'd6;
+    localparam ST_IDLE       = 3'd0;
+    localparam ST_MAC        = 3'd1;
+    // Register the accumulator+bias sum before entering the wide DSP product.
+    // This keeps the bias-memory/CARRY4 cone out of the multiplier input path.
+    localparam ST_RQ_SUM     = 3'd2;
+    localparam ST_RQ_PRODUCT  = 3'd3;
+    localparam ST_RQ_SHIFT    = 3'd4;
+    localparam ST_RQ_WRITE    = 3'd5;
+    localparam ST_DONE        = 3'd6;
+    localparam ST_ERROR       = 3'd7;
 
     (* ram_style = "distributed" *)
     reg signed [7:0] input_mem [0:299];
@@ -77,6 +80,7 @@ module conv3x3_stem_engine_new (
     reg [8:0] input_addr_cursor;
     reg [8:0] weight_addr_cursor;
     reg signed [31:0] acc_reg;
+    reg signed [63:0] rq_sum_reg;
     reg signed [63:0] rq_product_reg;
     reg signed [63:0] rq_shifted_reg;
     reg [5:0] rq_shift_reg;
@@ -121,7 +125,7 @@ module conv3x3_stem_engine_new (
     assign acc_next = acc_reg + {{14{product_sum[17]}}, product_sum};
     assign acc_bias_s64 = {{32{acc_reg[31]}}, acc_reg} +
                           {{32{bias_mem[channel_idx][31]}}, bias_mem[channel_idx]};
-    assign rq_product_next = acc_bias_s64 *
+    assign rq_product_next = rq_sum_reg *
                               {{32{multiplier_mem[channel_idx][31]}}, multiplier_mem[channel_idx]};
 
     function signed [63:0] round_shift_s64;
@@ -236,6 +240,7 @@ module conv3x3_stem_engine_new (
             input_addr_cursor <= 9'd0;
             weight_addr_cursor <= 9'd0;
             acc_reg <= 32'sd0;
+            rq_sum_reg <= 64'sd0;
             rq_product_reg <= 64'sd0;
             rq_shifted_reg <= 64'sd0;
             rq_shift_reg <= 6'd0;
@@ -289,7 +294,7 @@ module conv3x3_stem_engine_new (
                     // wide requantization path runs in the next state.
                     acc_reg <= acc_next;
                     if ((kernel_y_idx == 2'd2) && (kernel_x_idx == 2'd2)) begin
-                        state <= ST_RQ_PRODUCT;
+                        state <= ST_RQ_SUM;
                     end else begin
                         if (kernel_x_idx == 2'd2) begin
                             kernel_x_idx <= 2'd0;
@@ -301,6 +306,14 @@ module conv3x3_stem_engine_new (
                         end
                         weight_addr_cursor <= weight_addr_cursor + 9'd3;
                     end
+                end
+
+                ST_RQ_SUM: begin
+                    // acc_reg includes the final MAC cycle at this point.
+                    // Capture the full signed sum in a standalone register so
+                    // the following DSP multiply has a short, registered input.
+                    rq_sum_reg <= acc_bias_s64;
+                    state <= ST_RQ_PRODUCT;
                 end
 
                 ST_RQ_PRODUCT: begin

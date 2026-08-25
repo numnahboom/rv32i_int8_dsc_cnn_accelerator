@@ -1,5 +1,5 @@
 param(
-    [string]$Vivado = "D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat",
+    [string]$Vivado = "D:\Software\vivado2025.2\2025.2\Vivado\bin\vivado.bat",
     [string]$Part = "xck26-sfvc784-2LV-c",
     [string]$Top = "cnn_top"
 )
