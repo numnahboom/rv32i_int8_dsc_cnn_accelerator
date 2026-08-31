@@ -15,15 +15,23 @@ Python/PyTorch checkpoint
 
 ## 当前状态
 
-- `cnn_top` 已不是空的 descriptor/status skeleton，已经通过 `cnn_layer_runner` 接入 Stem、DSBlock、GAP、FC 的真实仿真数据面。
-- 支持固定 EdgeDSCNet-C10 形状：`Stem -> 6x DSBlock -> GAP -> FC`。
-- DSBlock 的 depthwise 中间结果进入 tile buffer，随后 pointwise 直接消费，不再把 DW 中间 feature 写回外部 memory。
-- PW1x1 使用 8x8 int8 systolic/MAC array。
-- Feature SRAM 使用 A/B ping-pong 方式做层间 feature 传递。
-- CPU 控制路径已有三种验证层级：`rv_cnn_custom_if`、`npc_cnn_custom_bridge`、`rv_core -> bridge -> cnn_top`。
-- C firmware 已实现裸机 driver/demo：初始化 9 层 descriptor，发出 `cnn.start`，poll done，读取 status/cycle，并对 10 类 logits 做 argmax。
-- MMIO fallback 也可用，便于不走 custom instruction 时调试同一套 accelerator 控制寄存器。
-- Python 侧已有训练 smoke、量化导出、golden model、test vector、firmware header export、logits compare、资源估算和性能报告脚本。
+工程功能主线已经闭合，但 FPGA 目标尚未闭合：固定 EdgeDSCNet-C10
+可以由 `cnn_top` 完整推理并与 Python golden 对齐；当前优化停在实验候选
+整理阶段，未把任何未通过全局验证的候选接入生产默认路径。
+
+当前权威快照（2026-09-01）：
+
+- CSA Stem 完整顶层基线：`1,003,577` cycles、`5,136,896` MAC、10/10
+  logits exact；post-route WNS `-0.799 ns`、WHS `+0.065 ns`。
+- 共享 unified64 + persistent DS 完整网络候选：`695,553` cycles、10/10
+  logits exact；OOC setup WNS `-0.838 ns`，因此没有晋级 full-top。
+- 当前最佳隔离 DS 数据面：同步 XPM BRAM 读语义等价，`87,553` cycles、
+  4,194,304 DS MAC；8 ns OOC WNS `+0.032 ns`，不是 full-top 结果。
+- 当前 Vivado 入口为 2025.2、`xc7z020clg400-1`；默认实现/综合线程数为
+  `8`。完整目标仍是 125 MHz、WNS/WHS >= 0、<=2.0M cycles、资源各 <70%、
+  on-chip power <=3 W，以及按 MAC=2 ops 计算的 >=20 GOPS/W。
+
+权威报告索引见 [`docs/reports/README.md`](docs/reports/README.md)。
 
 ## 目录结构
 
@@ -267,22 +275,20 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 
 ## 当前验证快照
 
-当前工作树的 fixed full-network SRAM datapath 已新鲜验证 10/10 logits 与 Python golden bit-exact：
+完整网络功能证据与实验候选必须分开阅读：
 
 ```text
-hw_cycles=944568
-status=0x0e69b882
-payload_external_reads=78602
-descriptor_reads=288
-external_writes=10
-sram_reads=115808
-sram_writes=102656
-throughput=5.438 MAC/cycle
+CSA baseline:             hw_cycles=1003577  MACs=5136896  logits=exact
+shared unified64:         hw_cycles=713086   MACs=5136896  logits=exact
+shared + persistent DS:  hw_cycles=695553   MACs=5136896  logits=exact
+DS isolated shared64:    cycles=87553      DS_MACs=4194304 outputs=86016
 ```
 
-相对于 1138900-cycle 的已冻结前版本基线，这一轮 compact/tiled/PW loader lookahead 少 194332 cycles（17.06%）。CPU 联合 harness 也得到相同的 `944568` cycles 与 `0x0e69b882` status；3 个未改 tracked vectors 的样本均逐元素 bit-exact，argmax 分别为 3、8、8。
-
-逐笔 bounds 测试已通过。tiled external-memory backpressure 用例覆盖单 outstanding、0..3 拍响应延迟、ready stall、stalled write payload 稳定性和写序列 oracle。2026-08-21 fresh XSim 16/16 PASS，包含 tail-channel cases 与 fullnet；独立 WSL/Verilator 定向回归也通过 tiled Stem（16384 checks）、tiled DSBlock（2256 checks）和 tile engine（7 cases / 2191 checks）。
+`shared + persistent DS` 是当前完整网络中周期最短的已验证候选，但其
+OOC 时序失败；它不应被误写为完整顶层 post-route closure。隔离
+`ds_group_published_shared64` 车辆已显式建模同步 BRAM 读响应，覆盖 Cin
+16/32/64/128、尾部、mask、epoch/session、descriptor fence 和 backpressure。
+PW stream2 slots 也已完成 2,048 个 8x8 bundle 的随机压力验证，详见报告索引。
 
 ## 资源估算
 
@@ -310,11 +316,10 @@ Wide requant multipliers: 4
 Conservative DSP risk estimate: 178 DSPs
 ```
 
-这只是 RTL 参数级静态估算，不能替代综合报告。2026-08-18 对当前
-lookahead/output-buffer RTL 的 fresh Vivado OOC synthesis 得到 30451 CLB LUT、
-18558 CLB registers、46 Block RAM tiles 和 65 DSPs；其中 `cnn_out_buffer` 映射为
-4 个 BRAM、6 LUT。详见 `docs/reports/synthesis_vivado_initial.md`。这仍只是结构/资源
-证据，不是 post-route timing 或板级性能结果。
+这只是 RTL 参数级静态估算，不能替代实现报告。权威 CSA 完整顶层
+post-route 资源为 34,831 LUT、37,052 FF、48 BRAM36、63 DSP、0.234 W；
+完整表格与路径诊断见 [`docs/reports/fulltop_csa_baseline_20260828.md`](docs/reports/fulltop_csa_baseline_20260828.md)。
+所有 OOC 数字都只属于对应隔离快照，不能替代 full-top timing 或板级功耗。
 
 ## 关键已实现模块
 
@@ -334,10 +339,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\run_cnn_xsim.ps1
 ```
 
-当前脚本会以 `sim/filelist_cnn_current.f` 编译 CNN RTL，并逐 TB 增量编译。2026-08-21
-fresh gate 为 `PASS cnn_xsim_regression tests=16`。详细架构、cycle/resource 数据、
-综合命令和从 main 复现顺序见
-`docs/streaming_engine_refactor_guide.md`。
+当前脚本会以 `sim/filelist_cnn_current.f` 编译 CNN RTL，并逐 TB 增量编译。
+报告中的具体日期和快照必须以对应报告/日志为准；可复现实验命令和证据边界
+见 [`docs/reports/README.md`](docs/reports/README.md) 与
+[`docs/verification_plan.md`](docs/verification_plan.md)。
 
 ## 已知限制
 
@@ -346,28 +351,27 @@ fresh gate 为 `PASS cnn_xsim_regression tests=16`。详细架构、cycle/resour
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
 - 3-MAC Stem、同步预取 `cnn_out_buffer`（综合/XPM 为 4 BRAM）、compact/tiled loader lookahead 与 PW BRAM lookahead 已接入。
 - 普通 XSim/Verilator 使用 output buffer 的同步 behavioral model；XPM 分支仅由综合结构验证。
-- fresh Vivado OOC synthesis 和 XSim 16-test gate 均已完成；完整 40-test Verilator
-  batch 仍应在不受单次命令超时限制的环境中归档，但其三个本轮高风险定向用例已 clean PASS。
-  不得把 OOC 结果写成 timing closure。
-- 当前 K26 device database 不能生成 timing report，因此不能给出 WNS/Fmax 或声称 place-and-route closure。
+- 当前已有 timing-capable XC7Z020 full-top post-route 证据，但 CSA 基线 setup
+  未闭合；隔离 OOC 的正 slack 不能代表 full-top closure。板级 I/O、bitstream
+  和实测功耗仍未验证。
 - Requant 当前优先 bit-exact 对齐 Python golden，后续仍需要根据 DSP/时序压力做位宽收敛、共享或流水化。
 - 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
 - 缺少形式验证和更强的 constrained-random/backpressure 压力测试。
 
 ## 下一步
 
-1. 使用 timing-capable part/device support 跑 place-and-route，获得 WNS/Fmax、拥塞和功耗数据。
-2. 在 timing-capable device 上完成 implementation，并根据结果优化 DSP/LUT 取舍和关键路径。
-3. 将 word-per-int8 外部 memory 布局改成 packed NHWC byte addressing 和 burst-friendly loader。
-4. 对 requant multiplier、PW array fanout、valid/control 信号做综合后的时序优化。
-5. 用更强的 PTQ/QAT checkpoint 重新导出 firmware headers，并扩大多样本 RTL 回归。
+1. 保持当前默认生产路径和 CSA 基线不变，先完成 shared64 候选的 runner
+   合同审查；不得仅凭隔离 OOC 正 slack 接入 full-top。
+2. 针对 full-top 的 DW 参数/控制扇出、tiled-loader 和 FC 配置寻址做物理
+   约束驱动优化，并用 8 线程重新取得完整 post-route 分布。
+3. 只有同时改善 cycle、WNS/TNS、资源、功耗和 GOPS/W，才晋级下一候选；
+   否则保留为历史实验并记录负结果。
 
 更多细节见：
 
 - `docs/quantization.md`
-- `docs/network_spec.md`
-- `docs/module_design_contracts.md`
 - `docs/verification_plan.md`
 - `docs/known_limits_next_steps.md`
 - `docs/project_next_optimization_bringup_guide.md`
 - `docs/streaming_engine_refactor_guide.md`
+- `docs/reports/README.md`

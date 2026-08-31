@@ -1,5 +1,10 @@
 # Architecture and Verification Diagrams
 
+> **Snapshot (2026-09-01)**: The diagram shows the retained production data path.
+> The shared unified64 and group-published partial-K vehicles are isolated
+> experiments; they are indexed in [`reports/README.md`](reports/README.md) and
+> must not be read as the current full-top implementation.
+
 This note keeps the project diagrams in text form so they can be versioned, reviewed, and copied into reports or slides.
 
 ## Accelerator Architecture
@@ -76,4 +81,3 @@ flowchart LR
 ```
 
 Current full-network smoke checks compare all 10 logits element by element, then check the CPU-observed argmax path.
-

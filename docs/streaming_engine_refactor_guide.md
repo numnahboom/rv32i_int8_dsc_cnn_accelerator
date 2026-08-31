@@ -1,5 +1,10 @@
 # Streaming Engine 与 Memory-Oriented 重构指南
 
+> **当前状态（2026-09-01）**：本文主体记录 streaming 重构的历史设计和早期
+> 证据。当前权威完整顶层基线、shared unified64 完整网络结果，以及同步读
+> shared64 隔离结果，以 [`reports/README.md`](reports/README.md) 和其中链接的
+> 报告为准；本文的旧 cycle/resource 数字不代表当前工作树。
+
 ## 1. 这条分支解决什么问题
 
 分支：`refactor/streaming-dsblock-bram`
@@ -238,7 +243,7 @@ diff，再进行新一轮回归，而不要把两个证据集混用。
 这些路径可用于历史对照；当前 loader/output-buffer RTL 已变化，必须重新运行后才可
 作为当前资源结论。结果目录为：
 
-- `docs/reports/synthesis_vivado_ds_block_tile_engine_new.md`
+- `docs/reports/README.md`（当前完整顶层与 DS 实现证据索引）
 - `build/reports/vivado_ds_block_tile_engine_new/utilization.txt`
 - `build/reports/vivado_ds_block_tile_engine_new/utilization_hierarchical.txt`
 
@@ -253,14 +258,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 对当前工作树，验收时先看：
 
-1. `docs/reports/synthesis_vivado_initial.md` 中 `Status`；
+1. `docs/reports/synthesis_vivado_summary.md` 中的历史 synthesis `Status`；
 2. `build/reports/vivado_cnn_top/utilization.txt` 的 CLB LUT/FF/BRAM/DSP；
 3. hierarchical report 中 `cnn_layer_runner` 不应再出现数十万 logic LUT；
 4. `feature_sram_pingpong` 应出现 16 个 RAMB36 左右，而不是 10240 LUTRAM；
 5. `u_ds_block_engine` 应保持约 24K LUT、26 BRAM 的数量级。
 
 此前归档结果不能替代这次重跑。`run_synthesis_vivado.ps1` 将当前 run 的日志放在
-`build/reports/vivado_cnn_top/`，并更新 `docs/reports/synthesis_vivado_initial.md`。
+`build/reports/vivado_cnn_top/`，并更新 `docs/reports/synthesis_vivado_summary.md`。
 这一步只接受 utilization/结构结论；K26 non-timing database 产生的 timing 报错不应
 被解读为负 slack，也不能据此给出 Fmax。
 

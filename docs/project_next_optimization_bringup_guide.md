@@ -2,6 +2,12 @@
 
 日期：2026-06-16
 
+> **状态修订（2026-09-01）**：本文路线图保留历史分析，当前事实以
+> [`README.md`](../README.md) 和 [`reports/README.md`](reports/README.md) 为准。
+> CSA 完整顶层基线为 1,003,577 cycles、WNS -0.799 ns；shared+persistent
+> DS 完整网络为 695,553 cycles 但 OOC setup 未闭合；shared64 同步读车辆
+> 的 +0.032 ns 是隔离 OOC 结果，不能写成 full-top closure。Vivado 默认 8 线程。
+
 本文档用于回答三个核心问题：
 
 1. 当前项目综合成本为什么昂贵，面积、能耗、效率方面应该如何改进。
@@ -944,6 +950,6 @@ PPT 中建议强调：
 
 所有自研 RTL 模块的输入、输出、事务边界、memory 容量、读延迟、backpressure、done/valid、边界条件、测试向量和资源期望，统一记录在：
 
-- [`docs/module_design_contracts.md`](module_design_contracts.md)
+- [`README.md`](../README.md) 与模块专题文档（接口/握手/延迟契约）
 
 修改模块接口、流水延迟、buffer 容量或握手语义时，应同步更新该文档和对应 testbench。

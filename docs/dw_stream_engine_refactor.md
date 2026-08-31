@@ -1,5 +1,9 @@
 # Streaming DW Engine Refactor
 
+> 本文记录 streaming DW 的历史候选和接口草案。当前默认生产路径、shared64
+> 实验状态及完整网络结果以 [`README.md`](../README.md) 和
+> [`reports/README.md`](reports/README.md) 为准；本文数字不代表当前 full-top。
+
 ## Scope
 
 This refactor adds a synthesis-oriented depthwise tile path without replacing

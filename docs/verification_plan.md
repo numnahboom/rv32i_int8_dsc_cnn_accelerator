@@ -1,5 +1,17 @@
 # Verification Plan
 
+## Current gate status (2026-09-01)
+
+The complete CNN simulation path remains bit-exact, but the XC7Z020 full-top
+target is not closed. The authoritative CSA baseline is 1,003,577 cycles and
+5,136,896 MACs with post-route WNS -0.799 ns; the shared+persistent candidate
+is 695,553 cycles with exact logits but OOC WNS -0.838 ns. The strongest
+isolated DS evidence is the synchronous-read shared64 report at
+`docs/reports/ds_group_published_shared64_sync_read_equivalence_20260901.md`.
+These numbers are evidence snapshots, not a replacement for a fresh full-top
+run. See `docs/reports/README.md` for the evidence boundary and reproduction
+commands. Vivado implementation and synthesis defaults use eight threads.
+
 本项目采用严格的分阶段门禁：一个模块必须先有 Python golden 对照、testbench 和 Verilator 通过结果，才开始下一个模块。
 
 ## 阶段 1：基础算术模块

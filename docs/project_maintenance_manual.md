@@ -6,6 +6,13 @@
 2. 哪些文档已经重复、可合并或可删除。
 3. 每次更新 RTL、firmware、模型、仿真或综合结果时，应该同步维护哪些文档。
 
+## 2026-09-01 状态修订
+
+`docs/reports/README.md` 现在是实验报告入口；完整顶层 CSA 基线、当前完整
+网络候选和同步读 shared64 隔离证据均以该索引列出的报告为准。Vivado 默认
+实现/综合线程数为 8。OOC 正 slack 不得写成 full-top closure；每个报告的
+日期、RTL 快照和 run 目录必须一起引用。
+
 ## 文档分层原则
 
 本项目文档应分成四层：
@@ -26,7 +33,7 @@
 | 文档 | 定位 | 何时必须更新 |
 | --- | --- | --- |
 | `README.md` | 项目入口、当前状态、快速运行命令、最近验证快照 | 每次改变用户可见能力、运行方式、当前验证数字或下一步方向 |
-| `docs/module_design_contracts.md` | RTL 模块接口、事务边界、延迟、backpressure、资源期望的主规格 | 任意 RTL 接口、握手、延迟、buffer 容量、读写语义变化 |
+| `README.md`、模块专题文档 | RTL 模块接口、事务边界、延迟、backpressure 的现行说明 | 任意 RTL 接口、握手、延迟、buffer 容量、读写语义变化 |
 | `docs/verification_plan.md` | 分阶段验证计划和 regression 入口 | 新增/删除 testbench、修改验收标准、改变 regression 脚本参数 |
 | `docs/known_limits_next_steps.md` | 当前限制和短版优化 backlog | 完成一个限制项、发现新阻塞、改变优化优先级 |
 | `docs/development_log.md` | 追加式开发日志和问题定位记录 | 完成一个可验证阶段、定位重要 bug、获得重要实验结果 |
@@ -41,12 +48,12 @@
 
 | 文档 | 当前价值 | 后续处理 |
 | --- | --- | --- |
-| `docs/dw_stream_engine_refactor.md` | 记录 streaming DW candidate 的数据流、握手和剩余集成工作 | 新路径接入 DSBlock 主路径后，将稳定接口合并进 `module_design_contracts.md`，本文改为历史设计记录 |
+| `docs/dw_stream_engine_refactor.md` | 记录 streaming DW candidate 的数据流、握手和剩余集成工作 | 新路径接入 DSBlock 主路径后，将稳定接口合并进 README/专题文档，本文改为历史设计记录 |
 | `docs/dw_tile_buffer_bram.md` | 记录 BRAM tile buffer 的 layout、接口、Vivado 证据 | 接入主路径后仍可保留，作为 BRAM buffer 专题设计说明 |
 | `docs/quantization.md` | 量化格式短规格 | 当前太短，建议扩写为完整量化规格；否则并入 README 和 module contracts |
 | `docs/isa_custom.md` | custom instruction 和 NPC custom port 说明 | 若 ISA 稳定，可保留；若 README 已覆盖全部内容，可并入 README 的 CPU/Firmware 部分 |
 | `docs/reports/synthesis_initial.md` | Yosys 未安装的真实尝试记录 | 安装 Yosys 并产出真实报告后替换；否则可并入 `docs/reports/synthesis_verification_report.md` 的历史段落 |
-| `docs/reports/synthesis_vivado_initial.md` | full `cnn_top` Vivado 初次尝试快照 | 新 full-top 结果产生后归档或删除，由 `docs/reports/synthesis_vivado_summary.md` 取代 |
+| `docs/reports/fulltop_csa_baseline_20260828.md` | 当前 full-top 基线与 post-route 证据 | 新 full-top 结果产生后更新报告索引，不覆盖历史快照 |
 
 ## 可合并、归档或删除的文档
 
@@ -54,16 +61,18 @@
 
 | 文档 | 判断 | 建议 |
 | --- | --- | --- |
-| `docs/architecture.md` | 内容很短，已经被 README 和 `architecture_diagrams.md` 覆盖 | 删除，或改成指向 README/architecture diagrams 的索引 |
-| `docs/network_spec.md` | 只说明网络类型，具体 shape 已在 README | 删除，或扩写成真正的网络/descriptor 规格 |
+| `docs/architecture.md` | 内容很短，已经被 README 和 `architecture_diagrams.md` 覆盖 | 删除；以 README 和 diagrams 为入口 |
+| `docs/network_spec.md` | 只说明网络类型，具体 shape 已在 README | 删除；以 README 的网络表为入口 |
 | `Project/项目描述.txt` | 当前为空文件 | 删除 |
-| `Project/改动说明以及一些问题.txt` | 临时问题单，内容已被 `development_log.md` 和 `module_design_contracts.md` 覆盖 | 删除；若仍有未解决问题，迁移到 `known_limits_next_steps.md` |
+| `Project/改动说明以及一些问题.txt` | 临时问题单，内容已被 `development_log.md` 覆盖 | 删除；若仍有未解决问题，迁移到 `known_limits_next_steps.md` |
 | `docs/rv32i_int8_cnn_project_ppt.pptx` | 二进制 PPT，不适合作为源文档；当前工作区中已被删除 | 若需要 PPT，保留生成脚本和可编辑源；否则从 git 删除 |
 | `docs/reports/synthesis_vivado_<module>.md` 单模块快照 | 多数是脚本生成模板，内容与 `build/reports/vivado_<module>/` 和 summary 重复 | 可迁移到 `build/` 作为生成物；`docs/` 下只保留 summary 和必要的特殊设计说明 |
 
 ## 当前单模块综合快照处理建议
 
-`docs/reports/synthesis_vivado_requant_activation_unit.md`、`docs/reports/synthesis_vivado_pw_systolic_array_8x8.md`、`docs/reports/synthesis_vivado_dw_mac_lanes.md`、`docs/reports/synthesis_vivado_feature_sram_bank.md`、`docs/reports/synthesis_vivado_dw_tile_buffer.md`、`docs/reports/synthesis_vivado_dw_tile_fusion_engine.md`、`docs/reports/synthesis_vivado_ds_block_tile_engine.md`、`docs/reports/synthesis_vivado_dw_tile_buffer_bram.md` 均属于单模块 Vivado OOC 快照。
+早期 `synthesis_vivado_<module>.md` 单模块快照均属于历史 Vivado OOC
+摘要，已从 `docs/reports/` 清理；如需复核，应使用对应 build 目录、脚本和
+当前专题报告，避免把早期 K26 synthesis 数字当成 XC7Z020 post-route 结果。
 
 建议规则：
 
@@ -76,10 +85,10 @@
 
 | 改动类型 | 必改文档 | 视情况更新 |
 | --- | --- | --- |
-| RTL 模块接口、握手、延迟改变 | `module_design_contracts.md`, `verification_plan.md` | README、architecture diagrams、development log |
-| 新增或替换主数据路径模块 | README, `module_design_contracts.md`, `verification_plan.md`, `development_log.md` | `known_limits_next_steps.md`, refactor 专题文档 |
-| 修改 custom instruction、MMIO、firmware ABI | README, `isa_custom.md`, `module_design_contracts.md`, `verification_plan.md` | development log |
-| 修改量化算法、scale/zero point、requant | README, `quantization.md`, `module_design_contracts.md`, Python golden 注释 | verification plan、development log |
+| RTL 模块接口、握手、延迟改变 | README、模块专题文档、`verification_plan.md` | architecture diagrams、development log |
+| 新增或替换主数据路径模块 | README, `verification_plan.md`, `development_log.md` | `known_limits_next_steps.md`, refactor 专题文档 |
+| 修改 custom instruction、MMIO、firmware ABI | README, `isa_custom.md`, `verification_plan.md` | development log |
+| 修改量化算法、scale/zero point、requant | README, `quantization.md`, `verification_plan.md`, Python golden 注释 | development log |
 | 新增 testbench 或 regression 参数 | `verification_plan.md`, README 快速开始或最近验证 | development log |
 | 重新导出模型 checkpoint | README 的模型摘要、development log | `known_limits_next_steps.md`、accuracy/perf 报告 |
 | 新增多样本 RTL/CPU 验证结果 | README 最近验证快照、development log | verification plan |
@@ -143,7 +152,7 @@ git commit -m "Update documentation for <topic>"
 
 1. 删除空文件 `项目描述.txt`。
 2. 删除或迁移 `改动说明以及一些问题.txt`。
-3. 删除或改成索引的 `docs/architecture.md`、`docs/network_spec.md`。
+3. 删除重复的 `docs/architecture.md`、`docs/network_spec.md`，并更新报告索引。
 4. 确认是否需要恢复或正式删除 `docs/rv32i_int8_cnn_project_ppt.pptx`。
 
 第二轮：综合报告归档。
@@ -203,7 +212,7 @@ README 只写当前事实：
 
 ## Module Contract 规则
 
-修改 RTL 后，如果以下任一项变化，就必须更新 `module_design_contracts.md`：
+修改 RTL 后，如果接口、握手、延迟或存储语义变化，就必须更新 README、相关模块专题文档和 `verification_plan.md`：
 
 - port 名称或宽度。
 - start/done/valid/ready 语义。
@@ -238,7 +247,7 @@ README 只写当前事实：
 README.md
 docs/
   architecture_diagrams.md
-  module_design_contracts.md
+  README.md
   verification_plan.md
   quantization.md
   isa_custom.md

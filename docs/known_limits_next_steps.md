@@ -1,88 +1,51 @@
-# Known Limits and Next Optimizations
+# 当前限制与下一步（2026-09-01）
 
-## Current Status
+## 当前结论
 
-- `ds_block_tile_engine_new` remains the active DS path.  The runner now uses
-  compact and tiled loader lookahead, and the PW BRAM path also pre-arms its
-  next read.
-- The Stem is a 3-MAC implementation; GAP and FC retain their sequential,
-  load-time accumulation approach.
-- `cnn_out_buffer` is synchronous and uses four BRAMs in the synthesis/XPM
-  implementation.  Ordinary XSim and Verilator use its cycle-equivalent
-  behavioral model; the XPM branch is checked through synthesis structure,
-  not executed by those ordinary simulators.
-- The fixed full-network SRAM datapath is freshly bit-exact for all 10 logits:
-  `944568` cycles, status `0x0e69b882`, 5.438 MAC/cycle.  This is 194332
-  cycles (17.06%) below the dated 1138900-cycle pre-lookahead baseline.
-- The same 944568-cycle/status result is confirmed through the CPU harness.
-  A three-sample CPU+RTL run is bit-exact with argmax values 3, 8, and 8;
-  tracked vectors were not changed for that evidence.
-- Stem requantization now has explicit `RQ_PRODUCT`, `RQ_SHIFT`, and
-  `RQ_WRITE` cycles.  This adds two cycles per output element (32 cycles per
-  pixel) while keeping the signed-64 product and bit-exact rounding order;
-  a direct directed TB covers positive/negative half-ties, shift 0/63,
-  int8 saturation, activation bounds, write order, and `done`.
-- The fullnet transaction oracle reports 78602 payload external reads plus 288
-  descriptor reads, 10 external writes, 115808 SRAM reads, and 102656 SRAM
-  writes.  Bounds testing checks every SRAM address transaction-by-transaction.
+固定 EdgeDSCNet-C10 的 `cnn_top` 完整仿真路径保持 bit-exact；但 XC7Z020
+目标的完整顶层仍未同时满足时序、周期和能效目标。权威基线和实验报告索引
+位于 [`reports/README.md`](reports/README.md)。
 
-## Evidence Boundary
+| 项目 | 当前权威结果 | 结论 |
+| --- | ---: | --- |
+| CSA 完整顶层 | 1,003,577 cycles；5,136,896 MAC；10/10 logits exact | 功能通过，WNS -0.799 ns，未闭合 |
+| shared unified64 完整网络 | 713,086 cycles；5,136,896 MAC；logits exact | 仅综合资源证据 |
+| shared + persistent DS 完整网络 | 695,553 cycles；5,136,896 MAC；logits exact | OOC WNS -0.838 ns，未晋级 |
+| group-published shared64 隔离 DS | 87,553 cycles；4,194,304 DS MAC | 同步读 OOC WNS +0.032 ns，非 full-top |
 
-- The tiled external-memory backpressure tests exercise one outstanding read,
-  response delays of 0..3 idle cycles, ready stalls, payload stability and a
-  write-sequence oracle.  Fresh Windows XSim recompiled 27 RTL files and
-  passed all 16 selected TBs, including fullnet.
-- A WSL Verilator 5.020 clean directed run passed tiled Stem (16384 checks),
-  tiled DSBlock (2256 checks), and tile engine tail cases (7 / 2191).  The
-  complete 40-test Verilator batch remains an explicit follow-up because the
-  controller's one-command runtime limit interrupted a longer aggregation run;
-  this is a coverage limitation, not a DUT failure.
-- Fresh 2026-08-18 Vivado OOC synthesis for the current lookahead/output-buffer
-  RTL passed with 30451 CLB LUT, 18558 CLB registers, 46 Block RAM tiles, and
-  65 DSPs.  It also proves `cnn_out_buffer` is a 4-BRAM XPM structure (6 LUT
-  at that hierarchy), rather than the earlier large LUTRAM.  These are current
-  structural/resource figures, not timing-closure evidence.
-- OOC synthesis is a structural/resource check.  Even after a fresh OOC PASS,
-  it does not exercise board IO, routing congestion, clock uncertainty, WNS,
-  Fmax, power, or timing closure.
-- The installed K26 database is a non-timing device database.  It cannot
-  produce WNS/Fmax or prove place-and-route timing closure even when synthesis
-  or a non-timing implementation step succeeds.
+完整网络目标为 125 MHz（8 ns）、WNS/WHS >= 0、<=2.0M cycles、LUT/FF/DSP/BRAM
+各 <70%、on-chip power <=3 W，并以 MAC=2 ops 计算 >=20 GOPS/W。当前 CSA
+基线在 125 MHz、0.234 W 下约 5.47 GOPS/W；达到 20 GOPS/W 约需 <=274k cycles。
 
-## External Read Contract
+## 证据边界
 
-- At most one external read may be outstanding.
-- Descriptor flag bit 6 enables a bounded packed-input slice: non-tiled Stem/DS
-  `PH_INPUT` uses NHWC bytes in aligned 32-bit words, with byte 0 at
-  `mem_resp_rdata[7:0]` and a four-byte response cache.  It rejects SRAM,
-  tiled, GAP, and FC combinations; weights and outputs remain scalar.
-- A request is accepted only on its ready/valid handshake.  Its response may
-  be delayed arbitrarily, but must not arrive in that same handshake cycle;
-  the earliest legal response is the following cycle.
-- External writes have no response channel.  While a write is stalled, its
-  `{write, address, data}` payload must remain stable.
-- An AXI adapter or a combinational-RAM adapter must register its read
-  response so that it obeys the above contract.
+- `build/reports/vivado_cnn_top_impl/runs/20260828T_stem_csa_fulltop_max2/`
+  是完整顶层 post-route 基线，报告 `docs/reports/fulltop_csa_baseline_20260828.md`
+  汇总其 timing、端点、资源、功耗和关键路径。
+- `ds_group_published_shared64_sync_read_equivalence_20260901.md` 是当前最强
+  的隔离 DS 证据：Verilator 显式模拟同步 XPM BRAM 一拍读响应，覆盖 Cin
+  16/32/64/128、tail、mask、epoch/session、descriptor fence 和 backpressure。
+- OOC 正 slack 只证明相应隔离车辆的布局布线，不证明 `cnn_top` 的全局路由、
+  完整网络周期或板级功耗。
+- Vivado power 是默认活动率下的 vectorless on-chip 估算，不是板级实测。
+- 尚无 bitstream、板级 I/O/时钟约束、硬件运行、CDC/formal 或完整功耗测量证据。
 
-## Remaining Limits
+## 接口与存储限制
 
-- The accelerator is fixed around EdgeDSCNet-C10 shapes; it is not a general
-  CNN/NPU ISA.
-- External memory still uses a simulation-friendly word-per-int8 layout rather
-  than packed NHWC bytes and burst transfers.
-- DW/PW multiplier DSP-versus-LUT mapping has not been tuned against a routed
-  timing target.  Requant also needs timing-driven width/pipeline decisions.
-- There is no formal proof or broad constrained-random memory/CDC campaign.
-- NPC/custom-instruction simulation exists, but there is no production AXI SoC
-  top, CDC plan, board constraints, bitstream, or board bring-up evidence.
+- 外部读协议最多一个 outstanding；握手后的响应最早下一拍到达，不能同拍返回。
+- 外部写无响应；`valid && !ready` 时 write/address/data 必须保持稳定。
+- 当前仿真外存仍以“一 int8 element 一 32-bit word、低 8 位有效”为主；packed
+  NHWC 和 burst adapter 尚未成为默认生产布局。
+- `cnn_out_buffer`、feature SRAM、DW/PW tile buffer 的同步读语义必须在仿真、
+  XPM 综合和下游控制器之间保持一致。
 
-## Next Actions
+## 下一步
 
-1. Archive a complete 40-test Verilator batch in an environment without the
-   controller command-time limit; retain its summary.csv with the XSim log.
-2. Use a timing-capable target/device installation for implementation, then
-   collect WNS, Fmax, congestion, power, and routed utilization.
-3. Convert external payloads to packed NHWC byte addressing and a burst-aware
-   memory adapter while preserving the registered response contract.
-4. Add formal assertions/coverage for loader and memory protocol boundaries.
-5. Integrate a production bus/SoC top and board-level debug path.
+1. 维持 CSA 默认生产路径，先对 shared64 的 runner 合同、同步读和 fence 做
+   集成前审查；未有 full-top 证据前不修改默认选择器。
+2. 针对 full-top 最差路径族优化：DW 参数/控制高扇出、tiled-loader 地址控制、
+   FC 配置寻址和全局布线拥塞；使用 Vivado 8 线程取得可比较的 post-route。
+3. 只有候选同时改善 cycle、WNS/TNS/WHS、失败端点、资源、功耗和 GOPS/W，才
+   进行完整顶层晋级；否则在报告索引中保留负结果和原因。
+4. 晋级后再补齐 fullnet XSim/Verilator、完整顶层 post-route、活动率功耗和硬件
+   smoke，最后才宣称目标完成。

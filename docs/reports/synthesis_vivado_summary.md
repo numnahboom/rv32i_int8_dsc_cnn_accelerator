@@ -1,5 +1,8 @@
 # Vivado Synthesis Summary
 
+> 本文保留 2026-08-18 的 K26/2021.2 synthesis 历史快照，不是当前 XC7Z020
+> post-route 结果。当前完整顶层和实验候选请从 [`README.md`](README.md) 查看。
+
 - Date: 2026-08-18
 - Tool: Vivado 2021.2 at `D:\Software\Xilinx\Vivado\2021.2\bin\vivado.bat`
 - Part: `xck26-sfvc784-2LV-c`
@@ -68,10 +71,10 @@ not establish WNS, Fmax, congestion, power, or post-route closure.
 
 Primary artifacts:
 
-- `docs/reports/synthesis_vivado_initial.md`
+- `docs/reports/fulltop_csa_baseline_20260828.md`
 - `build/reports/vivado_cnn_top/utilization.txt`
 - `build/reports/vivado_cnn_top/utilization_hierarchical.txt`
-- `docs/reports/synthesis_vivado_ds_block_tile_engine_new.md`
+- `docs/reports/README.md`
 
 ## Next Synthesis Work
 

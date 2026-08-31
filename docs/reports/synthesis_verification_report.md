@@ -1,5 +1,8 @@
 # 综合验证报告
 
+> 本文是早期综合阶段的历史解释。当前权威证据、周期和 XC7Z020 post-route
+> 结果见 [`README.md`](../../README.md) 与 [`reports/README.md`](README.md)。
+
 项目：`rv32i_int8_dsc_cnn_accelerator`
 
 更新日期：2026-07-17
@@ -136,9 +139,9 @@ ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
 
 ## 8. 相关产物
 
-- `docs/reports/synthesis_vivado_initial.md`
 - `docs/reports/synthesis_vivado_summary.md`
-- `docs/reports/synthesis_vivado_ds_block_tile_engine_new.md`
+- `docs/reports/synthesis_vivado_summary.md`
+- `docs/reports/README.md`
 - `build/reports/vivado_cnn_top/utilization.txt`
 - `build/reports/vivado_cnn_top/utilization_hierarchical.txt`
 - `scripts/vivado_cnn_top_synth.tcl`

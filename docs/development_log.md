@@ -754,3 +754,12 @@ WARNING: [Synth 8-5856] 3D RAM bank_mem_reg for this pattern/configuration is no
   synthesis/utilization 均通过）；随后补充 unique workdir 和 Git safe-directory
   provenance。当前 K26 无 timing database，不能产生 closure；一次后续 Vivado
   rerun 的 UNKNOWN/tool timeout 日志已保留为工具故障证据，不可当作 RTL 失败。
+# 2026-09-01 文档与验证状态整理
+
+本次整理以当前已提交实验快照为准：CSA Stem 完整顶层基线为
+`1,003,577` cycles / `5,136,896` MAC、10/10 logits exact，post-route WNS
+`-0.799 ns`；shared unified64 + persistent DS 完整网络为 `695,553` cycles、
+logits exact，但 OOC setup WNS `-0.838 ns`；group-published shared64 已完成
+同步 XPM BRAM 一拍读响应等价验证，隔离 DS 车辆为 `87,553` cycles、8 ns OOC
+WNS `+0.032 ns`。后者不构成 full-top closure。详细报告及保留/删除策略见
+`docs/reports/README.md`，Vivado 默认线程数为 8。
