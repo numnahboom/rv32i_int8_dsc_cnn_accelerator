@@ -17,6 +17,17 @@ xelab*.log
 xvlog*.log
 xelab.pb
 xvlog.pb
+
+# Local Vivado and JVM crash diagnostics. These are host-specific runtime
+# artifacts rather than reproducible experiment inputs or evidence.
+clockInfo.txt
+dfx_runtime.txt
+retry_open_fs.log
+tight_setup_hold_pins.txt
+vivado_pid*.str
+hs_err_pid*.dmp
+hs_err_pid*.log
+
 *.fst
 *.vcd
 *.vvp
