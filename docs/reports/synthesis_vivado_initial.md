@@ -1,38 +1,35 @@
 # Vivado Initial Synthesis Report
 
-- Date: 2026-08-18T11:45:33+0800
-- Tool: Vivado 2021.2
+- Date: 2026-08-25T21:21:30+0800
+- Tool: Vivado 2025.2
 - Top module: `cnn_top`
-- Part: `xck26-sfvc784-2LV-c`
+- Part: `xc7z020clg400-1`
 - Clock constraint: 10.000 ns
 - Status: PASSED
-- Timing summary: FAILED: ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
-
-- Clock utilization report: FAILED: ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
-
-- Checkpoint write: FAILED: ERROR: [Common 17-577] Internal error: Cannot run timing on a non-timing device
-
+- Timing summary: PASSED
+- Clock utilization report: PASSED
+- Checkpoint write: PASSED
 
 ## Primary Site Utilization
 
 | Metric | Used |
 | --- | ---: |
-| CLB LUTs | 30451 |
-| LUT as logic | 28887 |
-| LUT as memory | 1564 |
-| CLB registers | 18558 |
+| CLB LUTs | unknown |
+| LUT as logic | 28333 |
+| LUT as memory | 1736 |
+| CLB registers | unknown |
 | Block RAM tiles | 46 |
-| DSPs | 65 |
+| DSPs | 43 |
 
 ## Primitive Instance Quick Counts
 
 | Metric | Value |
 | --- | ---: |
-| LUT primitive cells | 36554 |
-| FF/latch primitive cells | 18558 |
+| LUT primitive cells | 35247 |
+| FF/latch primitive cells | 20728 |
 | BRAM-like primitive cells | 46 |
-| DSP primitive cells | 65 |
-| Worst observed max-path slack | unknown ns |
+| DSP primitive cells | 0 |
+| Worst observed max-path slack | -6.858 ns |
 
 ## Generated Reports
 

@@ -34,7 +34,7 @@
   passed all 16 selected TBs, including fullnet.
 - A WSL Verilator 5.020 clean directed run passed tiled Stem (16384 checks),
   tiled DSBlock (2256 checks), and tile engine tail cases (7 / 2191).  The
-  complete 38-test Verilator batch remains an explicit follow-up because the
+  complete 40-test Verilator batch remains an explicit follow-up because the
   controller's one-command runtime limit interrupted a longer aggregation run;
   this is a coverage limitation, not a DUT failure.
 - Fresh 2026-08-18 Vivado OOC synthesis for the current lookahead/output-buffer
@@ -78,7 +78,7 @@
 
 ## Next Actions
 
-1. Archive a complete 38-test Verilator batch in an environment without the
+1. Archive a complete 40-test Verilator batch in an environment without the
    controller command-time limit; retain its summary.csv with the XSim log.
 2. Use a timing-capable target/device installation for implementation, then
    collect WNS, Fmax, congestion, power, and routed utilization.

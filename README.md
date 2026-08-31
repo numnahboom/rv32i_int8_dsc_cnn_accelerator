@@ -346,7 +346,7 @@ fresh gate 为 `PASS cnn_xsim_regression tests=16`。详细架构、cycle/resour
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
 - 3-MAC Stem、同步预取 `cnn_out_buffer`（综合/XPM 为 4 BRAM）、compact/tiled loader lookahead 与 PW BRAM lookahead 已接入。
 - 普通 XSim/Verilator 使用 output buffer 的同步 behavioral model；XPM 分支仅由综合结构验证。
-- fresh Vivado OOC synthesis 和 XSim 16-test gate 均已完成；完整 38-test Verilator
+- fresh Vivado OOC synthesis 和 XSim 16-test gate 均已完成；完整 40-test Verilator
   batch 仍应在不受单次命令超时限制的环境中归档，但其三个本轮高风险定向用例已 clean PASS。
   不得把 OOC 结果写成 timing closure。
 - 当前 K26 device database 不能生成 timing report，因此不能给出 WNS/Fmax 或声称 place-and-route closure。

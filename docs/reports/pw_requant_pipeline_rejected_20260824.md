@@ -48,3 +48,34 @@ The candidate lost 0.020 ns WNS and did not satisfy the required timing or
 hold/resource acceptance gates.  It was therefore rejected and reverted.
 
 Evidence: `build/reports/vivado_cnn_top_impl/runs/20260824T125803485-27428/manifest.txt`.
+
+## Option 2: registered accumulator+bias pre-add (rejected)
+
+The existing elastic `requant_activation_unit` was temporarily changed to
+register `acc+bias` before the multiplier, with matching four-deep valid/tag
+plumbing in `ds_block_tile_engine_new`.  The candidate preserved the existing
+single-lane issue protocol and held all operands under backpressure.  It was
+reverted after the direct timing gate; both RTL files are identical to `HEAD`.
+
+Verification passed before rejection:
+
+- `tb_requant_activation_unit`: 100/100.
+- `tb_requant_activation_pipeline`: 100/100.
+- `tb_requant_activation_core`: 7/7.
+- `tb_ds_block_tile_engine_new`: 7 cases, 2191 checks; measured PW issue
+  counts were unchanged.
+
+Fresh Vivado 2025.2 `RuntimeOptimized` routed OOC (`xc7z020clg400-1`) gave:
+
+| Metric | Candidate | Baseline | Delta |
+|---|---:|---:|---:|
+| WNS (ns) | -7.989 | -7.768 | -0.221 |
+| TNS (ns) | -30883.736 | -28665.969 | -2217.767 |
+| WHS (ns) | +0.016 | +0.058 | -0.042 |
+
+The candidate fails the required WNS/TNS improvement gate and is not kept.
+Next strategy should avoid adding a full elastic stage; investigate localized
+DSP/LUTRAM boundary or multiplier operand registration while preserving the
+current three-stage protocol and tag depth.
+
+Evidence: `build/reports/vivado_cnn_top_impl_pw_preadd_20260824/manifest.txt`.

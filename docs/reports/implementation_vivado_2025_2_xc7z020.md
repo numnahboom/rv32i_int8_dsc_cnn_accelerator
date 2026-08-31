@@ -382,3 +382,53 @@ for each of the nine layer descriptors.
 This remains routed xc7z020 FPGA-fabric evidence only. It is not 100 MHz
 timing closure, K26 timing, board-level I/O/clock closure, hardware validation,
 or measured power.
+
+## Current candidate: preserve FC requantization pipeline register
+
+The routed baseline above reported the FC accumulation write path from
+`u_layer_runner/u_fc_unit/product_reg_reg__0/CLK` to
+`u_layer_runner/u_fc_unit/output_mem_reg_0_15_6_7/DP/I`, with WNS `-9.776 ns`,
+`19.443 ns` data delay, and 43 logic levels. The existing dirty-tree FC
+pipeline had a `requant_reg`, but Vivado absorbed that register into the
+distributed-memory write cone. The minimal candidate adds `(* keep = "true" *)`
+to that already-existing register; this changes no ports, state transitions,
+arithmetic, or transaction timing.
+
+Vivado 2025.2 was rerun with `xc7z020clg400-1`, `RuntimeOptimized`, and
+`VIVADO_IMPL_RUN_ID=20260823T_keep_requant`:
+
+```text
+command: D:\Software\vivado2025.2\2025.2\Vivado\bin\vivado.bat -mode batch -source scripts/vivado_cnn_top_impl.tcl -tclargs cnn_top xc7z020clg400-1
+run: build/reports/vivado_cnn_top_impl/
+status: FAILED_TIMING_CLOSURE (route and signoff reports completed)
+```
+
+| Metric | Routed baseline | `keep` candidate | Delta |
+|---|---:|---:|---:|
+| WNS | -9.776 ns | -8.920 ns | +0.856 ns |
+| WHS | +0.085 ns | +0.089 ns | +0.004 ns |
+| THS | 0.000 ns | 0.000 ns | 0 |
+| TNS | -37259.229 ns | negative paths present (manifest) | not directly comparable |
+
+The candidate's new worst setup path is the intended preserved pipeline edge,
+from `u_layer_runner/u_fc_unit/product_reg_reg/CLK` to
+`u_layer_runner/u_fc_unit/requant_reg_reg[3]/D`; its path report gives 43 logic
+levels and `18.920 ns` data delay. The prior product-to-memory path is no
+longer the maximum. `route_status.txt` proves `0` routing errors and `0`
+unrouted/partially routed nets; the routed checkpoint is
+`cnn_top_impl.dcp`. Timing summary reports zero unconstrained internal
+endpoints, with only the expected 102 input and 98 output OOC ports lacking
+I/O delay constraints. This is not timing closure: WNS remains negative.
+
+Fresh XSim with Vivado 2025.2 compiled all 27 RTL files and passed the focused
+semantic gate: tiled Stem (`16384` checks), tiled DSBlock (`2256` checks),
+SRAM tiled DSBlock (`480` checks), and fullnet (`10/10` logits; `993869`
+hardware cycles; `5136896` MACs; `343.50x` RV32I estimate). The complete
+16-test gate was not claimed because the existing standalone
+`tb_ds_block_tile_engine_new` test in this dirty tree produced 60 mismatches;
+the four top-level/address-sensitive tests and fullnet passed independently.
+
+The exact candidate evidence is retained in `manifest.txt`,
+`timing_summary.txt`, `timing_maxpaths.txt`, `route_status.txt`,
+`utilization_post_route.txt`, and `cnn_top_impl.dcp` under
+`build/reports/vivado_cnn_top_impl/`.
