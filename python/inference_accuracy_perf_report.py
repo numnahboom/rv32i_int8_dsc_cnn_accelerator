@@ -39,6 +39,9 @@ REQUIRED_METRIC_KEYS = {
     "layer_reads",
     "layer_writes",
     "sram_reads",
+    "sram_scalar_reads",
+    "sram_word_reads",
+    "sram_logical_reads",
     "sram_writes",
 }
 
@@ -49,6 +52,8 @@ REQUIRED_LAYER_COLUMNS = {
     "mem_reads",
     "mem_writes",
     "sram_reads",
+    "sram_scalar_reads",
+    "sram_word_reads",
     "sram_writes",
 }
 
@@ -116,6 +121,8 @@ def parse_layer_metrics(path: Path) -> dict[int, dict[str, int]]:
                 "mem_reads": int(row["mem_reads"]),
                 "mem_writes": int(row["mem_writes"]),
                 "sram_reads": int(row["sram_reads"]),
+                "sram_scalar_reads": int(row["sram_scalar_reads"]),
+                "sram_word_reads": int(row["sram_word_reads"]),
                 "sram_writes": int(row["sram_writes"]),
             }
     if not rows:
@@ -295,6 +302,12 @@ def make_report(args: argparse.Namespace) -> str:
         layer_mem_read_sum = sum(item["mem_reads"] for item in layer_metrics.values())
         layer_mem_write_sum = sum(item["mem_writes"] for item in layer_metrics.values())
         layer_sram_read_sum = sum(item["sram_reads"] for item in layer_metrics.values())
+        layer_sram_scalar_read_sum = sum(
+            item["sram_scalar_reads"] for item in layer_metrics.values()
+        )
+        layer_sram_word_read_sum = sum(
+            item["sram_word_reads"] for item in layer_metrics.values()
+        )
         layer_sram_write_sum = sum(item["sram_writes"] for item in layer_metrics.values())
         if layer_mem_read_sum != int(metrics["layer_reads"]):
             raise ValueError(
@@ -306,10 +319,30 @@ def make_report(args: argparse.Namespace) -> str:
                 "layer/full external write mismatch: "
                 f"layers={layer_mem_write_sum} full={metrics['layer_writes']}"
             )
-        if layer_sram_read_sum != int(metrics["sram_reads"]):
+        if layer_sram_scalar_read_sum != int(metrics["sram_scalar_reads"]):
             raise ValueError(
-                "layer/full SRAM read mismatch: "
-                f"layers={layer_sram_read_sum} full={metrics['sram_reads']}"
+                "layer/full SRAM scalar-read mismatch: "
+                f"layers={layer_sram_scalar_read_sum} full={metrics['sram_scalar_reads']}"
+            )
+        if layer_sram_word_read_sum != int(metrics["sram_word_reads"]):
+            raise ValueError(
+                "layer/full SRAM word-read mismatch: "
+                f"layers={layer_sram_word_read_sum} full={metrics['sram_word_reads']}"
+            )
+        if layer_sram_read_sum != int(metrics["sram_logical_reads"]):
+            raise ValueError(
+                "layer/full SRAM logical-read mismatch: "
+                f"layers={layer_sram_read_sum} full={metrics['sram_logical_reads']}"
+            )
+        if int(metrics["sram_logical_reads"]) != (
+            int(metrics["sram_scalar_reads"]) +
+            (4 * int(metrics["sram_word_reads"]))
+        ):
+            raise ValueError(
+                "SRAM logical-read accounting mismatch: "
+                f"logical={metrics['sram_logical_reads']} "
+                f"scalar={metrics['sram_scalar_reads']} "
+                f"word={metrics['sram_word_reads']}"
             )
         if layer_sram_write_sum != int(metrics["sram_writes"]):
             raise ValueError(
@@ -402,7 +435,18 @@ def make_report(args: argparse.Namespace) -> str:
     if "desc_reads" in metrics:
         lines.append(f"| Descriptor reads | {int(metrics['desc_reads'])} |")
     if "sram_reads" in metrics:
-        lines.append(f"| Feature SRAM reads | {int(metrics['sram_reads'])} |")
+        lines.append(
+            f"| Feature SRAM scalar read transactions | "
+            f"{int(metrics['sram_scalar_reads'])} |"
+        )
+        lines.append(
+            f"| Feature SRAM 32-bit word read transactions | "
+            f"{int(metrics['sram_word_reads'])} |"
+        )
+        lines.append(
+            f"| Feature SRAM logical byte reads | "
+            f"{int(metrics['sram_logical_reads'])} |"
+        )
     if "sram_writes" in metrics:
         lines.append(f"| Feature SRAM writes | {int(metrics['sram_writes'])} |")
     lines.append("")
@@ -426,9 +470,9 @@ def make_report(args: argparse.Namespace) -> str:
         lines.append("## Per-Layer Hardware Metrics")
         lines.append("")
         lines.append(
-            "| Layer | HW cycles | Ext reads | Ext writes | SRAM reads | SRAM writes | PW theoretical minimum issue cycles | Minimum-issue/layer ratio |"
+            "| Layer | HW cycles | Ext reads | Ext writes | SRAM logical reads | SRAM scalar reads | SRAM word reads | SRAM writes | PW theoretical minimum issue cycles | Minimum-issue/layer ratio |"
         )
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         for row in rows:
             layer_idx = int(row["layer_idx"])
             hw = layer_metrics.get(layer_idx, {"cycles": 0, "mem_reads": 0, "mem_writes": 0})
@@ -436,7 +480,9 @@ def make_report(args: argparse.Namespace) -> str:
             issue_ratio = (100.0 * pw_min_issue / hw["cycles"]) if hw["cycles"] else 0.0
             lines.append(
                 f"| {row['layer']} | {hw['cycles']} | {hw['mem_reads']} | "
-                f"{hw['mem_writes']} | {hw['sram_reads']} | {hw['sram_writes']} | "
+                f"{hw['mem_writes']} | {hw['sram_reads']} | "
+                f"{hw['sram_scalar_reads']} | {hw['sram_word_reads']} | "
+                f"{hw['sram_writes']} | "
                 f"{pw_min_issue} | {issue_ratio:.2f}% |"
             )
         lines.append("")

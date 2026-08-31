@@ -18,7 +18,7 @@ if {[llength $argv] >= 2} {
 set out_dir [file join $project_root "build" "reports" "vivado_$top_name"]
 file mkdir $out_dir
 
-set_param general.maxThreads 4
+set_param general.maxThreads 8
 
 if {$top_name eq "cnn_top"} {
     set report_md [file join $project_root "docs" "reports" "synthesis_vivado_initial.md"]
@@ -64,10 +64,15 @@ set rtl_files [list \
     "rtl/common/saturate_int8.v" \
     "rtl/common/requant_activation_core.v" \
     "rtl/cnn/requant_activation_unit.v" \
+    "rtl/cnn/requant_activation_vector4.v" \
     "rtl/cnn/requant_activation_pipeline.v" \
     "rtl/cnn/requant_product_pipeline.v" \
     "rtl/cnn/systolic_pe.v" \
     "rtl/cnn/pw_systolic_array_8x8.v" \
+    "rtl/cnn/pw_direct_8x8_dsp.v" \
+    "rtl/cnn/pw_direct_8x8_dsp_rowbank.v" \
+    "rtl/cnn/unified64_tile_engine_experiment.v" \
+    "rtl/cnn/unified64_shared_compute_array.v" \
     "rtl/cnn/dw_line_buffer.v" \
     "rtl/cnn/dw_mac_lanes.v" \
     "rtl/cnn/dw_tile_buffer_bram.v" \
@@ -75,7 +80,10 @@ set rtl_files [list \
     "rtl/cnn/pw_weight_buffer_bram.v" \
     "rtl/cnn/dw_tile_fusion_engine_new.v" \
     "rtl/cnn/ds_block_tile_engine_new.v" \
+    "rtl/cnn/ds_persistent_pw_row_feed.v" \
     "rtl/cnn/conv3x3_stem_engine_new.v" \
+    "rtl/cnn/stem_weight_store_packed64.v" \
+    "rtl/cnn/stem_unified64_streaming.v" \
     "rtl/cnn/gap_unit_new.v" \
     "rtl/cnn/fc_unit_new.v" \
     "rtl/cnn/tile_scheduler.v" \

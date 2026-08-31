@@ -1,0 +1,4 @@
+rtl/cnn/ds_spatial_word_window_bank.v
+rtl/cnn/ds_word_window_fill_engine.v
+rtl/cnn/ds_word_window_pingpong_shell.v
+sim/tb_ds_word_window_pingpong_shell.v

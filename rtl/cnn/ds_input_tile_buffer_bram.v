@@ -21,7 +21,9 @@ module ds_input_tile_buffer_bram #(
     input  wire                         wr_en,
     input  wire [LINEAR_ADDR_WIDTH-1:0] wr_linear_idx,
     input  wire signed [7:0]            wr_data_int8,
-
+    input  wire                         wr_vec4_en,
+    input  wire [LINEAR_ADDR_WIDTH-1:0] wr_vec4_linear_idx,
+    input  wire [31:0]                  wr_vec4_data_int8,
     input  wire                         rd_en,
     input  wire [8:0]                   rd_pixel_idx,
     input  wire [$clog2(MAX_CIN/LANES)-1:0] rd_channel_tile,
@@ -40,6 +42,11 @@ module ds_input_tile_buffer_bram #(
     wire [$clog2(CHANNEL_TILES)-1:0] wr_channel_tile;
     wire [LANE_SHIFT-1:0] wr_lane_idx;
     wire [ADDR_WIDTH-1:0] wr_addr;
+    wire [8:0] wr_vec4_pixel_idx;
+    wire [$clog2(MAX_CIN)-1:0] wr_vec4_channel_idx;
+    wire [$clog2(CHANNEL_TILES)-1:0] wr_vec4_channel_tile;
+    wire [LANE_SHIFT-1:0] wr_vec4_lane_idx;
+    wire [ADDR_WIDTH-1:0] wr_vec4_addr;
     wire [ADDR_WIDTH-1:0] rd_addr;
     wire [DATA_WIDTH-1:0] rd_data_raw;
 
@@ -48,6 +55,11 @@ module ds_input_tile_buffer_bram #(
     assign wr_channel_tile = wr_channel_idx >> LANE_SHIFT;
     assign wr_lane_idx = wr_channel_idx[LANE_SHIFT-1:0];
     assign wr_addr = (wr_pixel_idx * CHANNEL_TILES) + wr_channel_tile;
+    assign wr_vec4_pixel_idx = wr_vec4_linear_idx >> CIN_SHIFT;
+    assign wr_vec4_channel_idx = wr_vec4_linear_idx[$clog2(MAX_CIN)-1:0];
+    assign wr_vec4_channel_tile = wr_vec4_channel_idx >> LANE_SHIFT;
+    assign wr_vec4_lane_idx = wr_vec4_channel_idx[LANE_SHIFT-1:0];
+    assign wr_vec4_addr = (wr_vec4_pixel_idx * CHANNEL_TILES) + wr_vec4_channel_tile;
     assign rd_addr = (rd_pixel_idx * CHANNEL_TILES) + rd_channel_tile;
     assign rd_data_vector = rd_data_raw;
 
@@ -63,9 +75,15 @@ module ds_input_tile_buffer_bram #(
     localparam MEMORY_SIZE_BITS = DEPTH * DATA_WIDTH;
     wire [LANES-1:0] wr_byte_enable;
     wire [DATA_WIDTH-1:0] wr_data_replicated;
+    wire [LANES-1:0] wr_vec4_byte_enable;
+    wire [DATA_WIDTH-1:0] wr_vec4_data_shifted;
 
     assign wr_byte_enable = {{(LANES-1){1'b0}}, 1'b1} << wr_lane_idx;
     assign wr_data_replicated = {LANES{wr_data_int8}};
+    assign wr_vec4_byte_enable =
+        ({LANES{1'b0}} | ({{(LANES-4){1'b0}}, 4'b1111} << wr_vec4_lane_idx));
+    assign wr_vec4_data_shifted =
+        ({96'd0, wr_vec4_data_int8} << (wr_vec4_lane_idx * 8));
 
     xpm_memory_sdpram #(
         .ADDR_WIDTH_A(ADDR_WIDTH),
@@ -95,12 +113,12 @@ module ds_input_tile_buffer_bram #(
     ) u_input_memory (
         .clka(clk),
         .clkb(clk),
-        .ena(wr_en),
+        .ena(wr_en || wr_vec4_en),
         .enb(rd_en),
-        .addra(wr_addr),
+        .addra(wr_vec4_en ? wr_vec4_addr : wr_addr),
         .addrb(rd_addr),
-        .dina(wr_data_replicated),
-        .wea(wr_byte_enable),
+        .dina(wr_vec4_en ? wr_vec4_data_shifted : wr_data_replicated),
+        .wea(wr_vec4_en ? wr_vec4_byte_enable : wr_byte_enable),
         .doutb(rd_data_raw),
         .rstb(!rst_n),
         .regceb(1'b1),
@@ -110,6 +128,7 @@ module ds_input_tile_buffer_bram #(
         .dbiterrb(),
         .sbiterrb()
     );
+
 `else
     reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
     reg [DATA_WIDTH-1:0] rd_data_reg;
@@ -119,6 +138,9 @@ module ds_input_tile_buffer_bram #(
     always @(posedge clk) begin
         if (wr_en) begin
             mem[wr_addr][(wr_lane_idx*8) +: 8] <= wr_data_int8;
+        end
+        if (wr_vec4_en) begin
+            mem[wr_vec4_addr][(wr_vec4_lane_idx*8) +: 32] <= wr_vec4_data_int8;
         end
 
         if (!rst_n) begin

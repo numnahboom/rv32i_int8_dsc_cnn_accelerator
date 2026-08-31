@@ -24,6 +24,9 @@ module tb_ds_block_tile_engine_new;
     reg [3:0] cfg_target;
     reg [15:0] cfg_index;
     reg [31:0] cfg_data;
+    reg cfg_vec4_wr_en;
+    reg [15:0] cfg_vec4_index;
+    reg [31:0] cfg_vec4_data;
     reg start;
     wire busy;
     wire done;
@@ -46,6 +49,10 @@ module tb_ds_block_tile_engine_new;
     wire [5:0] out_wr_pixel_idx;
     wire [7:0] out_wr_channel_idx;
     wire signed [7:0] out_wr_data_int8;
+    wire out_wr_vec4_en;
+    wire [5:0] out_wr_vec4_pixel_idx;
+    wire [7:0] out_wr_vec4_channel_idx;
+    wire [31:0] out_wr_vec4_data_int8;
     wire [31:0] perf_total_cycles;
     wire [31:0] perf_dw_cycles;
     wire [31:0] perf_pw_cycles;
@@ -80,7 +87,8 @@ module tb_ds_block_tile_engine_new;
         .MAX_CIN(MAX_CIN),
         .MAX_COUT(MAX_COUT),
         .MAX_IN_H(MAX_IN_H),
-        .MAX_IN_W(MAX_IN_W)
+        .MAX_IN_W(MAX_IN_W),
+        .USE_UNIFIED64(1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -89,6 +97,9 @@ module tb_ds_block_tile_engine_new;
         .cfg_target(cfg_target),
         .cfg_index(cfg_index),
         .cfg_data(cfg_data),
+        .cfg_vec4_wr_en(cfg_vec4_wr_en),
+        .cfg_vec4_index(cfg_vec4_index),
+        .cfg_vec4_data(cfg_vec4_data),
         .start(start),
         .busy(busy),
         .done(done),
@@ -109,6 +120,10 @@ module tb_ds_block_tile_engine_new;
         .out_wr_pixel_idx(out_wr_pixel_idx),
         .out_wr_channel_idx(out_wr_channel_idx),
         .out_wr_data_int8(out_wr_data_int8),
+        .out_wr_vec4_en(out_wr_vec4_en),
+        .out_wr_vec4_pixel_idx(out_wr_vec4_pixel_idx),
+        .out_wr_vec4_channel_idx(out_wr_vec4_channel_idx),
+        .out_wr_vec4_data_int8(out_wr_vec4_data_int8),
         .perf_total_cycles(perf_total_cycles),
         .perf_dw_cycles(perf_dw_cycles),
         .perf_pw_cycles(perf_pw_cycles),
@@ -124,6 +139,13 @@ module tb_ds_block_tile_engine_new;
         if (out_wr_en) begin
             actual_mem[out_wr_pixel_idx * MAX_COUT + out_wr_channel_idx] <=
                 out_wr_data_int8;
+        end
+        if (out_wr_vec4_en) begin
+            for (idx = 0; idx < 4; idx = idx + 1) begin
+                actual_mem[out_wr_vec4_pixel_idx * MAX_COUT +
+                           out_wr_vec4_channel_idx + idx] <=
+                    out_wr_vec4_data_int8[(idx*8) +: 8];
+            end
         end
         if ($test$plusargs("TRACE_NEW_DSBLOCK") && dut.rq_fire) begin
             $display(
@@ -225,10 +247,13 @@ module tb_ds_block_tile_engine_new;
             end
             if (!done) begin
                 $display(
-                    "ERROR timeout case=%0d state=%0d cycles=%0d",
+                    "ERROR timeout case=%0d state=%0d cycles=%0d pwread=%0d pwk=%0d issue=%b dwr=%b dvalid=%b wvalid=%b pix=%0d cout=%0d",
                     case_idx,
                     dut.state,
-                    perf_total_cycles
+                    perf_total_cycles, dut.pw_read_idx, dut.pw_k_idx,
+                    dut.pw_read_issue, dut.dw_buf_rd_en,
+                    dut.dw_buf_rd_valid, dut.pw_weight_rd_valid,
+                    dut.pw_pixel_base, dut.pw_cout_base
                 );
                 $fatal;
             end
@@ -242,6 +267,9 @@ module tb_ds_block_tile_engine_new;
         cfg_target = 4'd0;
         cfg_index = 16'd0;
         cfg_data = 32'd0;
+        cfg_vec4_wr_en = 1'b0;
+        cfg_vec4_index = 16'd0;
+        cfg_vec4_data = 32'd0;
         start = 1'b0;
         out_h = 4'd0;
         out_w = 4'd0;

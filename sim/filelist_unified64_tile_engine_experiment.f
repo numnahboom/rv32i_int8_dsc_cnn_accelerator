@@ -1,0 +1,5 @@
+rtl/common/requant_activation_core.v
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/pw_direct_8x8_dsp_rowbank.v
+rtl/cnn/unified64_tile_engine_experiment.v
+sim/tb_unified64_tile_engine_experiment.v

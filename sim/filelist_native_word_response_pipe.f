@@ -1,0 +1,2 @@
+rtl/cnn/native_word_response_pipe.v
+sim/tb_native_word_response_pipe.v

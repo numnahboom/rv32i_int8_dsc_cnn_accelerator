@@ -2,6 +2,7 @@ read_verilog -sv rtl/common/round_shift.v
 read_verilog -sv rtl/common/saturate_int8.v
 read_verilog -sv rtl/common/requant_activation_core.v
 read_verilog -sv rtl/cnn/requant_activation_unit.v
+read_verilog -sv rtl/cnn/requant_activation_vector4.v
 read_verilog -sv rtl/cnn/requant_activation_pipeline.v
 read_verilog -sv rtl/cnn/requant_product_pipeline.v
 read_verilog -sv rtl/cnn/systolic_pe.v

@@ -1,0 +1,2 @@
+rtl/cnn/feature_tile_pingpong_ctrl.v
+sim/tb_feature_tile_pingpong_ctrl.v

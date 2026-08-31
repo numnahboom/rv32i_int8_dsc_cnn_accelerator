@@ -1,0 +1,5 @@
+rtl/common/requant_activation_core.v
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/requant_activation_stream4.v
+rtl/cnn/requant_activation_stream4_masked.v
+sim/tb_requant_activation_stream4_masked.v

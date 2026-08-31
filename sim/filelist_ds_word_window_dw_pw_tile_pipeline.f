@@ -1,0 +1,12 @@
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/pw_direct_8x8_dsp.v
+rtl/cnn/ds_word_window_fill_engine.v
+rtl/cnn/ds_spatial_word_window_bank.v
+rtl/cnn/ds_word_window_pingpong_shell.v
+rtl/cnn/dw_direct_3x3_dsp_prefetched.v
+rtl/cnn/ds_word_window_dw_producer_island.v
+rtl/cnn/ds_dw_requant_write_sink.v
+rtl/cnn/ds_pw_spatial_tile_bank.v
+rtl/cnn/requant_activation_vector4_spatial.v
+rtl/cnn/ds_word_window_dw_pw_tile_pipeline.v
+rtl/cnn/dw_direct_3x3_dsp.v

@@ -13,7 +13,11 @@ module systolic_pe (
     output reg  signed [7:0]  wgt_out,
     output reg  signed [31:0] psum_out
 );
-    wire signed [15:0] product;
+    /* Force the small signed multiply into the DSP48 pre-adder/multiplier
+     * when this PE is used in the partial-K array.  Leaving Vivado's default
+     * heuristic in place maps 8x8 products into LUTs; that makes the PE
+     * accumulator path the local 8 ns bottleneck despite ample DSP budget. */
+    (* use_dsp = "yes" *) wire signed [15:0] product;
     wire signed [31:0] product_ext;
 
     assign product = act_in * wgt_in;

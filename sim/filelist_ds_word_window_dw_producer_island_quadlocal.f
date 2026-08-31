@@ -1,0 +1,9 @@
+rtl/cnn/ds_spatial_word_window_bank.v
+rtl/cnn/ds_word_window_fill_engine.v
+rtl/cnn/ds_word_window_pingpong_shell.v
+rtl/cnn/dw_direct_3x3_dsp.v
+rtl/cnn/dw_direct_3x3_dsp_prefetched.v
+rtl/cnn/dw_direct_3x3_dsp_quadlocal.v
+rtl/cnn/ds_word_window_dw_producer_island.v
+sim/tb_ds_word_window_dw_producer_island.v
+sim/tb_ds_word_window_dw_producer_island_quadlocal.v

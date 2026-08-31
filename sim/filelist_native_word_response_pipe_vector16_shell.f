@@ -1,0 +1,6 @@
+rtl/cnn/native_word_response_pipe.v
+rtl/cnn/feature_tile_pingpong_ctrl.v
+rtl/cnn/feature_tile_vector16_bank.v
+rtl/cnn/feature_tile_vector16_pingpong_shell.v
+rtl/cnn/native_word_response_pipe_vector16_shell.v
+sim/tb_native_word_response_pipe_vector16_shell.v

@@ -1,0 +1,2 @@
+rtl/cnn/dual32_mac_local_island.v
+sim/tb_dual32_mac_local_island.v

@@ -1,0 +1,2 @@
+rtl/cnn/ds_spatial_word_window_bank.v
+sim/tb_ds_spatial_word_window_bank.v

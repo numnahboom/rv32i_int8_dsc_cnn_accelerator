@@ -1,7 +1,14 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-module cnn_top (
+module cnn_top #(
+    /* Keep the production/fullnet default unchanged; integration benches can
+     * select the unified64 DS data path through the complete top. */
+    parameter USE_UNIFIED64_DS = 0,
+    parameter USE_UNIFIED64_STEM = 0,
+    parameter USE_SHARED_UNIFIED64 = 0,
+    parameter USE_PERSISTENT_DS = 0
+) (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -48,9 +55,17 @@ module cnn_top (
     wire [14:0] layer_sram_input_rd_addr;
     wire layer_sram_input_rd_valid;
     wire signed [7:0] layer_sram_input_rd_data;
+    wire layer_sram_input_rd_word_en;
+    wire [14:0] layer_sram_input_rd_word_addr;
+    wire layer_sram_input_rd_word_valid;
+    wire [31:0] layer_sram_input_rd_word_data;
     wire layer_sram_output_wr_en;
     wire [14:0] layer_sram_output_wr_addr;
     wire signed [7:0] layer_sram_output_wr_data;
+    wire layer_sram_output_wr4_en;
+    wire [14:0] layer_sram_output_wr4_addr;
+    wire [31:0] layer_sram_output_wr4_data;
+    wire [3:0] layer_sram_output_wr4_be;
     wire desc_mem_req_valid;
     wire desc_mem_req_write;
     wire [31:0] desc_mem_req_addr;
@@ -113,7 +128,12 @@ module cnn_top (
         .mem_resp_rdata(mem_resp_rdata)
     );
 
-    cnn_layer_runner u_layer_runner (
+    cnn_layer_runner #(
+        .USE_UNIFIED64_DS(USE_UNIFIED64_DS),
+        .USE_UNIFIED64_STEM(USE_UNIFIED64_STEM),
+        .USE_SHARED_UNIFIED64(USE_SHARED_UNIFIED64),
+        .USE_PERSISTENT_DS(USE_PERSISTENT_DS)
+    ) u_layer_runner (
         .clk(clk),
         .rst_n(rst_n),
         .start(layer_start),
@@ -132,9 +152,17 @@ module cnn_top (
         .sram_input_rd_addr(layer_sram_input_rd_addr),
         .sram_input_rd_valid(layer_sram_input_rd_valid),
         .sram_input_rd_data(layer_sram_input_rd_data),
+        .sram_input_rd_word_en(layer_sram_input_rd_word_en),
+        .sram_input_rd_word_addr(layer_sram_input_rd_word_addr),
+        .sram_input_rd_word_valid(layer_sram_input_rd_word_valid),
+        .sram_input_rd_word_data(layer_sram_input_rd_word_data),
         .sram_output_wr_en(layer_sram_output_wr_en),
         .sram_output_wr_addr(layer_sram_output_wr_addr),
-        .sram_output_wr_data(layer_sram_output_wr_data)
+        .sram_output_wr_data(layer_sram_output_wr_data),
+        .sram_output_wr4_en(layer_sram_output_wr4_en),
+        .sram_output_wr4_addr(layer_sram_output_wr4_addr),
+        .sram_output_wr4_data(layer_sram_output_wr4_data),
+        .sram_output_wr4_be(layer_sram_output_wr4_be)
     );
 
     feature_sram_pingpong u_feature_sram (
@@ -148,9 +176,17 @@ module cnn_top (
         .input_rd_addr(layer_sram_input_rd_addr),
         .input_rd_valid(layer_sram_input_rd_valid),
         .input_rd_data(layer_sram_input_rd_data),
+        .input_rd_word_en(layer_sram_input_rd_word_en),
+        .input_rd_word_addr(layer_sram_input_rd_word_addr),
+        .input_rd_word_valid(layer_sram_input_rd_word_valid),
+        .input_rd_word_data(layer_sram_input_rd_word_data),
         .output_wr_en(layer_sram_output_wr_en),
         .output_wr_addr(layer_sram_output_wr_addr),
         .output_wr_data(layer_sram_output_wr_data),
+        .output_wr_word_en(layer_sram_output_wr4_en),
+        .output_wr_word_addr(layer_sram_output_wr4_addr),
+        .output_wr_word_data(layer_sram_output_wr4_data),
+        .output_wr_word_be(layer_sram_output_wr4_be),
         .host_wr_en(1'b0),
         .host_bank_sel(1'b0),
         .host_addr(15'd0),
@@ -212,6 +248,7 @@ module cnn_top (
             end
         end
     end
+
 endmodule
 
 `default_nettype wire

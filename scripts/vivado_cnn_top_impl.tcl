@@ -10,6 +10,22 @@
 set script_dir [file dirname [file normalize [info script]]]
 set project_root [file normalize [file join $script_dir ".."]]
 
+# Normalize paths crossing the PowerShell -> vivado.bat -> Tcl boundary in one
+# place.  In particular, do not let a raw Windows ``D:\...`` value reach a
+# Vivado command: the batch/helper path parser has historically tokenized the
+# drive prefix and emitted ``Failed to create directory 'C'``.  Forward-slash
+# paths remain drive-qualified but are a single Tcl/Vivado argument.
+proc host_path {value {base_dir ""}} {
+    set clean [string map [list "\\" "/"] [string trim $value]]
+    if {[file pathtype $clean] eq "absolute"} {
+        return [file normalize $clean]
+    }
+    if {$base_dir eq ""} {
+        set base_dir [pwd]
+    }
+    return [file normalize [file join $base_dir $clean]]
+}
+
 if {[llength $argv] >= 2} {
     set top_name [lindex $argv 0]
     set part_name [lindex $argv 1]
@@ -28,14 +44,29 @@ if {[llength $argv] >= 2} {
 }
 
 if {[info exists ::env(VIVADO_IMPL_OUT_DIR)] && [string length $::env(VIVADO_IMPL_OUT_DIR)] > 0} {
-    set out_dir [file normalize $::env(VIVADO_IMPL_OUT_DIR)]
+    set out_dir [host_path $::env(VIVADO_IMPL_OUT_DIR) $project_root]
 } else {
     set out_dir [file join $project_root "build" "reports" "vivado_${top_name}_impl"]
 }
-file mkdir $out_dir
+if {[catch {file mkdir $out_dir} mkdir_message]} {
+    error "failed to create implementation output directory '$out_dir': $mkdir_message"
+}
 set manifest_file [file join $out_dir "manifest.txt"]
-set constraint_file [file join $project_root "constraints" "cnn_top_ooc.xdc"]
-set_param general.maxThreads 4
+if {[info exists ::env(VIVADO_IMPL_CONSTRAINT_FILE)] && [string length $::env(VIVADO_IMPL_CONSTRAINT_FILE)] > 0} {
+    set constraint_file [host_path $::env(VIVADO_IMPL_CONSTRAINT_FILE) $project_root]
+} else {
+    set constraint_file [file join $project_root "constraints" "cnn_top_ooc.xdc"]
+}
+if {[info exists ::env(VIVADO_IMPL_CLOCK_PERIOD_NS)] && [string length $::env(VIVADO_IMPL_CLOCK_PERIOD_NS)] > 0} {
+    set clock_period_ns $::env(VIVADO_IMPL_CLOCK_PERIOD_NS)
+} else {
+    set clock_period_ns 10.000
+}
+if {[info exists ::env(VIVADO_IMPL_MAX_THREADS)] && [string is integer -strict $::env(VIVADO_IMPL_MAX_THREADS)] && $::env(VIVADO_IMPL_MAX_THREADS) > 0} {
+    set_param general.maxThreads $::env(VIVADO_IMPL_MAX_THREADS)
+} else {
+    set_param general.maxThreads 8
+}
 if {[info exists ::env(VIVADO_IMPL_DIRECTIVE)] && [string length $::env(VIVADO_IMPL_DIRECTIVE)] > 0} {
     set impl_directive $::env(VIVADO_IMPL_DIRECTIVE)
 } else {
@@ -266,18 +297,28 @@ set rtl_files [list \
     "rtl/common/saturate_int8.v" \
     "rtl/common/requant_activation_core.v" \
     "rtl/cnn/requant_activation_unit.v" \
+    "rtl/cnn/requant_activation_vector4.v" \
+    "rtl/cnn/requant_activation_stream4.v" \
     "rtl/cnn/requant_activation_pipeline.v" \
     "rtl/cnn/requant_product_pipeline.v" \
     "rtl/cnn/systolic_pe.v" \
     "rtl/cnn/pw_systolic_array_8x8.v" \
+    "rtl/cnn/pw_direct_8x8_dsp.v" \
+    "rtl/cnn/pw_direct_8x8_dsp_rowbank.v" \
+    "rtl/cnn/unified64_tile_engine_experiment.v" \
+    "rtl/cnn/unified64_shared_compute_array.v" \
     "rtl/cnn/dw_line_buffer.v" \
     "rtl/cnn/dw_mac_lanes.v" \
     "rtl/cnn/dw_tile_buffer_bram.v" \
     "rtl/cnn/ds_input_tile_buffer_bram.v" \
     "rtl/cnn/pw_weight_buffer_bram.v" \
     "rtl/cnn/dw_tile_fusion_engine_new.v" \
+    "rtl/cnn/dw_tile_fusion_engine_vector4.v" \
     "rtl/cnn/ds_block_tile_engine_new.v" \
+    "rtl/cnn/ds_persistent_pw_row_feed.v" \
     "rtl/cnn/conv3x3_stem_engine_new.v" \
+    "rtl/cnn/stem_weight_store_packed64.v" \
+    "rtl/cnn/stem_unified64_streaming.v" \
     "rtl/cnn/gap_unit_new.v" \
     "rtl/cnn/fc_unit_new.v" \
     "rtl/cnn/tile_scheduler.v" \
@@ -307,7 +348,11 @@ if {[run_stage read_xdc [list read_xdc $constraint_file]]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" $stage_status(read_xdc) [array get stage_status]
 }
 
-if {[run_stage synth_design [list synth_design -top $top_name -part $part_name -flatten_hierarchy none -mode out_of_context -directive RuntimeOptimized]]} {
+set synth_command [list synth_design -top $top_name -part $part_name -flatten_hierarchy none -mode out_of_context -directive RuntimeOptimized]
+if {[info exists ::env(VIVADO_IMPL_SYNTH_GENERIC)] && [string length $::env(VIVADO_IMPL_SYNTH_GENERIC)] > 0} {
+    lappend synth_command -generic $::env(VIVADO_IMPL_SYNTH_GENERIC)
+}
+if {[run_stage synth_design $synth_command]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_SYNTHESIS" $stage_status(synth_design) [array get stage_status]
 }
 
@@ -338,7 +383,7 @@ if {$clk_count != 1} {
     if {[llength $clk_ports] != 1} {
         fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" "Expected exactly one top-level clk port after synthesis, found [llength $clk_ports]." [array get stage_status]
     }
-    if {[run_stage create_clock_post_synth [list create_clock -name clk -period 10.000 $clk_ports]]} {
+    if {[run_stage create_clock_post_synth [list create_clock -name clk -period $clock_period_ns $clk_ports]]} {
         fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" $stage_status(create_clock_post_synth) [array get stage_status]
     }
     set clk_objects [get_clocks -quiet clk]
@@ -350,8 +395,8 @@ if {$clk_count != 1} {
 }
 set clk_period [get_property PERIOD [lindex $clk_objects 0]]
 set stage_status(clock_period_ns) $clk_period
-if {![string is double -strict $clk_period] || abs($clk_period - 10.0) > 0.0001} {
-    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" "Clock clk period is '$clk_period' ns; expected 10.000 ns." [array get stage_status]
+if {![string is double -strict $clk_period] || ![string is double -strict $clock_period_ns] || abs($clk_period - $clock_period_ns) > 0.0001} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" "Clock clk period is '$clk_period' ns; expected $clock_period_ns ns." [array get stage_status]
 }
 
 set timing_property ""

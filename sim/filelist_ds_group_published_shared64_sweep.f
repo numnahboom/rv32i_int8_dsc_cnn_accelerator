@@ -1,0 +1,6 @@
+rtl/cnn/systolic_pe.v
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/pw_direct_8x8_dsp_rowbank.v
+rtl/cnn/unified64_shared_compute_array.v
+rtl/cnn/ds_group_published_shared64_sweep.v
+sim/tb_ds_group_published_shared64_sweep.v

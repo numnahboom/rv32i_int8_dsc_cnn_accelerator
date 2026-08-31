@@ -17,10 +17,22 @@ module feature_sram_pingpong #(
     input  wire [ADDR_WIDTH-1:0]        input_rd_addr,
     output wire                         input_rd_valid,
     output wire signed [DATA_WIDTH-1:0] input_rd_data,
+    input  wire                         input_rd_word_en,
+    input  wire [ADDR_WIDTH-1:0]        input_rd_word_addr,
+    output wire                         input_rd_word_valid,
+    output wire [31:0]                  input_rd_word_data,
 
     input  wire                         output_wr_en,
     input  wire [ADDR_WIDTH-1:0]        output_wr_addr,
     input  wire signed [DATA_WIDTH-1:0] output_wr_data,
+
+    // Optional aligned four-byte output transaction.  The address is a byte
+    // address; the bank owns the low-two-bit lane decode.  Scalar output and
+    // host accesses retain their original interfaces and arbitration.
+    input  wire                         output_wr_word_en,
+    input  wire [ADDR_WIDTH-1:0]        output_wr_word_addr,
+    input  wire [31:0]                  output_wr_word_data,
+    input  wire [3:0]                   output_wr_word_be,
 
     input  wire                         host_wr_en,
     input  wire                         host_bank_sel,
@@ -35,25 +47,45 @@ module feature_sram_pingpong #(
     reg host_rd_bank_d;
     reg input_rd_active_d;
     reg host_rd_active_d;
+    reg input_rd_word_bank_d;
+    reg input_rd_word_active_d;
 
     wire bank0_wr_en;
     wire [ADDR_WIDTH-1:0] bank0_wr_addr;
     wire signed [DATA_WIDTH-1:0] bank0_wr_data;
+    wire bank0_wr_word_en;
+    wire [ADDR_WIDTH-1:0] bank0_wr_word_addr;
+    wire [31:0] bank0_wr_word_data;
+    wire [3:0] bank0_wr_word_be;
     wire bank0_rd_en;
     wire [ADDR_WIDTH-1:0] bank0_rd_addr;
     wire bank0_rd_valid;
     wire signed [DATA_WIDTH-1:0] bank0_rd_data;
+    wire bank0_rd_word_en;
+    wire [ADDR_WIDTH-1:0] bank0_rd_word_addr;
+    wire bank0_rd_word_valid;
+    wire [31:0] bank0_rd_word_data;
 
     wire bank1_wr_en;
     wire [ADDR_WIDTH-1:0] bank1_wr_addr;
     wire signed [DATA_WIDTH-1:0] bank1_wr_data;
+    wire bank1_wr_word_en;
+    wire [ADDR_WIDTH-1:0] bank1_wr_word_addr;
+    wire [31:0] bank1_wr_word_data;
+    wire [3:0] bank1_wr_word_be;
     wire bank1_rd_en;
     wire [ADDR_WIDTH-1:0] bank1_rd_addr;
     wire bank1_rd_valid;
     wire signed [DATA_WIDTH-1:0] bank1_rd_data;
+    wire bank1_rd_word_en;
+    wire [ADDR_WIDTH-1:0] bank1_rd_word_addr;
+    wire bank1_rd_word_valid;
+    wire [31:0] bank1_rd_word_data;
 
     wire logical_wr_bank;
     wire logical_rd_bank;
+    wire output_wr_word_en_i = (output_wr_word_en === 1'b1);
+    wire input_rd_word_en_i = (input_rd_word_en === 1'b1);
 
     assign input_bank_sel = active_input_bank;
     assign output_bank_sel = ~active_input_bank;
@@ -62,25 +94,46 @@ module feature_sram_pingpong #(
     assign input_rd_valid = input_rd_active_d &&
                             ((input_rd_bank_d == 1'b0) ? bank0_rd_valid : bank1_rd_valid);
     assign input_rd_data = (input_rd_bank_d == 1'b0) ? bank0_rd_data : bank1_rd_data;
+    assign input_rd_word_valid = input_rd_word_active_d &&
+        ((input_rd_word_bank_d == 1'b0) ? bank0_rd_word_valid : bank1_rd_word_valid);
+    assign input_rd_word_data = (input_rd_word_bank_d == 1'b0) ? bank0_rd_word_data : bank1_rd_word_data;
     assign host_rd_valid = host_rd_active_d &&
                            ((host_rd_bank_d == 1'b0) ? bank0_rd_valid : bank1_rd_valid);
     assign host_rdata = (host_rd_bank_d == 1'b0) ? bank0_rd_data : bank1_rd_data;
 
     assign bank0_wr_en = (host_wr_en && !host_bank_sel) ||
-                         (output_wr_en && !logical_wr_bank && !(host_wr_en && !host_bank_sel));
+                         (output_wr_en && !logical_wr_bank && !(host_wr_en && !host_bank_sel) &&
+                          !(output_wr_word_en_i && !logical_wr_bank));
     assign bank0_wr_addr = (host_wr_en && !host_bank_sel) ? host_addr : output_wr_addr;
     assign bank0_wr_data = (host_wr_en && !host_bank_sel) ? host_wdata : output_wr_data;
+    assign bank0_wr_word_en = output_wr_word_en_i && !logical_wr_bank &&
+                              !(host_wr_en && !host_bank_sel);
+    assign bank0_wr_word_addr = output_wr_word_addr;
+    assign bank0_wr_word_data = output_wr_word_data;
+    assign bank0_wr_word_be = output_wr_word_be;
     assign bank1_wr_en = (host_wr_en && host_bank_sel) ||
-                         (output_wr_en && logical_wr_bank && !(host_wr_en && host_bank_sel));
+                         (output_wr_en && logical_wr_bank && !(host_wr_en && host_bank_sel) &&
+                          !(output_wr_word_en_i && logical_wr_bank));
     assign bank1_wr_addr = (host_wr_en && host_bank_sel) ? host_addr : output_wr_addr;
     assign bank1_wr_data = (host_wr_en && host_bank_sel) ? host_wdata : output_wr_data;
+    assign bank1_wr_word_en = output_wr_word_en_i && logical_wr_bank &&
+                              !(host_wr_en && host_bank_sel);
+    assign bank1_wr_word_addr = output_wr_word_addr;
+    assign bank1_wr_word_data = output_wr_word_data;
+    assign bank1_wr_word_be = output_wr_word_be;
 
     assign bank0_rd_en = (host_rd_en && !host_bank_sel) ||
                          (input_rd_en && !logical_rd_bank && !(host_rd_en && !host_bank_sel));
     assign bank0_rd_addr = (host_rd_en && !host_bank_sel) ? host_addr : input_rd_addr;
+    assign bank0_rd_word_en = input_rd_word_en_i && !logical_rd_bank &&
+                              !(host_rd_en && !host_bank_sel);
+    assign bank0_rd_word_addr = input_rd_word_addr;
     assign bank1_rd_en = (host_rd_en && host_bank_sel) ||
                          (input_rd_en && logical_rd_bank && !(host_rd_en && host_bank_sel));
     assign bank1_rd_addr = (host_rd_en && host_bank_sel) ? host_addr : input_rd_addr;
+    assign bank1_rd_word_en = input_rd_word_en_i && logical_rd_bank &&
+                              !(host_rd_en && host_bank_sel);
+    assign bank1_rd_word_addr = input_rd_word_addr;
 
     feature_sram_bank #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -91,10 +144,18 @@ module feature_sram_pingpong #(
         .wr_en(bank0_wr_en),
         .wr_addr(bank0_wr_addr),
         .wr_data(bank0_wr_data),
+        .wr_word_en(bank0_wr_word_en),
+        .wr_word_addr(bank0_wr_word_addr),
+        .wr_word_data(bank0_wr_word_data),
+        .wr_word_be(bank0_wr_word_be),
         .rd_en(bank0_rd_en),
         .rd_addr(bank0_rd_addr),
         .rd_valid(bank0_rd_valid),
-        .rd_data(bank0_rd_data)
+        .rd_data(bank0_rd_data),
+        .rd_word_en(bank0_rd_word_en),
+        .rd_word_addr(bank0_rd_word_addr),
+        .rd_word_valid(bank0_rd_word_valid),
+        .rd_word_data(bank0_rd_word_data)
     );
 
     feature_sram_bank #(
@@ -106,10 +167,18 @@ module feature_sram_pingpong #(
         .wr_en(bank1_wr_en),
         .wr_addr(bank1_wr_addr),
         .wr_data(bank1_wr_data),
+        .wr_word_en(bank1_wr_word_en),
+        .wr_word_addr(bank1_wr_word_addr),
+        .wr_word_data(bank1_wr_word_data),
+        .wr_word_be(bank1_wr_word_be),
         .rd_en(bank1_rd_en),
         .rd_addr(bank1_rd_addr),
         .rd_valid(bank1_rd_valid),
-        .rd_data(bank1_rd_data)
+        .rd_data(bank1_rd_data),
+        .rd_word_en(bank1_rd_word_en),
+        .rd_word_addr(bank1_rd_word_addr),
+        .rd_word_valid(bank1_rd_word_valid),
+        .rd_word_data(bank1_rd_word_data)
     );
 
     always @(posedge clk) begin
@@ -119,6 +188,8 @@ module feature_sram_pingpong #(
             host_rd_bank_d <= 1'b0;
             input_rd_active_d <= 1'b0;
             host_rd_active_d <= 1'b0;
+            input_rd_word_bank_d <= 1'b0;
+            input_rd_word_active_d <= 1'b0;
         end else begin
             if (reset_to_a) begin
                 active_input_bank <= 1'b0;
@@ -130,6 +201,8 @@ module feature_sram_pingpong #(
             host_rd_bank_d <= host_bank_sel;
             input_rd_active_d <= input_rd_en;
             host_rd_active_d <= host_rd_en;
+            input_rd_word_bank_d <= logical_rd_bank;
+            input_rd_word_active_d <= input_rd_word_en_i;
         end
     end
 endmodule

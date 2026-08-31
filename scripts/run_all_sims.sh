@@ -8,6 +8,9 @@ TESTS=(
   tb_requant_activation_unit
   tb_requant_activation_pipeline
   tb_pw_systolic_array_8x8
+  tb_pw_systolic_array_8x8_backpressure
+  tb_pw_systolic_array_8x8_partial_k
+  tb_requant_activation_vector4
   tb_dw_line_buffer
   tb_dw_mac_lanes
   tb_dw_tile_fusion_engine
@@ -21,6 +24,8 @@ TESTS=(
   tb_fc_unit
   tb_tile_scheduler
   tb_feature_sram_bank
+  tb_feature_sram_bank_word
+  tb_feature_sram_bank_word_read
   tb_feature_sram_pingpong
   tb_cnn_top
   tb_cnn_top_ctrl_bounds

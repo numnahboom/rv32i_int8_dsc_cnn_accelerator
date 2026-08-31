@@ -1,0 +1,2 @@
+rtl/cnn/ds_persistent_feed_contract_bram.v
+sim/tb_ds_persistent_feed_contract_bram.v

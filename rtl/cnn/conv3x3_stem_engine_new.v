@@ -18,6 +18,9 @@ module conv3x3_stem_engine_new (
     input  wire [3:0]         cfg_target,
     input  wire [15:0]        cfg_index,
     input  wire [31:0]        cfg_data,
+    input  wire               cfg_vec4_wr_en,
+    input  wire [15:0]        cfg_vec4_index,
+    input  wire [31:0]        cfg_vec4_data,
 
     input  wire               start,
     output reg                busy,
@@ -41,26 +44,51 @@ module conv3x3_stem_engine_new (
     localparam CFG_MUL       = 4'd3;
     localparam CFG_SHIFT     = 4'd4;
 
-    localparam ST_IDLE       = 3'd0;
-    localparam ST_MAC        = 3'd1;
-    // Register the accumulator+bias sum before entering the wide DSP product.
-    // This keeps the bias-memory/CARRY4 cone out of the multiplier input path.
-    localparam ST_RQ_SUM     = 3'd2;
-    localparam ST_RQ_PRODUCT  = 3'd3;
-    localparam ST_RQ_SHIFT    = 3'd4;
-    localparam ST_RQ_WRITE    = 3'd5;
-    localparam ST_DONE        = 3'd6;
-    localparam ST_ERROR       = 3'd7;
+    localparam ST_IDLE       = 4'd0;
+    localparam ST_MAC        = 4'd1;
+    // Capture the MAC result and its independent bias/parameters before
+    // issuing the shared, registered-input requantizer.  The unit itself
+    // forms the signed 33-bit accumulator+bias sum; keeping these operands
+    // separate avoids truncating that sum at the Stem boundary.
+    localparam ST_RQ_SUM     = 4'd2;
+    localparam ST_RQ_ISSUE   = 4'd3;
+    localparam ST_RQ_DRAIN   = 4'd4;
+    localparam ST_DONE       = 4'd5;
+    localparam ST_ERROR      = 4'd6;
+    // Register the three-product sum before the carry-save compressor.  This
+    // removes the operand/multiplier/product adder cone from the accumulator
+    // register's timing path while retaining one MAC tap per ST_MAC cycle.
+    localparam ST_CSA_DRAIN  = 4'd7;
+    localparam ST_CSA_DRAIN2 = 4'd9;
+    // Read the distributed-RAM operands in a separate cycle.  This keeps the
+    // high-fanout cursor/address net out of the accumulator's MAC adder path.
+    // First read is issued here.  Subsequent reads are issued from ST_MAC
+    // while the preceding registered operand is consumed, so the tap stream
+    // has II=1 after the one-cycle fill.
+    localparam ST_OPERAND     = 4'd8;
 
+    // The three byte positions of each input/weight triplet are independent
+    // synchronous-read banks.  Cursors are in triplet words (not byte
+    // addresses), avoiding a dynamic divide in the timing-critical read
+    // address path.  The explicit output registers below also make this
+    // implementation portable to inferred RAM/LUTRAM and XPM replacements.
     (* ram_style = "distributed" *)
-    reg signed [7:0] input_mem [0:299];
+    reg signed [7:0] input_mem_lane0 [0:99];
     (* ram_style = "distributed" *)
-    reg signed [7:0] weight_mem [0:431];
+    reg signed [7:0] input_mem_lane1 [0:99];
+    (* ram_style = "distributed" *)
+    reg signed [7:0] input_mem_lane2 [0:99];
+    (* ram_style = "distributed" *)
+    reg signed [7:0] weight_mem_lane0 [0:143];
+    (* ram_style = "distributed" *)
+    reg signed [7:0] weight_mem_lane1 [0:143];
+    (* ram_style = "distributed" *)
+    reg signed [7:0] weight_mem_lane2 [0:143];
     reg signed [31:0] bias_mem [0:15];
     reg signed [31:0] multiplier_mem [0:15];
     reg [5:0] shift_mem [0:15];
 
-    reg [2:0] state;
+    reg [3:0] state;
     reg [3:0] out_h_reg;
     reg [3:0] out_w_reg;
     reg signed [31:0] output_zero_point_reg;
@@ -72,117 +100,129 @@ module conv3x3_stem_engine_new (
     reg [3:0] out_x_idx;
     reg [1:0] kernel_y_idx;
     reg [1:0] kernel_x_idx;
-    // Address cursors are registered so the distributed-RAM read and three
-    // MACs do not depend on the out/kernel index arithmetic in the same
-    // cycle.  input_pixel_base remains at the top-left tap for the current
-    // output pixel; input_addr_cursor/weight_addr_cursor walk the 3x3 taps.
+    // Registered triplet-word cursors.  input_pixel_base remains at the
+    // top-left triplet for the current output pixel; input_addr_cursor and
+    // weight_addr_cursor walk input and weight triplets respectively.
     reg [8:0] input_pixel_base;
     reg [8:0] input_addr_cursor;
     reg [8:0] weight_addr_cursor;
-    reg signed [31:0] acc_reg;
-    reg signed [63:0] rq_sum_reg;
-    reg signed [63:0] rq_product_reg;
-    reg signed [63:0] rq_shifted_reg;
+    // Carry-save accumulator for the nine tap sums.  The two registers
+    // encode the exact two's-complement value as
+    //   acc_csa_sum_reg + acc_csa_carry_reg
+    // where carry_reg[0] is always zero.  Keeping the carry shifted by one
+    // bit makes every MAC update a local 3:2 compression (no carry chain).
+    // The binary value is reconstructed only at the requant handoff.
+    reg [31:0] acc_csa_sum_reg;
+    reg [31:0] acc_csa_carry_reg;
+    reg signed [17:0] product_sum_acc_reg;
+    reg               product_sum_valid_q;
+    // Product registers isolate the 8x8 operand multiply network from the
+    // three-product adder.  The latter is then registered before entering
+    // the CSA, leaving each timing arc to one arithmetic stage.
+    reg signed [15:0] product_value_0_acc_reg;
+    reg signed [15:0] product_value_1_acc_reg;
+    reg signed [15:0] product_value_2_acc_reg;
+    reg               product_stage_valid_q;
+    // Synchronous-read output registers and their valid/coordinate tag.
+    reg signed [7:0] operand_act_0_q;
+    reg signed [7:0] operand_act_1_q;
+    reg signed [7:0] operand_act_2_q;
+    reg signed [7:0] operand_weight_0_q;
+    reg signed [7:0] operand_weight_1_q;
+    reg signed [7:0] operand_weight_2_q;
+    reg              operand_valid_q;
+    reg              operand_last_q;
+    reg [5:0]        operand_pixel_q;
+    reg [3:0]        operand_channel_q;
+    reg signed [31:0] rq_acc_reg;
+    reg signed [31:0] rq_bias_reg;
+    reg signed [31:0] rq_multiplier_reg;
     reg [5:0] rq_shift_reg;
     reg signed [31:0] rq_zero_point_reg;
     reg signed [31:0] rq_activation_min_reg;
     reg signed [31:0] rq_activation_max_reg;
-    reg [5:0] rq_pixel_idx;
-    reg [3:0] rq_channel_idx;
+    reg [5:0] rq_pixel_idx_reg;
+    reg [3:0] rq_channel_idx_reg;
+    reg [5:0] last_pixel_idx_reg;
 
-    wire signed [7:0] act_value_0;
-    wire signed [7:0] act_value_1;
-    wire signed [7:0] act_value_2;
-    wire signed [7:0] weight_value_0;
-    wire signed [7:0] weight_value_1;
-    wire signed [7:0] weight_value_2;
+    // The shared requantizer is throughput-one and is never backpressured in
+    // this engine.  A ten-entry tag pipe follows valid_in exactly, preserving
+    // pixel/channel ordering while the next channel's MAC is already active.
+    wire rq_valid_in;
+    wire rq_unit_ready_in;
+    wire rq_ready_out;
+    wire rq_valid_out;
+    wire signed [7:0] rq_data_out;
+    reg [5:0] rq_tag_pixel [0:9];
+    reg [3:0] rq_tag_channel [0:9];
+
+    wire signed [7:0] act_value_0 = operand_act_0_q;
+    wire signed [7:0] act_value_1 = operand_act_1_q;
+    wire signed [7:0] act_value_2 = operand_act_2_q;
+    wire signed [7:0] weight_value_0 = operand_weight_0_q;
+    wire signed [7:0] weight_value_1 = operand_weight_1_q;
+    wire signed [7:0] weight_value_2 = operand_weight_2_q;
     wire signed [15:0] product_value_0;
     wire signed [15:0] product_value_1;
     wire signed [15:0] product_value_2;
     wire signed [17:0] product_sum;
-    wire signed [31:0] acc_next;
-    wire signed [63:0] acc_bias_s64;
-    wire signed [63:0] rq_product_next;
+    wire [31:0] product_sum_ext;
+    wire [31:0] product_sum_acc_ext;
+    wire signed [17:0] product_sum_from_regs;
+    wire [31:0] acc_csa_majority;
+    wire [31:0] acc_csa_sum_next;
+    wire [31:0] acc_csa_carry_next;
+    wire signed [31:0] acc_csa_exact;
     wire [8:0] row_wrap_increment;
 
     integer cfg_addr;
+    integer i;
 
     assign cfg_ready = !busy;
-    assign row_wrap_increment = 9'd30 -
-                                (({5'd0, out_w_reg} - 9'd1) * 9'd3);
-    assign act_value_0 = input_mem[input_addr_cursor];
-    assign act_value_1 = input_mem[input_addr_cursor + 9'd1];
-    assign act_value_2 = input_mem[input_addr_cursor + 9'd2];
-    assign weight_value_0 = weight_mem[weight_addr_cursor];
-    assign weight_value_1 = weight_mem[weight_addr_cursor + 9'd1];
-    assign weight_value_2 = weight_mem[weight_addr_cursor + 9'd2];
+    assign rq_valid_in = (state == ST_RQ_ISSUE) && rq_unit_ready_in;
+    // The output is consumed every cycle, so the elastic unit remains in its
+    // normal no-stall mode.  This also makes the overlap contract explicit.
+    assign rq_ready_out = 1'b1;
+    // In triplet words, a row is ten words wide for the 10x10 stem input.
+    assign row_wrap_increment = 9'd10 - ({5'd0, out_w_reg} - 9'd1);
     assign product_value_0 = act_value_0 * weight_value_0;
     assign product_value_1 = act_value_1 * weight_value_1;
     assign product_value_2 = act_value_2 * weight_value_2;
     assign product_sum = {{2{product_value_0[15]}}, product_value_0} +
                          {{2{product_value_1[15]}}, product_value_1} +
                          {{2{product_value_2[15]}}, product_value_2};
-    assign acc_next = acc_reg + {{14{product_sum[17]}}, product_sum};
-    assign acc_bias_s64 = {{32{acc_reg[31]}}, acc_reg} +
-                          {{32{bias_mem[channel_idx][31]}}, bias_mem[channel_idx]};
-    assign rq_product_next = rq_sum_reg *
-                              {{32{multiplier_mem[channel_idx][31]}}, multiplier_mem[channel_idx]};
-
-    function signed [63:0] round_shift_s64;
-        input signed [63:0] value;
-        input [5:0] shift_amount;
-        reg signed [63:0] abs_value;
-        reg signed [63:0] rounded_abs;
-        reg signed [63:0] offset;
-        begin
-            if (shift_amount == 6'd0) begin
-                round_shift_s64 = value;
-            end else begin
-                offset = 64'sd1 <<< (shift_amount - 6'd1);
-                if (value >= 64'sd0) begin
-                    round_shift_s64 = (value + offset) >>> shift_amount;
-                end else begin
-                    abs_value = -value;
-                    rounded_abs = (abs_value + offset) >>> shift_amount;
-                    round_shift_s64 = -rounded_abs;
-                end
-            end
-        end
-    endfunction
-
-    function signed [7:0] requant_stem_write;
-        input signed [63:0] shifted_value;
-        input signed [31:0] zero_point;
-        input signed [31:0] act_min;
-        input signed [31:0] act_max;
-        reg signed [63:0] x;
-        reg signed [63:0] act_min_ext;
-        reg signed [63:0] act_max_ext;
-        begin
-            x = shifted_value + {{32{zero_point[31]}}, zero_point};
-            if (x > 64'sd127) begin
-                x = 64'sd127;
-            end else if (x < -64'sd128) begin
-                x = -64'sd128;
-            end
-            act_min_ext = {{32{act_min[31]}}, act_min};
-            act_max_ext = {{32{act_max[31]}}, act_max};
-            if (x < act_min_ext) begin
-                x = act_min_ext;
-            end else if (x > act_max_ext) begin
-                x = act_max_ext;
-            end
-            requant_stem_write = x[7:0];
-        end
-    endfunction
-
-    function signed [63:0] arithmetic_shift_s64;
-        input signed [63:0] value;
-        input [5:0] shift_amount;
-        begin
-            arithmetic_shift_s64 = value >>> shift_amount;
-        end
-    endfunction
+    // All nine signed 8x8 products fit comfortably in 32 bits.  Explicit
+    // sign extension is important here: the CSA is bitwise and does not
+    // carry signedness metadata through its compressor.
+    assign product_sum_ext = {{14{product_sum[17]}}, product_sum};
+    assign product_sum_acc_ext = {{14{product_sum_acc_reg[17]}},
+                                  product_sum_acc_reg};
+    assign product_sum_from_regs =
+        {{2{product_value_0_acc_reg[15]}}, product_value_0_acc_reg} +
+        {{2{product_value_1_acc_reg[15]}}, product_value_1_acc_reg} +
+        {{2{product_value_2_acc_reg[15]}}, product_value_2_acc_reg};
+    assign acc_csa_majority = (acc_csa_sum_reg & acc_csa_carry_reg) |
+                              (acc_csa_sum_reg & product_sum_acc_ext) |
+                              (acc_csa_carry_reg & product_sum_acc_ext);
+    assign acc_csa_sum_next = acc_csa_sum_reg ^ acc_csa_carry_reg ^
+                              product_sum_acc_ext;
+    // Bit zero is the implicit zero carry-in.  A top carry is discarded as
+    // normal 32-bit two's-complement modular arithmetic; the stem's maximum
+    // nine-tap sum is only +/-435,483, so no mathematical overflow occurs.
+    assign acc_csa_carry_next = {acc_csa_majority[30:0], 1'b0};
+    assign acc_csa_exact = $signed(acc_csa_sum_reg) +
+                           $signed(acc_csa_carry_reg);
+    requant_activation_unit u_stem_requant (
+        .clk(clk), .rst_n(rst_n),
+        .valid_in(rq_valid_in), .ready_in(rq_unit_ready_in),
+        .acc_int32(rq_acc_reg), .bias_int32(rq_bias_reg),
+        .multiplier_int32(rq_multiplier_reg), .shift(rq_shift_reg),
+        .output_zero_point_int32(rq_zero_point_reg),
+        .activation_min_int32(rq_activation_min_reg),
+        .activation_max_int32(rq_activation_max_reg),
+        .ready_out(rq_ready_out), .valid_out(rq_valid_out),
+        .output_int8(rq_data_out)
+    );
 
     always @(posedge clk) begin
         if (cfg_wr_en && cfg_ready) begin
@@ -190,12 +230,20 @@ module conv3x3_stem_engine_new (
             case (cfg_target)
                 CFG_INPUT: begin
                     if (cfg_addr < 300) begin
-                        input_mem[cfg_addr] <= cfg_data[7:0];
+                        case (cfg_addr % 3)
+                            0: input_mem_lane0[cfg_addr / 3] <= cfg_data[7:0];
+                            1: input_mem_lane1[cfg_addr / 3] <= cfg_data[7:0];
+                            default: input_mem_lane2[cfg_addr / 3] <= cfg_data[7:0];
+                        endcase
                     end
                 end
                 CFG_WEIGHT: begin
                     if (cfg_addr < 432) begin
-                        weight_mem[cfg_addr] <= cfg_data[7:0];
+                        case (cfg_addr % 3)
+                            0: weight_mem_lane0[cfg_addr / 3] <= cfg_data[7:0];
+                            1: weight_mem_lane1[cfg_addr / 3] <= cfg_data[7:0];
+                            default: weight_mem_lane2[cfg_addr / 3] <= cfg_data[7:0];
+                        endcase
                     end
                 end
                 CFG_BIAS: begin
@@ -216,6 +264,33 @@ module conv3x3_stem_engine_new (
                 default: begin
                 end
             endcase
+        end
+        if (cfg_vec4_wr_en && cfg_ready) begin
+            if (cfg_vec4_index < 16'd297) begin
+                // A four-byte write can cross up to four banks.  The vector
+                // loader uses byte-linear indices, so spell out the three
+                // possible starting lanes to preserve that ABI exactly.
+                case (cfg_vec4_index % 3)
+                    0: begin
+                        input_mem_lane0[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
+                        input_mem_lane1[cfg_vec4_index / 3] <= cfg_vec4_data[15:8];
+                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[23:16];
+                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
+                    end
+                    1: begin
+                        input_mem_lane1[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
+                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[15:8];
+                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[23:16];
+                        input_mem_lane1[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
+                    end
+                    default: begin
+                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
+                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[15:8];
+                        input_mem_lane1[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[23:16];
+                        input_mem_lane2[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
+                    end
+                endcase
+            end
         end
     end
 
@@ -239,16 +314,38 @@ module conv3x3_stem_engine_new (
             input_pixel_base <= 9'd0;
             input_addr_cursor <= 9'd0;
             weight_addr_cursor <= 9'd0;
-            acc_reg <= 32'sd0;
-            rq_sum_reg <= 64'sd0;
-            rq_product_reg <= 64'sd0;
-            rq_shifted_reg <= 64'sd0;
+            acc_csa_sum_reg <= 32'd0;
+            acc_csa_carry_reg <= 32'd0;
+            product_sum_acc_reg <= 18'sd0;
+            product_sum_valid_q <= 1'b0;
+            product_value_0_acc_reg <= 16'sd0;
+            product_value_1_acc_reg <= 16'sd0;
+            product_value_2_acc_reg <= 16'sd0;
+            product_stage_valid_q <= 1'b0;
+            operand_act_0_q <= 8'sd0;
+            operand_act_1_q <= 8'sd0;
+            operand_act_2_q <= 8'sd0;
+            operand_weight_0_q <= 8'sd0;
+            operand_weight_1_q <= 8'sd0;
+            operand_weight_2_q <= 8'sd0;
+            operand_valid_q <= 1'b0;
+            operand_last_q <= 1'b0;
+            operand_pixel_q <= 6'd0;
+            operand_channel_q <= 4'd0;
+            rq_acc_reg <= 32'sd0;
+            rq_bias_reg <= 32'sd0;
+            rq_multiplier_reg <= 32'sd0;
             rq_shift_reg <= 6'd0;
             rq_zero_point_reg <= 32'sd0;
             rq_activation_min_reg <= -32'sd128;
             rq_activation_max_reg <= 32'sd127;
-            rq_pixel_idx <= 6'd0;
-            rq_channel_idx <= 4'd0;
+            rq_pixel_idx_reg <= 6'd0;
+            rq_channel_idx_reg <= 4'd0;
+            last_pixel_idx_reg <= 6'd0;
+            for (i = 0; i < 10; i = i + 1) begin
+                rq_tag_pixel[i] <= 6'd0;
+                rq_tag_channel[i] <= 4'd0;
+            end
             out_wr_en <= 1'b0;
             out_wr_pixel_idx <= 6'd0;
             out_wr_channel_idx <= 4'd0;
@@ -256,6 +353,29 @@ module conv3x3_stem_engine_new (
         end else begin
             done <= 1'b0;
             out_wr_en <= 1'b0;
+
+            // Unit latency is ten registered stages.  Shift tags in the
+            // same clocked process as the unit's valid pipeline.  Since the
+            // unit is always ready, bubbles need no valid tag bit: unit
+            // valid_out gates the write and stale tags are harmless.
+            for (i = 1; i < 10; i = i + 1) begin
+                rq_tag_pixel[i] <= rq_tag_pixel[i-1];
+                rq_tag_channel[i] <= rq_tag_channel[i-1];
+            end
+            if (rq_valid_in) begin
+                rq_tag_pixel[0] <= rq_pixel_idx_reg;
+                rq_tag_channel[0] <= rq_channel_idx_reg;
+            end
+
+            // Output writes are independent of the MAC FSM.  This is the
+            // actual overlap: the ten-stage unit drains while the next
+            // channel's nine MAC taps are being consumed.
+            if (rq_valid_out) begin
+                out_wr_en <= 1'b1;
+                out_wr_pixel_idx <= rq_tag_pixel[9];
+                out_wr_channel_idx <= rq_tag_channel[9];
+                out_wr_data_int8 <= rq_data_out;
+            end
             case (state)
                 ST_IDLE: begin
                     busy <= 1'b0;
@@ -282,80 +402,154 @@ module conv3x3_stem_engine_new (
                             input_pixel_base <= 9'd0;
                             input_addr_cursor <= 9'd0;
                             weight_addr_cursor <= 9'd0;
-                            acc_reg <= 32'sd0;
-                            state <= ST_MAC;
+                            acc_csa_sum_reg <= 32'd0;
+                            acc_csa_carry_reg <= 32'd0;
+                            product_sum_acc_reg <= 18'sd0;
+                            product_sum_valid_q <= 1'b0;
+                            product_value_0_acc_reg <= 16'sd0;
+                            product_value_1_acc_reg <= 16'sd0;
+                            product_value_2_acc_reg <= 16'sd0;
+                            product_stage_valid_q <= 1'b0;
+                            last_pixel_idx_reg <= (out_h * out_w) - 6'd1;
+                            operand_valid_q <= 1'b0;
+                            state <= ST_OPERAND;
                         end
                     end
                 end
 
+                ST_OPERAND: begin
+                    // Synchronous registered read.  This is the one-cycle
+                    // pipeline fill; ST_MAC consumes these operands and
+                    // issues the next address in the same clock edge.
+                    operand_act_0_q <= input_mem_lane0[input_addr_cursor];
+                    operand_act_1_q <= input_mem_lane1[input_addr_cursor];
+                    operand_act_2_q <= input_mem_lane2[input_addr_cursor];
+                    operand_weight_0_q <= weight_mem_lane0[weight_addr_cursor];
+                    operand_weight_1_q <= weight_mem_lane1[weight_addr_cursor];
+                    operand_weight_2_q <= weight_mem_lane2[weight_addr_cursor];
+                    operand_valid_q <= 1'b1;
+                    operand_last_q <= (kernel_y_idx == 2'd2) &&
+                                      (kernel_x_idx == 2'd2);
+                    operand_pixel_q <= pixel_idx;
+                    operand_channel_q <= channel_idx;
+                    state <= ST_MAC;
+                end
+
                 ST_MAC: begin
-                    // Keep the final MAC cycle limited to input/weight reads,
-                    // the three products, and the accumulator write.  The
-                    // wide requantization path runs in the next state.
-                    acc_reg <= acc_next;
-                    if ((kernel_y_idx == 2'd2) && (kernel_x_idx == 2'd2)) begin
-                        state <= ST_RQ_SUM;
+                    // Consume the registered operands.  The product/sum is
+                    // formed and accumulated once per tap; the operand
+                    // registers are refilled for the following tap in the
+                    // same edge, preserving one tap per cycle after fill.
+                    if (operand_valid_q) begin
+                        // The registered product sum is consumed one cycle
+                        // later.  The first tap fills this stage; subsequent
+                        // taps both consume and refill it (II=1).
+                        product_value_0_acc_reg <= product_value_0;
+                        product_value_1_acc_reg <= product_value_1;
+                        product_value_2_acc_reg <= product_value_2;
+                        product_stage_valid_q <= 1'b1;
+                        if (product_stage_valid_q) begin
+                            product_sum_acc_reg <= product_sum_from_regs;
+                            product_sum_valid_q <= 1'b1;
+                        end
+                        if (product_sum_valid_q) begin
+                            acc_csa_sum_reg <= acc_csa_sum_next;
+                            acc_csa_carry_reg <= acc_csa_carry_next;
+                        end
+                    end
+                    if (operand_last_q) begin
+                        operand_valid_q <= 1'b0;
+                        state <= ST_CSA_DRAIN;
                     end else begin
                         if (kernel_x_idx == 2'd2) begin
                             kernel_x_idx <= 2'd0;
                             kernel_y_idx <= kernel_y_idx + 2'd1;
-                            input_addr_cursor <= input_addr_cursor + 9'd24;
+                            input_addr_cursor <= input_addr_cursor + 9'd8;
+                            operand_act_0_q <= input_mem_lane0[input_addr_cursor + 9'd8];
+                            operand_act_1_q <= input_mem_lane1[input_addr_cursor + 9'd8];
+                            operand_act_2_q <= input_mem_lane2[input_addr_cursor + 9'd8];
                         end else begin
                             kernel_x_idx <= kernel_x_idx + 2'd1;
-                            input_addr_cursor <= input_addr_cursor + 9'd3;
+                            input_addr_cursor <= input_addr_cursor + 9'd1;
+                            operand_act_0_q <= input_mem_lane0[input_addr_cursor + 9'd1];
+                            operand_act_1_q <= input_mem_lane1[input_addr_cursor + 9'd1];
+                            operand_act_2_q <= input_mem_lane2[input_addr_cursor + 9'd1];
                         end
-                        weight_addr_cursor <= weight_addr_cursor + 9'd3;
+                        weight_addr_cursor <= weight_addr_cursor + 9'd1;
+                        operand_weight_0_q <= weight_mem_lane0[weight_addr_cursor + 9'd1];
+                        operand_weight_1_q <= weight_mem_lane1[weight_addr_cursor + 9'd1];
+                        operand_weight_2_q <= weight_mem_lane2[weight_addr_cursor + 9'd1];
+                        operand_last_q <= (kernel_y_idx == 2'd2) &&
+                                          (kernel_x_idx == 2'd1);
+                        operand_pixel_q <= pixel_idx;
+                        operand_channel_q <= channel_idx;
                     end
                 end
 
-                ST_RQ_SUM: begin
-                    // acc_reg includes the final MAC cycle at this point.
-                    // Capture the full signed sum in a standalone register so
-                    // the following DSP multiply has a short, registered input.
-                    rq_sum_reg <= acc_bias_s64;
-                    state <= ST_RQ_PRODUCT;
+                ST_CSA_DRAIN: begin
+                    // Consume the ninth and final registered product before
+                    // reconstructing the exact accumulator in ST_RQ_SUM.
+                    if (product_sum_valid_q) begin
+                        acc_csa_sum_reg <= acc_csa_sum_next;
+                        acc_csa_carry_reg <= acc_csa_carry_next;
+                    end
+                    // The final tap is still in the product registers.  Form
+                    // and register its three-product sum while consuming the
+                    // preceding sum, then use ST_CSA_DRAIN2 for the final
+                    // carry-save update.
+                    if (product_stage_valid_q) begin
+                        product_sum_acc_reg <= product_sum_from_regs;
+                        product_sum_valid_q <= 1'b1;
+                        product_stage_valid_q <= 1'b0;
+                    end
+                    state <= ST_CSA_DRAIN2;
                 end
 
-                ST_RQ_PRODUCT: begin
-                    // The final MAC result is now stable in acc_reg. Lock the
-                    // complete signed-64 product and output context before
-                    // entering the round/shift stage.
-                    rq_product_reg <= rq_product_next;
+                ST_CSA_DRAIN2: begin
+                    if (product_sum_valid_q) begin
+                        acc_csa_sum_reg <= acc_csa_sum_next;
+                        acc_csa_carry_reg <= acc_csa_carry_next;
+                        product_sum_valid_q <= 1'b0;
+                    end
+                    state <= ST_RQ_SUM;
+                end
+
+                ST_RQ_SUM: begin
+                    // Capture accumulator and bias independently.  The
+                    // requant unit performs their signed 33-bit addition;
+                    // never pre-add/truncate the sum to 32 bits here.
+                    rq_acc_reg <= acc_csa_exact;
+                    rq_bias_reg <= bias_mem[channel_idx];
+                    rq_multiplier_reg <= multiplier_mem[channel_idx];
                     rq_shift_reg <= shift_mem[channel_idx];
                     rq_zero_point_reg <= output_zero_point_reg;
                     rq_activation_min_reg <= activation_min_reg;
                     rq_activation_max_reg <= activation_max_reg;
-                    rq_pixel_idx <= pixel_idx;
-                    rq_channel_idx <= channel_idx;
-                    state <= ST_RQ_SHIFT;
+                    rq_pixel_idx_reg <= operand_pixel_q;
+                    rq_channel_idx_reg <= operand_channel_q;
+                    state <= ST_RQ_ISSUE;
                 end
 
-                ST_RQ_SHIFT: begin
-                    // Only Q31 uses away-from-zero rounding. The configured
-                    // post-Q31 shift is an arithmetic, non-rounding shift.
-                    rq_shifted_reg <= arithmetic_shift_s64(
-                        round_shift_s64(rq_product_reg, 6'd31), rq_shift_reg);
-                    state <= ST_RQ_WRITE;
-                end
-
-                ST_RQ_WRITE: begin
-                    // Keep channel/pixel context locked through this write;
-                    // advance the MAC context only after the output pulse.
-                    out_wr_en <= 1'b1;
-                    out_wr_pixel_idx <= rq_pixel_idx;
-                    out_wr_channel_idx <= rq_channel_idx;
-                    out_wr_data_int8 <= requant_stem_write(rq_shifted_reg,
-                                                           rq_zero_point_reg,
-                                                           rq_activation_min_reg,
-                                                           rq_activation_max_reg);
+                ST_RQ_ISSUE: begin
+                    // valid_in is asserted combinationally in this state;
+                    // at this edge the unit accepts the captured operands.
                     kernel_y_idx <= 2'd0;
                     kernel_x_idx <= 2'd0;
-                    acc_reg <= 32'sd0;
-                    if (rq_channel_idx == 4'd15) begin
+                    acc_csa_sum_reg <= 32'd0;
+                    acc_csa_carry_reg <= 32'd0;
+                    product_sum_acc_reg <= 18'sd0;
+                    product_sum_valid_q <= 1'b0;
+                    product_value_0_acc_reg <= 16'sd0;
+                    product_value_1_acc_reg <= 16'sd0;
+                    product_value_2_acc_reg <= 16'sd0;
+                    product_stage_valid_q <= 1'b0;
+                    if (rq_channel_idx_reg == 4'd15) begin
                         channel_idx <= 4'd0;
                         if ((out_y_idx + 4'd1 >= out_h_reg) &&
                             (out_x_idx + 4'd1 >= out_w_reg)) begin
-                            state <= ST_DONE;
+                            // The final output is still inside the unit.
+                            // Drain by tag before dropping busy/done.
+                            state <= ST_RQ_DRAIN;
                         end else begin
                             pixel_idx <= pixel_idx + 6'd1;
                             if ((out_x_idx + 4'd1) >= out_w_reg) begin
@@ -365,17 +559,30 @@ module conv3x3_stem_engine_new (
                                 input_addr_cursor <= input_pixel_base + row_wrap_increment;
                             end else begin
                                 out_x_idx <= out_x_idx + 4'd1;
-                                input_pixel_base <= input_pixel_base + 9'd3;
-                                input_addr_cursor <= input_pixel_base + 9'd3;
+                                input_pixel_base <= input_pixel_base + 9'd1;
+                                input_addr_cursor <= input_pixel_base + 9'd1;
                             end
                             weight_addr_cursor <= 9'd0;
-                            state <= ST_MAC;
+                            state <= ST_OPERAND;
                         end
                     end else begin
                         channel_idx <= channel_idx + 4'd1;
                         input_addr_cursor <= input_pixel_base;
-                        weight_addr_cursor <= weight_addr_cursor + 9'd3;
-                        state <= ST_MAC;
+                        // The completed channel ended at tap group +8;
+                        // advance one group to the next channel's base.
+                        weight_addr_cursor <= weight_addr_cursor + 9'd1;
+                        state <= ST_OPERAND;
+                    end
+                end
+
+                ST_RQ_DRAIN: begin
+                    // The unit preserves issue order.  Waiting for the
+                    // final pixel/channel tag guarantees every preceding
+                    // output pulse has also been emitted.
+                    if (rq_valid_out &&
+                        (rq_tag_pixel[9] == last_pixel_idx_reg) &&
+                        (rq_tag_channel[9] == 4'd15)) begin
+                        state <= ST_DONE;
                     end
                 end
 

@@ -1,0 +1,4 @@
+rtl/cnn/feature_tile_pingpong_ctrl.v
+rtl/cnn/feature_tile_vector16_bank.v
+rtl/cnn/feature_tile_vector16_pingpong_shell.v
+sim/tb_feature_tile_vector16_pingpong_shell.v
