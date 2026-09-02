@@ -1,0 +1,3 @@
+rtl/cnn/edgembconv_hwacandidate_d4_dsp_pool.v
+rtl/cnn/edgembconv_hwacandidate_d4_composite_datapath.v
+sim/tb_edgembconv_hwacandidate_d4_composite_datapath.v

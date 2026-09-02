@@ -1,0 +1,1 @@
+rtl/cnn/edgembconv_hwacandidate_d4_block_shell.v
