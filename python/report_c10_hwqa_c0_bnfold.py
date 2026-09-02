@@ -12,6 +12,7 @@ import torch
 
 from c10_hwqa_v1 import CLASS_NAMES, evaluate_float, make_manifest, per_class, sha256_file
 from quantize_export import evaluate_exported_int8_model, run_exported_int8_model, run_exported_int8_model_batch
+from c0_bnfold_model import C0BNTrainNet
 from resnet20_hwqa import frozen_split, load_cifar10
 
 
@@ -25,11 +26,27 @@ def load_torch(path: Path) -> dict:
     return value
 
 
+def evaluate_bn_training_graph(checkpoint: Path, images: np.ndarray, labels: np.ndarray, batch_size: int) -> np.ndarray:
+    """Evaluate the unfused BN graph in eval mode on a real image batch."""
+    ckpt = load_torch(checkpoint)
+    model = C0BNTrainNet()
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    predictions = np.empty(labels.shape[0], dtype=np.int64)
+    with torch.inference_mode():
+        for start in range(0, labels.shape[0], max(1, batch_size)):
+            stop = min(start + max(1, batch_size), labels.shape[0])
+            x = torch.from_numpy(images[start:stop].transpose(0, 3, 1, 2)).float() * (1.0 / 127.5) - 1.0
+            predictions[start:stop] = model(x).argmax(1).numpy()
+    return predictions
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, default=Path(r"D:\Stuff\data\cifar-10-batches-py"))
     p.add_argument("--archive", type=Path, default=Path(r"D:\Stuff\data\cifar-10-python.tar.gz"))
     p.add_argument("--checkpoint", type=Path, default=Path("build/c0_bnfold_hwqa/c0_bnfold_folded_fp32.pt"))
+    p.add_argument("--training-checkpoint", type=Path, default=Path("build/c0_bnfold_hwqa/c0_bnfold_fp32.pt"))
     p.add_argument("--export", type=Path, default=Path("build/c0_bnfold_hwqa/c0_bnfold_export/c0_bnfold_int8.npz"))
     p.add_argument("--equivalence", type=Path, default=Path("build/c0_bnfold_hwqa/c0_bnfold_bn_equivalence.json"))
     p.add_argument("--out", type=Path, default=Path("docs/reports/c10_hwqa_c0_bnfold_report_20260902.md"))
@@ -45,8 +62,12 @@ def main() -> None:
     args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     tr, va = frozen_split(train_labels)
 
-    fp32_test_pred = evaluate_float(args.checkpoint, test_images, test_labels, args.batch_size)
-    fp32_val_pred = evaluate_float(args.checkpoint, train_images[va], train_labels[va], args.batch_size)
+    # Evaluate both graph forms independently: unfused BN training graph and
+    # BN-free folded graph.  Their predictions must match on both splits.
+    bn_test_pred = evaluate_bn_training_graph(args.training_checkpoint, test_images, test_labels, args.batch_size)
+    bn_val_pred = evaluate_bn_training_graph(args.training_checkpoint, train_images[va], train_labels[va], args.batch_size)
+    folded_test_pred = evaluate_float(args.checkpoint, test_images, test_labels, args.batch_size)
+    folded_val_pred = evaluate_float(args.checkpoint, train_images[va], train_labels[va], args.batch_size)
     with np.load(args.export, allow_pickle=True) as z:
         params = {k: z[k] for k in z.files}
     int8_test_pred, int8_test_correct = evaluate_exported_int8_model(test_images, test_labels, params, args.batch_size)
@@ -56,12 +77,16 @@ def main() -> None:
     if not np.array_equal(scalar_logits, batch_logits):
         raise RuntimeError("C0 BN-fold INT8 scalar/batch evaluator mismatch")
 
-    fp32_test_correct = int(np.sum(fp32_test_pred == test_labels))
-    fp32_val_correct = int(np.sum(fp32_val_pred == train_labels[va]))
+    bn_test_correct = int(np.sum(bn_test_pred == test_labels))
+    bn_val_correct = int(np.sum(bn_val_pred == train_labels[va]))
+    folded_test_correct = int(np.sum(folded_test_pred == test_labels))
+    folded_val_correct = int(np.sum(folded_val_pred == train_labels[va]))
+    if not np.array_equal(bn_test_pred, folded_test_pred) or not np.array_equal(bn_val_pred, folded_val_pred):
+        raise RuntimeError("BN training graph and folded FP32 graph prediction mismatch")
     total_test = len(test_labels); total_val = len(va)
-    fp32_test_acc = fp32_test_correct / total_test; int8_test_acc = int8_test_correct / total_test
-    fp32_val_acc = fp32_val_correct / total_val; int8_val_acc = int8_val_correct / total_val
-    ckpt = load_torch(args.checkpoint)
+    bn_test_acc = bn_test_correct / total_test; folded_test_acc = folded_test_correct / total_test; int8_test_acc = int8_test_correct / total_test
+    bn_val_acc = bn_val_correct / total_val; folded_val_acc = folded_val_correct / total_val; int8_val_acc = int8_val_correct / total_val
+    ckpt = load_torch(args.training_checkpoint)
     eq = json.loads(args.equivalence.read_text(encoding="utf-8")) if args.equivalence.exists() else {}
     history = ckpt.get("history", [])
     best = max(history, key=lambda row: (row["val_acc"], -row["epoch"])) if history else {"val_acc": float("nan"), "epoch": 0}
@@ -77,8 +102,8 @@ def main() -> None:
         "## Frozen protocol and artifact boundary",
         "",
         f"- Protocol manifest: `{args.manifest}`; official CIFAR-10 45k/5k frozen train/validation split and 10k test.",
-        f"- Training checkpoint: `{args.checkpoint}` (SHA-256 `{sha256_file(args.checkpoint)}`).",
-        f"- Folded FP32 checkpoint: `{args.checkpoint}`; deployment graph contains no BN.",
+        f"- BN training checkpoint: `{args.training_checkpoint}` (SHA-256 `{sha256_file(args.training_checkpoint)}`).",
+        f"- Folded FP32 checkpoint: `{args.checkpoint}` (SHA-256 `{sha256_file(args.checkpoint)}`); deployment graph contains no BN.",
         f"- INT8 export: `{args.export}` (SHA-256 `{sha256_file(args.export)}`).",
         f"- BN fold equivalence record: `{args.equivalence}`.",
         f"- Recipe: SGD/Nesterov, initial LR `{float(ckpt.get('lr', float('nan'))):g}`, cosine schedule, weight decay `{float(ckpt.get('weight_decay', float('nan'))):g}`, pad4+flip augmentation, `{int(ckpt.get('epochs', len(history)))}` epochs, seed `{ckpt.get('seed', 'unknown')}`.",
@@ -92,17 +117,17 @@ def main() -> None:
         "",
         f"- Completed epochs: `{len(history)}`; best validation FP32 top-1 `{100 * float(best['val_acc']):.2f}%` at epoch `{best['epoch']}`.",
         "",
-        "| Split | FP32 correct | INT8 correct | FP32 top-1 | INT8 top-1 | FP32→INT8 drop |",
+        "| Split | BN-training FP32 | Folded FP32 | INT8 | BN→fold delta | Folded→INT8 drop |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
-        f"| Frozen validation 5k | {fp32_val_correct} | {int8_val_correct} | {100*fp32_val_acc:.2f}% | {100*int8_val_acc:.2f}% | {(fp32_val_acc-int8_val_acc)*100:.3f} pp |",
-        f"| Official test 10k | {fp32_test_correct} | {int8_test_correct} | {100*fp32_test_acc:.2f}% | {100*int8_test_acc:.2f}% | {(fp32_test_acc-int8_test_acc)*100:.3f} pp |",
+        f"| Frozen validation 5k | {bn_val_correct} ({100*bn_val_acc:.2f}%) | {folded_val_correct} ({100*folded_val_acc:.2f}%) | {int8_val_correct} ({100*int8_val_acc:.2f}%) | {(bn_val_acc-folded_val_acc)*100:.3f} pp | {(folded_val_acc-int8_val_acc)*100:.3f} pp |",
+        f"| Official test 10k | {bn_test_correct} ({100*bn_test_acc:.2f}%) | {folded_test_correct} ({100*folded_test_acc:.2f}%) | {int8_test_correct} ({100*int8_test_acc:.2f}%) | {(bn_test_acc-folded_test_acc)*100:.3f} pp | {(folded_test_acc-int8_test_acc)*100:.3f} pp |",
         "",
         "## Official test per-class result",
         "",
         "| ID | Class | FP32 correct | FP32 acc | INT8 correct | INT8 acc |",
         "| ---: | --- | ---: | ---: | ---: | ---: |",
     ]
-    for frow, irow in zip(per_class(fp32_test_pred, test_labels), per_class(int8_test_pred, test_labels)):
+    for frow, irow in zip(per_class(folded_test_pred, test_labels), per_class(int8_test_pred, test_labels)):
         report.append(f"| {frow['class_id']} | {CLASS_NAMES[frow['class_id']]} | {frow['correct']} | {100*frow['accuracy']:.2f}% | {irow['correct']} | {100*irow['accuracy']:.2f}% |")
     report += [
         "",
@@ -119,8 +144,8 @@ def main() -> None:
         "## Relative quality versus retained C0",
         "",
         f"- Retained C0 official FP32 anchor: `{100*c0_fp32:.2f}%`; INT8 anchor: `{100*c0_int8:.2f}%` (read-only historical report values).",
-        f"- C0 BN-fold candidate official FP32 delta: `{(fp32_test_acc-c0_fp32)*100:+.2f} pp`; INT8 delta: `{(int8_test_acc-c0_int8)*100:+.2f} pp`.",
-        f"- Deployment quality gate (INT8 >=90%, FP32→INT8 drop <=0.5 pp): `{'PASS' if int8_test_acc >= 0.90 and (fp32_test_acc-int8_test_acc)*100 <= 0.5 else 'FAIL'}`.",
+        f"- C0 BN-fold candidate official folded FP32 delta: `{(folded_test_acc-c0_fp32)*100:+.2f} pp`; INT8 delta: `{(int8_test_acc-c0_int8)*100:+.2f} pp`.",
+        f"- Deployment quality gate (INT8 >=90%, FP32→INT8 drop <=0.5 pp): `{'PASS' if int8_test_acc >= 0.90 and (folded_test_acc-int8_test_acc)*100 <= 0.5 else 'FAIL'}`.",
         "- This is software-quality evidence only. It makes no RTL, cycle, timing, power, or energy claim; BN is absent from the deployment primitive graph.",
         "",
         "## Reproduction",
@@ -129,7 +154,7 @@ def main() -> None:
     ]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(report) + "\n", encoding="utf-8")
-    print(json.dumps({"fp32_val": fp32_val_acc, "int8_val": int8_val_acc, "fp32_test": fp32_test_acc, "int8_test": int8_test_acc, "drop_pp": (fp32_test_acc - int8_test_acc) * 100.0, "report": str(args.out)}))
+    print(json.dumps({"bn_fp32_val": bn_val_acc, "folded_fp32_val": folded_val_acc, "int8_val": int8_val_acc, "bn_fp32_test": bn_test_acc, "folded_fp32_test": folded_test_acc, "int8_test": int8_test_acc, "drop_pp": (folded_test_acc - int8_test_acc) * 100.0, "report": str(args.out)}))
 
 
 if __name__ == "__main__":
