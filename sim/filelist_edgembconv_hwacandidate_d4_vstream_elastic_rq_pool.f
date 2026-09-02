@@ -1,0 +1,3 @@
+rtl/cnn/edgembconv_hwacandidate_d4_dsp_pool.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_elastic_rq_pool.v
+sim/tb_edgembconv_hwacandidate_d4_vstream_elastic_rq_pool.v
