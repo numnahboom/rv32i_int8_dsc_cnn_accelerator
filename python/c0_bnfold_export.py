@@ -75,7 +75,7 @@ def tensor_np(value: torch.Tensor) -> np.ndarray:
     return value.detach().cpu().numpy().astype(np.float32)
 
 
-def export_int8(folded: torch.nn.Module, sample: np.ndarray, checkpoint: dict[str, Any], out: Path) -> dict[str, Any]:
+def export_int8(folded: torch.nn.Module, sample: np.ndarray, checkpoint: dict[str, Any], out: Path, filename: str = "c0_bnfold_int8.npz") -> dict[str, Any]:
     params: dict[str, Any] = {
         "checkpoint_backend": np.asarray("torch_c0_bnfold_training_candidate"),
         "checkpoint_eval_acc": np.asarray(float(checkpoint.get("eval_acc", -1.0)), dtype=np.float32),
@@ -109,8 +109,8 @@ def export_int8(folded: torch.nn.Module, sample: np.ndarray, checkpoint: dict[st
     params["expected_logits"] = np.asarray(logits, dtype=np.int8)
     params["expected_argmax"] = np.asarray(argmax, dtype=np.int32)
     out.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out / "c0_bnfold_int8.npz", **params)
-    return {"path": str(out / "c0_bnfold_int8.npz"), "sample_logits": [int(v) for v in logits], "sample_argmax": int(argmax), "parameter_arrays": len(params)}
+    np.savez_compressed(out / filename, **params)
+    return {"path": str(out / filename), "sample_logits": [int(v) for v in logits], "sample_argmax": int(argmax), "parameter_arrays": len(params)}
 
 
 def main() -> None:
