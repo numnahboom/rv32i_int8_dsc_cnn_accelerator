@@ -1,0 +1,80 @@
+{
+  "schema": "C10-HWQA-v1",
+  "dataset": "CIFAR-10 python batches, official 50,000 train / 10,000 test",
+  "data_dir": "D:\\Stuff\\data\\cifar-10-batches-py",
+  "archive": {
+    "path": "D:\\Stuff\\data\\cifar-10-python.tar.gz",
+    "sha256": "6d958be074577803d12ecdefd02955f39262c83c16fe9348329d7fe0b5c001ce",
+    "size_bytes": 170498071
+  },
+  "batch_sha256": {
+    "data_batch_1": "54636561a3ce25bd3e19253c6b0d8538147b0ae398331ac4a2d86c6d987368cd",
+    "data_batch_2": "766b2cef9fbc745cf056b3152224f7cf77163b330ea9a15f9392beb8b89bc5a8",
+    "data_batch_3": "0f00d98ebfb30b3ec0ad19f9756dc2630b89003e10525f5e148445e82aa6a1f9",
+    "data_batch_4": "3f7bb240661948b8f4d53e36ec720d8306f5668bd0071dcb4e6c947f78e9682b",
+    "data_batch_5": "d91802434d8376bbaeeadf58a737e3a1b12ac839077e931237e0dcd43adcb154",
+    "test_batch": "f53d8d457504f7cff4ea9e021afcf0e0ad8e24a91f3fc42091b8adef61157831"
+  },
+  "decoded_arrays": {
+    "train_shape": [
+      50000,
+      32,
+      32,
+      3
+    ],
+    "test_shape": [
+      10000,
+      32,
+      32,
+      3
+    ],
+    "train_canonical_sha256": "67e12c2a5906880a4fe5595fe6d768185ad7ca587f35d3a7ece3c3b8b85035d2",
+    "test_canonical_sha256": "e54a434ec35094516eacbaac0f2f9550358d985e9d1f71b47d41d333c15ba304"
+  },
+  "stratified_45k_5k": {
+    "algorithm": "default_rng(20260901), per-class permutation; first 4500 train, last 500 validation",
+    "seed": 20260901,
+    "train_count": 45000,
+    "validation_count": 5000,
+    "train_index_sha256": "57ad4e23ef9edd396ae3616ef9de4cf9caa17b09a173cd0b31f2263d97cf54d3",
+    "validation_index_sha256": "bfbbd5323adf96fd5e922f0b4bded7bca702aaf9c3e113d06df10f4c61b3c2f0",
+    "combined_split_sha256": "5f76a5597b9eb384deadaa8b43f010bbe8917a7f317cd4cdccf4bb80759fedfb",
+    "class_counts_train": [
+      4500,
+      4500,
+      4500,
+      4500,
+      4500,
+      4500,
+      4500,
+      4500,
+      4500,
+      4500
+    ],
+    "class_counts_validation": [
+      500,
+      500,
+      500,
+      500,
+      500,
+      500,
+      500,
+      500,
+      500,
+      500
+    ]
+  },
+  "deploy_preprocessing": {
+    "input": "raw CIFAR uint8 NHWC, each channel x in [0,255]",
+    "mapping": "i8 = clip(int16(x) - 128, -128, 127), cast signed int8",
+    "zero_point": 128,
+    "scale": "1/127.5",
+    "examples": {
+      "0": -128,
+      "1": -127,
+      "127": -1,
+      "128": 0,
+      "255": 127
+    }
+  }
+}

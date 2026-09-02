@@ -247,6 +247,127 @@ def run_exported_int8_model(image_u8: np.ndarray, params: dict[str, Any]) -> tup
     return logits, int(np.argmax(np.asarray(logits, dtype=np.int16)))
 
 
+def _requantize_array(
+    acc: np.ndarray,
+    bias: np.ndarray,
+    multiplier: np.ndarray,
+    shift: np.ndarray,
+    output_zero_point: int,
+    activation_min: int,
+    activation_max: int,
+) -> np.ndarray:
+    """Vector form of generate_test_vectors.requantize_scalar.
+
+    Keep the same away-from-zero Q31 rounding and arithmetic right shift as
+    the scalar golden evaluator, while allowing complete test-set batches.
+    """
+    value = np.asarray(acc, dtype=np.int64) + np.asarray(bias, dtype=np.int64)
+    product = value * np.asarray(multiplier, dtype=np.int64)
+    magnitude = (np.abs(product) + (1 << 30)) >> 31
+    value = np.where(product < 0, -magnitude, magnitude)
+    value = value >> np.asarray(shift, dtype=np.int64)
+    value = value + int(output_zero_point)
+    value = np.clip(value, -128, 127)
+    return np.clip(value, int(activation_min), int(activation_max)).astype(np.int8)
+
+
+def _batch_stem(feature: np.ndarray, params: dict[str, Any]) -> np.ndarray:
+    n, h, w, _ = feature.shape
+    padded = np.pad(feature, ((0, 0), (1, 1), (1, 1), (0, 0)), constant_values=int(params["input_zero_point"]))
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3), axis=(1, 2))
+    # sliding_window_view places the window axes before the channel axis.
+    windows = windows.transpose(0, 1, 2, 4, 5, 3).reshape(n * h * w, 27)
+    weight = np.asarray(params["stem_weight"], dtype=np.int16)
+    acc = windows.astype(np.int64) @ weight.T.astype(np.int64)
+    out = _requantize_array(
+        acc,
+        np.asarray(params["stem_bias"], dtype=np.int64),
+        np.asarray(params["stem_multiplier"], dtype=np.int64),
+        np.asarray(params["stem_shift"], dtype=np.int64),
+        int(params["stem_output_zero_point"]),
+        RELU_MIN,
+        RELU_MAX,
+    )
+    return out.reshape(n, h, w, 16)
+
+
+def _batch_dsblock(feature: np.ndarray, params: dict[str, Any], idx: int, stride: int) -> np.ndarray:
+    n, h, w, channels = feature.shape
+    oh = (h + stride - 1) // stride
+    ow = (w + stride - 1) // stride
+    padded = np.pad(feature, ((0, 0), (1, 1), (1, 1), (0, 0)), constant_values=0)
+    window = np.lib.stride_tricks.sliding_window_view(padded, (3, 3), axis=(1, 2))
+    # [N, OH, OW, C, 3, 3] -> [N, OH, OW, C, 9].
+    window = window[:, ::stride, ::stride, :, :, :]
+    window = window.reshape(n, oh, ow, channels, 9)
+    dw_weight = np.asarray(params[f"ds{idx}_dw_weight"], dtype=np.int16)
+    dw_acc = np.einsum("nhwck,ck->nhwc", window.astype(np.int64), dw_weight.astype(np.int64), optimize=True)
+    dw_out = _requantize_array(
+        dw_acc,
+        np.asarray(params[f"ds{idx}_dw_bias"], dtype=np.int64),
+        np.asarray(params[f"ds{idx}_dw_multiplier"], dtype=np.int64),
+        np.asarray(params[f"ds{idx}_dw_shift"], dtype=np.int64),
+        int(params[f"ds{idx}_dw_output_zero_point"]),
+        RELU_MIN,
+        RELU_MAX,
+    )
+    pw_weight = np.asarray(params[f"ds{idx}_pw_weight"], dtype=np.int16)
+    pw_acc = np.einsum("nhwc,oc->nhwo", dw_out.astype(np.int64), pw_weight.astype(np.int64), optimize=True)
+    return _requantize_array(
+        pw_acc,
+        np.asarray(params[f"ds{idx}_pw_bias"], dtype=np.int64),
+        np.asarray(params[f"ds{idx}_pw_multiplier"], dtype=np.int64),
+        np.asarray(params[f"ds{idx}_pw_shift"], dtype=np.int64),
+        int(params[f"ds{idx}_pw_output_zero_point"]),
+        RELU_MIN,
+        RELU_MAX,
+    )
+
+
+def run_exported_int8_model_batch(images_u8: np.ndarray, params: dict[str, Any]) -> np.ndarray:
+    """Run the deployment integer evaluator over [N,32,32,3] images."""
+    feature = np.asarray(images_u8, dtype=np.int16) - 128
+    feature = np.clip(feature, -128, 127).astype(np.int8)
+    feature = _batch_stem(feature, params)
+    for idx, _, _, _, _, stride in DS_SPECS:
+        feature = _batch_dsblock(feature, params, idx, stride)
+    gap = np.clip(np.sum(feature[:, :4, :4, :], axis=(1, 2), dtype=np.int64) >> 4, -128, 127).astype(np.int8)
+    fc_weight = np.asarray(params["fc_weight"], dtype=np.int16)
+    fc_acc = gap.astype(np.int64) @ fc_weight.T.astype(np.int64)
+    logits = _requantize_array(
+        fc_acc,
+        np.asarray(params["fc_bias"], dtype=np.int64),
+        np.asarray(params["fc_multiplier"], dtype=np.int64),
+        np.asarray(params["fc_shift"], dtype=np.int64),
+        int(params["fc_output_zero_point"]),
+        -128,
+        127,
+    )
+    return logits
+
+
+def evaluate_exported_int8_model(
+    images_u8: np.ndarray,
+    labels: np.ndarray,
+    params: dict[str, Any],
+    batch_size: int = 64,
+) -> tuple[np.ndarray, int]:
+    """Evaluate all samples with the exporter-compatible integer model."""
+    images_u8 = np.asarray(images_u8, dtype=np.uint8)
+    labels = np.asarray(labels, dtype=np.int64)
+    if images_u8.ndim != 4 or images_u8.shape[1:] != (32, 32, 3):
+        raise ValueError(f"expected images [N,32,32,3], got {images_u8.shape}")
+    if labels.shape != (images_u8.shape[0],):
+        raise ValueError(f"label/image count mismatch: {labels.shape} vs {images_u8.shape}")
+    batch_size = max(1, int(batch_size))
+    predictions = np.empty(images_u8.shape[0], dtype=np.int64)
+    for start in range(0, images_u8.shape[0], batch_size):
+        stop = min(start + batch_size, images_u8.shape[0])
+        logits = run_exported_int8_model_batch(images_u8[start:stop], params)
+        predictions[start:stop] = np.argmax(logits.astype(np.int16), axis=1)
+    return predictions, int(np.sum(predictions == labels))
+
+
 def export_torch_quantized_model(args: argparse.Namespace, ckpt: dict[str, Any]) -> None:
     eval_images_for_sample = ckpt.get("eval_images_uint8")
     eval_labels_for_sample = ckpt.get("eval_labels")
@@ -369,10 +490,12 @@ def export_torch_quantized_model(args: argparse.Namespace, ckpt: dict[str, Any])
         eval_images = np.asarray(eval_images, dtype=np.uint8)
         eval_labels = np.asarray(eval_labels, dtype=np.int64)
         sample_count = min(args.accuracy_samples, int(eval_labels.shape[0]))
-        correct = 0
-        for i in range(sample_count):
-            _, pred = run_exported_int8_model(eval_images[i], params)
-            correct += int(pred == int(eval_labels[i]))
+        _, correct = evaluate_exported_int8_model(
+            eval_images[:sample_count],
+            eval_labels[:sample_count],
+            params,
+            batch_size=args.accuracy_batch_size,
+        )
         params["int8_eval_samples"] = np.asarray(sample_count, dtype=np.int32)
         params["int8_eval_acc"] = np.asarray(correct / max(1, sample_count), dtype=np.float32)
     else:
@@ -616,6 +739,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=-1,
         help="optional eval subset index to export as the single firmware/RTL input image",
+    )
+    parser.add_argument(
+        "--accuracy-batch-size",
+        type=int,
+        default=64,
+        help="batch size for the complete integer evaluation path",
     )
     return parser.parse_args()
 
