@@ -18,6 +18,10 @@ network definition, training outputs, and legacy RTL are unchanged.
   metadata, and configured bounds remain transaction-aligned.
 - The 112-lane PW island uses lane-local kept operand/tag/valid registers to
   prevent control fanout from becoming an accumulator or DSP timing path.
+- The composite output boundary now fences RQ acceptance while `u_pool` is
+  presenting the result that is being copied into the common output register.
+  This is a one-cycle transaction-lifetime guard only; it changes no arithmetic
+  or quantization operation and does not add a DSP island.
 
 No arithmetic, precision, output format, or DSP count was reduced.
 
@@ -65,3 +69,13 @@ reports are in that same directory.
 
 This remains a local physical composition screen, not full-top closure or a
 full-network latency/energy claim.
+
+After the RQ boundary guard was added, the standalone composite regression
+was rerun and passed again.  The complete real-vector `mb16_down` controller
+gate also passed 8,192/8,192 output bytes under randomized scratch-read and
+output backpressure (`PW=786432`, `DW=73728`, `protocol_errors=0`).
+
+The post-route numbers above are the existing v5 OOC screen.  The
+function-only RQ guard was not presented as a newly rerun OOC result; a later
+implementation slice must rerun OOC/post-route if this guarded RTL is selected
+for physical closure.

@@ -142,11 +142,11 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
     endfunction
 
     /* The composite has a four-lane exact RQ transaction. */
-    wire comp_op_mode_rq = (state == ST_EXP_RQ) || (state == ST_DW_RQ) ||
-                            (state == ST_PROJ_RQ);
-    wire comp_op_valid = (state == ST_EXP_PW) || (state == ST_EXP_RQ) ||
-                         (state == ST_DW_RQ) || (state == ST_PROJ_PW) ||
-                         (state == ST_PROJ_RQ);
+    /* Do not present the next RQ request on the same edge that the current
+     * composite result is being observed.  The composite intentionally
+     * permits ready/valid replacement when ready_out=1; without this local
+     * fence the controller would accept the old RQ operands once more before
+     * advancing rq_base, shifting every subsequent four-lane group. */
     wire comp_op_ready;
     reg [55:0] comp_pw_act_7;
     reg [127:0] comp_pw_act_pool, comp_pw_wgt;
@@ -164,6 +164,11 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
     wire signed [255:0] comp_rq_product;
     wire signed [31:0] comp_rq_result;
     wire [31:0] comp_metadata_out;
+    wire comp_op_mode_rq = (state == ST_EXP_RQ) || (state == ST_DW_RQ) ||
+                            (state == ST_PROJ_RQ);
+    wire comp_op_valid = (state == ST_EXP_PW) || (state == ST_PROJ_PW) ||
+                         (((state == ST_EXP_RQ) || (state == ST_DW_RQ) ||
+                           (state == ST_PROJ_RQ)) && !comp_out_valid);
 
     reg comp_dw_cfg_valid;
     wire comp_dw_cfg_ready;
@@ -288,7 +293,8 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
                 lane_c = flat_lane % 16;
                 param_idx = (pw_phase_project ? PROJ_PARAM_BASE : EXP_PARAM_BASE)
                     + pw_group*16 + lane_c;
-                comp_rq_acc[q*32 +: 32] = pw_capture[flat_lane*32 +: 32];
+                comp_rq_acc[q*32 +: 32] = pw_capture[flat_lane*32 +: 32]
+                    + bias_mem[param_idx];
                 comp_rq_multiplier[q*32 +: 32] = multiplier_mem[param_idx];
                 comp_rq_shift[q*6 +: 6] = shift_mem[param_idx][5:0];
                 comp_rq_min[q*32 +: 32] = pw_phase_project ? -128 : 0;
@@ -298,7 +304,8 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
             for (q = 0; q < 4; q = q + 1) begin
                 lane_c = rq_base + q;
                 param_idx = DW_PARAM_BASE + dw_group*16 + lane_c;
-                comp_rq_acc[q*32 +: 32] = dw_capture[lane_c*32 +: 32];
+                comp_rq_acc[q*32 +: 32] = dw_capture[lane_c*32 +: 32]
+                    + bias_mem[param_idx];
                 comp_rq_multiplier[q*32 +: 32] = multiplier_mem[param_idx];
                 comp_rq_shift[q*6 +: 6] = shift_mem[param_idx][5:0];
                 comp_rq_min[q*32 +: 32] = 0;
@@ -420,6 +427,8 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
                         end
                     end
                     ST_DW_CFG: begin
+                        if (dw_group == 0 && dw_cfg_idx == 0)
+                            bank0_state_reg <= BANK_ACTIVE;
                         if (comp_dw_cfg_valid && comp_dw_cfg_ready) begin
                             if (dw_cfg_idx == 143) begin
                                 dw_cfg_idx <= 0; state <= ST_DW_START;
@@ -467,12 +476,21 @@ module edgembconv_hwacandidate_d4_mb16_controller #(
                                         dw_y <= dw_y + 1'b1; state <= ST_DW_CFG;
                                     end
                                 end else begin
+                                    /* A coordinate has two 16-channel DW
+                                     * groups.  Return to group zero before
+                                     * advancing x; the previous version
+                                     * accidentally ran group one for every
+                                     * x>0 and therefore completed only
+                                     * 272/512 vectors. */
+                                    dw_group <= 1'b0;
                                     dw_x <= dw_x + 1'b1; state <= ST_DW_CFG;
                                 end
                             end else rq_base <= rq_base + 4;
                         end
                     end
                     ST_PROJ_PW: begin
+                        if (pw_k == 0)
+                            bank1_state_reg <= BANK_ACTIVE;
                         if (pw_fire) begin
                             pw_mac_count <= pw_mac_count + 128;
                             if (pw_k == 31) state <= ST_PROJ_PW_WAIT;

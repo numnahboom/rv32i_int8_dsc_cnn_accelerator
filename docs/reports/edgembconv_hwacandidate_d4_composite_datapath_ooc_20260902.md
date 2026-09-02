@@ -39,6 +39,13 @@ PASS edgembconv_hwacandidate_d4_composite_datapath mapping=112PW+16dual+18DW sta
 The reproducible entry point is
 `scripts/run_edgembconv_hwacandidate_d4_composite_datapath_sim.ps1`.
 
+The composite subsequently gained a one-cycle RQ transaction-lifetime fence
+at the output-copy boundary.  Its standalone PW/RQ/DW regression remains
+passing, and the guarded composite is the instance used by the complete
+`mb16_down` controller gate.  The OOC figures below predate that function-only
+acceptance guard and are retained as historical physical-screen evidence, not
+as a fresh post-route result for the guarded RTL.
+
 ## Fresh XC7Z020 OOC post-route screen
 
 Part: `xc7z020clg400-1`; clock: 8.000 ns (125 MHz); Vivado 2025.2;

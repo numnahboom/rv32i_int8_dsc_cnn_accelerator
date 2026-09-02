@@ -98,7 +98,16 @@ module edgembconv_hwacandidate_d4_composite_datapath (
     wire output_space = !out_valid || out_ready;
     wire pw_can_accept = pw112_ready && pool_ready_in && !pw_done_pending &&
                          output_space;
-    wire rq_can_accept = pool_ready_in && output_space && !pw_done_pending;
+    /* The shared pool exposes its result one cycle before this composite
+     * boundary copies it into the common output register.  Do not accept a
+     * replacement RQ transaction on that copy edge: pool_ready_in is allowed
+     * to be high with ready_out=1, but accepting here would re-use the old
+     * controller operands while the visible result still belongs to the
+     * preceding transaction (base4 consequently observed base0).  This
+     * single-cycle fence preserves the pool transaction lifetime and leaves
+     * all arithmetic/quantization semantics unchanged. */
+    wire rq_can_accept = pool_ready_in && output_space && !pw_done_pending &&
+                         !pool_valid_out;
     assign op_ready = rst_n &&
         (!mode_lock_valid || (mode_lock_rq == op_mode_rq)) &&
         (op_mode_rq ? rq_can_accept : pw_can_accept);

@@ -43,6 +43,8 @@ module tb_edgembconv_hwacandidate_d4_mb16_controller;
     reg [7:0] dw_shift [0:31];
 
     integer errors, i, checked, start_cycle, end_cycle;
+    integer dw_seen, dw_starts, dw_req_seen, dw_resp_seen;
+    integer dw_max_y, dw_max_x, dw_max_group;
     integer seen_s0_fill, seen_s0_ready, seen_s0_active;
     integer seen_s1_fill, seen_s1_ready, seen_s1_active;
     integer stable_index;
@@ -123,6 +125,17 @@ module tb_edgembconv_hwacandidate_d4_mb16_controller;
     end
 
     always @(posedge clk) begin
+        if (rst_n && dut.comp_dw_start_valid && dut.comp_dw_start_ready) begin
+            dw_starts = dw_starts + 1;
+        end
+        if (rst_n && dut.comp_dw_src_req_valid && dut.comp_dw_src_req_ready)
+            dw_req_seen = dw_req_seen + 1;
+        if (rst_n && dut.comp_dw_src_resp_valid && dut.comp_dw_src_resp_ready)
+            dw_resp_seen = dw_resp_seen + 1;
+        if (rst_n && dut.comp_dw_out_valid) begin
+            dw_seen = dw_seen + 1;
+            dw_max_y = dut.dw_y; dw_max_x = dut.dw_x; dw_max_group = dut.dw_group;
+        end
         if (rst_n && busy) begin
             if (scratch0_state == 1) seen_s0_fill = 1;
             if (scratch0_state == 2) seen_s0_ready = 1;
@@ -153,6 +166,8 @@ module tb_edgembconv_hwacandidate_d4_mb16_controller;
         scratch_read_ready = 1; errors = 0; checked = 0; stable_index = -1;
         seen_s0_fill = 0; seen_s0_ready = 0; seen_s0_active = 0;
         seen_s1_fill = 0; seen_s1_ready = 0; seen_s1_active = 0;
+        dw_seen = 0; dw_starts = 0; dw_req_seen = 0; dw_resp_seen = 0;
+        dw_max_y = 0; dw_max_x = 0; dw_max_group = 0;
         repeat (5) @(posedge clk); rst_n = 1;
         load_vectors();
         @(negedge clk); while (!start_ready) @(negedge clk);
@@ -169,7 +184,7 @@ module tb_edgembconv_hwacandidate_d4_mb16_controller;
             errors = errors + 1;
         end
         if (done_epoch !== 4'ha || active_epoch !== 4'ha || protocol_errors != 0) errors = errors + 1;
-        $display("D4_MB16 block=mb16_down output_bytes=%0d cycles=%0d pw_mac=%0d dw_mac=%0d overlap=%0d scratch=%b/%b errors=%0d", checked, end_cycle-start_cycle, pw_mac_count, dw_mac_count, overlap_cycles, scratch0_state, scratch1_state, errors);
+        $display("D4_MB16 block=mb16_down output_bytes=%0d cycles=%0d pw_mac=%0d dw_mac=%0d dw_seen=%0d dw_starts=%0d req=%0d resp=%0d last=(%0d,%0d,%0d) overlap=%0d scratch=%b/%b errors=%0d", checked, end_cycle-start_cycle, pw_mac_count, dw_mac_count, dw_seen, dw_starts, dw_req_seen, dw_resp_seen, dw_max_y, dw_max_x, dw_max_group, overlap_cycles, scratch0_state, scratch1_state, errors);
         if (errors == 0) $display("PASS edgembconv_hwacandidate_d4_mb16_controller exact=8192 random_backpressure=checked");
         else begin $display("FAIL edgembconv_hwacandidate_d4_mb16_controller errors=%0d", errors); $fatal; end
         $finish;
