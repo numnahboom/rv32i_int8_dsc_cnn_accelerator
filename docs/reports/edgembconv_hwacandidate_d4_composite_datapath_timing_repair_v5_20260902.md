@@ -51,14 +51,14 @@ Device `xc7z020clg400-1`, 8.000 ns clock (125 MHz), Vivado
 
 | metric | post-route result |
 |---|---:|
-| WNS | +0.633 ns |
+| WNS | +0.616 ns |
 | WHS | +0.096 ns |
 | TNS / THS | 0 / 0 ns |
-| LUT as Logic | 18,461 / 53,200 (34.70%) |
+| LUT as Logic | 18,466 / 53,200 (34.71%) |
 | FF | 23,264 / 106,400 (21.86%) |
 | BRAM | 0% |
 | DSP | 146 / 220 (66.36%) |
-| Total on-chip power | 0.525 W |
+| Total on-chip power | 0.506 W |
 | routing errors | 0 |
 
 The exact DSP hierarchy count is 112 dedicated PW + 16 shared-pool + 16 DW
@@ -68,14 +68,11 @@ The authoritative timing, utilization, power, route, DRC, and max/min path
 reports are in that same directory.
 
 This remains a local physical composition screen, not full-top closure or a
-full-network latency/energy claim.
+full-network latency/energy claim.  The values above are the fresh
+post-route result for the guarded RTL, with `general.maxThreads=8`; they are
+not a full-top result.
 
 After the RQ boundary guard was added, the standalone composite regression
 was rerun and passed again.  The complete real-vector `mb16_down` controller
 gate also passed 8,192/8,192 output bytes under randomized scratch-read and
 output backpressure (`PW=786432`, `DW=73728`, `protocol_errors=0`).
-
-The post-route numbers above are the existing v5 OOC screen.  The
-function-only RQ guard was not presented as a newly rerun OOC result; a later
-implementation slice must rerun OOC/post-route if this guarded RTL is selected
-for physical closure.
