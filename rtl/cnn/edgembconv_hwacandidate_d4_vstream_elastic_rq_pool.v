@@ -2,13 +2,14 @@
 `default_nettype none
 
 /*
- * D4 vstream RQ milestone.
+ * D4 vstream dual-mode milestone.
  *
  * This module is deliberately independent of the single-entry
  * edgembconv_hwacandidate_d4_dsp_pool contract.  It instantiates exactly the
- * same sixteen d4_dsp_pool_dsp primitives (four partial products per output
- * lane), but puts the complete requant transaction context in an elastic
- * pipeline.  There is no second RQ multiplier array and no LUT multiplier.
+ * same sixteen d4_dsp_pool_dsp primitives (four partial products per RQ
+ * output lane, or sixteen independent PW products), but puts the complete
+ * transaction context in an elastic pipeline.  There is no second RQ
+ * multiplier array and no LUT multiplier.
  * The input side can therefore issue one transaction per cycle whenever the
  * output side is able to drain the pipeline.
  *
@@ -22,6 +23,7 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
+    input  wire                         mode_rq,
     input  wire                         valid_in,
     output wire                         ready_in,
     input  wire signed [127:0]          rq_acc_vec,
@@ -30,9 +32,13 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     input  wire signed [127:0]          rq_zero_point_vec,
     input  wire signed [127:0]           rq_min_vec,
     input  wire signed [127:0]           rq_max_vec,
+    input  wire [127:0]                 pw_act_vec,
+    input  wire [127:0]                 pw_wgt_vec,
     input  wire [31:0]                  metadata_in,
     output wire                         valid_out,
     input  wire                         ready_out,
+    output wire                         mode_rq_out,
+    output wire [255:0]                 pw_product_vec,
     output wire signed [255:0]           rq_product_vec,
     output wire signed [31:0]            rq_result_vec,
     output wire [31:0]                  metadata_out
@@ -47,8 +53,14 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
      * product of the next request merely because valid_in stayed asserted. */
     reg signed [127:0] last_acc_reg;
     reg signed [127:0] last_multiplier_reg;
+    reg [127:0] last_pw_act_reg;
+    reg [127:0] last_pw_wgt_reg;
+    reg last_mode_reg;
+    wire dsp_mode_bus = input_fire ? mode_rq : last_mode_reg;
     wire signed [127:0] dsp_acc_bus = input_fire ? rq_acc_vec : last_acc_reg;
     wire signed [127:0] dsp_multiplier_bus = input_fire ? rq_multiplier_vec : last_multiplier_reg;
+    wire [127:0] dsp_pw_act_bus = input_fire ? pw_act_vec : last_pw_act_reg;
+    wire [127:0] dsp_pw_wgt_bus = input_fire ? pw_wgt_vec : last_pw_wgt_reg;
     wire signed [47:0] dsp_p [0:DSP_COUNT-1];
     genvar dg;
     generate
@@ -57,12 +69,18 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
             localparam integer PART = dg % 4;
             wire [31:0] a_word = dsp_acc_bus[(LANE*32) +: 32];
             wire [31:0] b_word = dsp_multiplier_bus[(LANE*32) +: 32];
-            wire [24:0] a_operand = (PART == 0 || PART == 2)
+            wire [24:0] rq_a_operand = (PART == 0 || PART == 2)
                 ? {9'd0, a_word[15:0]}
                 : {{9{a_word[31]}}, a_word[31:16]};
-            wire [17:0] b_operand = (PART == 0 || PART == 1)
+            wire [17:0] rq_b_operand = (PART == 0 || PART == 1)
                 ? {2'd0, b_word[15:0]}
                 : {{2{b_word[31]}}, b_word[31:16]};
+            wire [24:0] pw_a_operand = {{17{dsp_pw_act_bus[(dg*8)+7]}},
+                                          dsp_pw_act_bus[(dg*8) +: 8]};
+            wire [17:0] pw_b_operand = {{10{dsp_pw_wgt_bus[(dg*8)+7]}},
+                                          dsp_pw_wgt_bus[(dg*8) +: 8]};
+            wire [24:0] a_operand = dsp_mode_bus ? rq_a_operand : pw_a_operand;
+            wire [17:0] b_operand = dsp_mode_bus ? rq_b_operand : pw_b_operand;
             edgembconv_hwacandidate_d4_dsp_pool_dsp u_dsp (
                 .clk(clk), .rst_n(rst_n), .a_in(a_operand), .b_in(b_operand),
                 .p_out(dsp_p[dg])
@@ -78,6 +96,9 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     reg signed [127:0] pending_min;
     reg signed [127:0] pending_max;
     reg [31:0] pending_metadata;
+    reg pending_mode;
+    reg mode_active;
+    reg active_mode;
 
     reg v0, v1, v2, v3, v4, v5, v6, v7, v8;
     wire r8 = !v8 || ready_out;
@@ -89,25 +110,39 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     wire r2 = !v2 || r3;
     wire r1 = !v1 || r2;
     wire r0 = !v0 || r1;
+    wire pipeline_busy = pending_valid || v0 || v1 || v2 || v3 || v4 ||
+                         v5 || v6 || v7 || v8;
+    /* A changed mode may be presented while the source is idle so the old
+     * token can drain.  It is only rejected when a transaction is actually
+     * offered before the fence boundary. */
+    wire mode_ok = !valid_in || !mode_active || !pipeline_busy ||
+                   (mode_rq == active_mode);
+    wire pending_slot_ready = !pending_valid || r0;
     /* If pending is full, it can be replaced only on the edge where stage
      * zero consumes it.  This is the fixed-latency DSP alignment invariant. */
-    assign ready_in = rst_n && (!pending_valid || r0);
+    assign ready_in = rst_n && mode_ok && pending_slot_ready;
 
     reg [511:0] partial0;
     reg signed [255:0] prod0;
     reg [23:0] shift0;
     reg signed [127:0] zp0, min0, max0;
     reg [31:0] meta0;
+    reg mode0;
+    reg [255:0] pw0;
 
     reg signed [255:0] sum_a1, sum_b1;
     reg [23:0] shift1;
     reg signed [127:0] zp1, min1, max1;
     reg [31:0] meta1;
+    reg mode1;
+    reg [255:0] pw1;
 
     reg signed [255:0] product2;
     reg [23:0] shift2;
     reg signed [127:0] zp2, min2, max2;
     reg [31:0] meta2;
+    reg mode2;
+    reg [255:0] pw2;
 
     reg signed [255:0] magnitude3;
     reg [3:0] negative3;
@@ -115,6 +150,8 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     reg signed [127:0] zp3, min3, max3;
     reg [255:0] prod3;
     reg [31:0] meta3;
+    reg mode3;
+    reg [255:0] pw3;
 
     reg signed [255:0] round_sum4;
     reg [3:0] negative4;
@@ -122,26 +159,36 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     reg signed [127:0] zp4, min4, max4;
     reg [255:0] prod4;
     reg [31:0] meta4;
+    reg mode4;
+    reg [255:0] pw4;
 
     reg signed [255:0] shifted5;
     reg [3:0] negative5;
     reg signed [127:0] zp5, min5, max5;
     reg [255:0] prod5;
     reg [31:0] meta5;
+    reg mode5;
+    reg [255:0] pw5;
 
     reg signed [255:0] scaled6;
     reg signed [127:0] min6, max6;
     reg [255:0] prod6;
     reg [31:0] meta6;
+    reg mode6;
+    reg [255:0] pw6;
 
     reg signed [7:0] candidate7 [0:3];
     reg signed [127:0] min7, max7;
     reg [255:0] prod7;
     reg [31:0] meta7;
+    reg mode7;
+    reg [255:0] pw7;
 
     reg signed [7:0] result8 [0:3];
     reg [255:0] prod8;
     reg [31:0] meta8;
+    reg mode8;
+    reg [255:0] pw8;
 
     wire signed [63:0] p0 [0:3];
     wire signed [63:0] p1 [0:3];
@@ -220,6 +267,8 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
     endgenerate
 
     assign valid_out = v8;
+    assign mode_rq_out = mode8;
+    assign pw_product_vec = pw8;
     assign rq_product_vec = prod8;
     assign rq_result_vec = {result8[3], result8[2], result8[1], result8[0]};
     assign metadata_out = meta8;
@@ -230,20 +279,39 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
             pending_valid <= 1'b0;
             last_acc_reg <= 128'sd0;
             last_multiplier_reg <= 128'sd0;
+            last_pw_act_reg <= 128'd0;
+            last_pw_wgt_reg <= 128'd0;
+            last_mode_reg <= 1'b1;
+            pending_mode <= 1'b1;
+            mode_active <= 1'b0;
+            active_mode <= 1'b1;
             v0 <= 1'b0; v1 <= 1'b0; v2 <= 1'b0; v3 <= 1'b0;
             v4 <= 1'b0; v5 <= 1'b0; v6 <= 1'b0; v7 <= 1'b0; v8 <= 1'b0;
+            mode0 <= 1'b1; mode1 <= 1'b1; mode2 <= 1'b1; mode3 <= 1'b1;
+            mode4 <= 1'b1; mode5 <= 1'b1; mode6 <= 1'b1; mode7 <= 1'b1;
+            mode8 <= 1'b1;
+            pw0 <= 256'd0; pw1 <= 256'd0; pw2 <= 256'd0; pw3 <= 256'd0;
+            pw4 <= 256'd0; pw5 <= 256'd0; pw6 <= 256'd0; pw7 <= 256'd0;
+            pw8 <= 256'd0;
             for (i = 0; i < 4; i = i + 1) begin
                 candidate7[i] <= 8'sd0;
                 result8[i] <= 8'sd0;
             end
         end else begin
+            if (mode_active && !pipeline_busy)
+                mode_active <= 1'b0;
             /* Stage eight is also the external output register. */
             if (r8) begin
                 v8 <= v7;
                 if (v7) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        result8[i] <= result_wire[i];
-                    prod8 <= prod7;
+                    mode8 <= mode7;
+                    if (mode7) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            result8[i] <= result_wire[i];
+                        prod8 <= prod7;
+                    end else begin
+                        pw8 <= pw7;
+                    end
                     meta8 <= meta7;
                 end
             end
@@ -251,90 +319,148 @@ module edgembconv_hwacandidate_d4_vstream_elastic_rq_pool #(
             if (r7) begin
                 v7 <= v6;
                 if (v6) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        candidate7[i] <= candidate_wire[i];
-                    min7 <= min6; max7 <= max6; prod7 <= prod6; meta7 <= meta6;
+                    mode7 <= mode6;
+                    if (mode6) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            candidate7[i] <= candidate_wire[i];
+                        min7 <= min6; max7 <= max6; prod7 <= prod6;
+                    end else begin
+                        pw7 <= pw6;
+                    end
+                    meta7 <= meta6;
                 end
             end
             if (r6) begin
                 v6 <= v5;
                 if (v5) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        scaled6[(i*64) +: 64] <= scaled_wire[i];
-                    min6 <= min5; max6 <= max5; prod6 <= prod5; meta6 <= meta5;
+                    mode6 <= mode5;
+                    if (mode5) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            scaled6[(i*64) +: 64] <= scaled_wire[i];
+                        min6 <= min5; max6 <= max5; prod6 <= prod5;
+                    end else begin
+                        pw6 <= pw5;
+                    end
+                    meta6 <= meta5;
                 end
             end
             if (r5) begin
                 v5 <= v4;
                 if (v4) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        shifted5[(i*64) +: 64] <= shifted_wire[i];
-                    negative5 <= negative4; zp5 <= zp4;
-                    min5 <= min4; max5 <= max4; prod5 <= prod4; meta5 <= meta4;
+                    mode5 <= mode4;
+                    if (mode4) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            shifted5[(i*64) +: 64] <= shifted_wire[i];
+                        negative5 <= negative4; zp5 <= zp4;
+                        min5 <= min4; max5 <= max4; prod5 <= prod4;
+                    end else begin
+                        pw5 <= pw4;
+                    end
+                    meta5 <= meta4;
                 end
             end
             if (r4) begin
                 v4 <= v3;
                 if (v3) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        round_sum4[(i*64) +: 64] <= round_wire[i];
-                    shift4 <= shift3; negative4 <= negative3;
-                    zp4 <= zp3; min4 <= min3; max4 <= max3;
-                    prod4 <= prod3; meta4 <= meta3;
+                    mode4 <= mode3;
+                    if (mode3) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            round_sum4[(i*64) +: 64] <= round_wire[i];
+                        shift4 <= shift3; negative4 <= negative3;
+                        zp4 <= zp3; min4 <= min3; max4 <= max3;
+                        prod4 <= prod3;
+                    end else begin
+                        pw4 <= pw3;
+                    end
+                    meta4 <= meta3;
                 end
             end
             if (r3) begin
                 v3 <= v2;
                 if (v2) begin
-                    for (i = 0; i < 4; i = i + 1) begin
-                        magnitude3[(i*64) +: 64] <= magnitude_wire[i];
-                        negative3[i] <= product2[(i*64)+63];
+                    mode3 <= mode2;
+                    if (mode2) begin
+                        for (i = 0; i < 4; i = i + 1) begin
+                            magnitude3[(i*64) +: 64] <= magnitude_wire[i];
+                            negative3[i] <= product2[(i*64)+63];
+                        end
+                        shift3 <= shift2; zp3 <= zp2; min3 <= min2; max3 <= max2;
+                        prod3 <= product2;
+                    end else begin
+                        pw3 <= pw2;
                     end
-                    shift3 <= shift2; zp3 <= zp2; min3 <= min2; max3 <= max2;
-                    prod3 <= product2; meta3 <= meta2;
+                    meta3 <= meta2;
                 end
             end
             if (r2) begin
                 v2 <= v1;
                 if (v1) begin
-                    for (i = 0; i < 4; i = i + 1)
-                        product2[(i*64) +: 64] <= product_wire[i];
-                    shift2 <= shift1; zp2 <= zp1; min2 <= min1; max2 <= max1;
+                    mode2 <= mode1;
+                    if (mode1) begin
+                        for (i = 0; i < 4; i = i + 1)
+                            product2[(i*64) +: 64] <= product_wire[i];
+                        shift2 <= shift1; zp2 <= zp1; min2 <= min1; max2 <= max1;
+                    end else begin
+                        pw2 <= pw1;
+                    end
                     meta2 <= meta1;
                 end
             end
             if (r1) begin
                 v1 <= v0;
                 if (v0) begin
-                    for (i = 0; i < 4; i = i + 1) begin
-                        sum_a1[(i*64) +: 64] <= sa_wire[i];
-                        sum_b1[(i*64) +: 64] <= sb_wire[i];
+                    mode1 <= mode0;
+                    if (mode0) begin
+                        for (i = 0; i < 4; i = i + 1) begin
+                            sum_a1[(i*64) +: 64] <= sa_wire[i];
+                            sum_b1[(i*64) +: 64] <= sb_wire[i];
+                        end
+                        shift1 <= shift0; zp1 <= zp0; min1 <= min0; max1 <= max0;
+                    end else begin
+                        pw1 <= pw0;
                     end
-                    shift1 <= shift0; zp1 <= zp0; min1 <= min0; max1 <= max0;
                     meta1 <= meta0;
                 end
             end
             if (r0) begin
                 v0 <= pending_valid;
                 if (pending_valid) begin
-                    for (i = 0; i < DSP_COUNT; i = i + 1)
-                        partial0[(i*32) +: 32] <= dsp_p[i][31:0];
-                    shift0 <= pending_shift; zp0 <= pending_zp; min0 <= pending_min;
-                    max0 <= pending_max; meta0 <= pending_metadata;
-                    prod0 <= 256'd0;
+                    mode0 <= pending_mode;
+                    if (pending_mode) begin
+                        for (i = 0; i < DSP_COUNT; i = i + 1)
+                            partial0[(i*32) +: 32] <= dsp_p[i][31:0];
+                        shift0 <= pending_shift; zp0 <= pending_zp; min0 <= pending_min;
+                        max0 <= pending_max; prod0 <= 256'd0;
+                    end else begin
+                        for (i = 0; i < DSP_COUNT; i = i + 1)
+                            pw0[(i*16) +: 16] <= dsp_p[i][15:0];
+                    end
+                    meta0 <= pending_metadata;
                 end
             end
 
-            if (ready_in) begin
-                pending_valid <= valid_in;
-                if (valid_in) begin
+            /* The pending slot must still drain an old-mode token while a
+             * different mode is being held at the external interface.  Use
+             * slot readiness for this internal retirement; ready_in remains
+             * fenced so the new mode cannot be accepted early. */
+            if (pending_slot_ready) begin
+                pending_valid <= input_fire;
+                if (input_fire) begin
+                    pending_mode <= mode_rq;
                     last_acc_reg <= rq_acc_vec;
                     last_multiplier_reg <= rq_multiplier_vec;
+                    last_pw_act_reg <= pw_act_vec;
+                    last_pw_wgt_reg <= pw_wgt_vec;
+                    last_mode_reg <= mode_rq;
                     pending_shift <= rq_shift_vec;
                     pending_zp <= rq_zero_point_vec;
                     pending_min <= rq_min_vec;
                     pending_max <= rq_max_vec;
                     pending_metadata <= metadata_in;
+                    if (!mode_active) begin
+                        mode_active <= 1'b1;
+                        active_mode <= mode_rq;
+                    end
                 end
             end
         end

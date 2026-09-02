@@ -9,12 +9,15 @@ module tb_edgembconv_hwacandidate_d4_vstream_elastic_rq_pool;
     localparam integer REAL_N = 5;
     localparam integer BURST_N = 16;
     localparam integer STALL_N = 32;
-    reg clk, rst_n, valid_in, ready_out;
+    reg clk, rst_n, mode_rq, valid_in, ready_out;
     reg signed [127:0] rq_acc_vec, rq_multiplier_vec;
+    reg [127:0] pw_act_vec, pw_wgt_vec;
     reg [23:0] rq_shift_vec;
     reg signed [127:0] rq_zero_point_vec, rq_min_vec, rq_max_vec;
     reg [31:0] metadata_in;
     wire ready_in, valid_out;
+    wire mode_rq_out;
+    wire [255:0] pw_product_vec;
     wire signed [255:0] rq_product_vec;
     wire signed [31:0] rq_result_vec;
     wire [31:0] metadata_out;
@@ -43,11 +46,13 @@ module tb_edgembconv_hwacandidate_d4_vstream_elastic_rq_pool;
     integer snap_source_index;
 
     edgembconv_hwacandidate_d4_vstream_elastic_rq_pool dut (
-        .clk(clk), .rst_n(rst_n), .valid_in(valid_in), .ready_in(ready_in),
+        .clk(clk), .rst_n(rst_n), .mode_rq(mode_rq), .valid_in(valid_in), .ready_in(ready_in),
         .rq_acc_vec(rq_acc_vec), .rq_multiplier_vec(rq_multiplier_vec),
+        .pw_act_vec(pw_act_vec), .pw_wgt_vec(pw_wgt_vec),
         .rq_shift_vec(rq_shift_vec), .rq_zero_point_vec(rq_zero_point_vec),
         .rq_min_vec(rq_min_vec), .rq_max_vec(rq_max_vec),
         .metadata_in(metadata_in), .valid_out(valid_out), .ready_out(ready_out),
+        .mode_rq_out(mode_rq_out), .pw_product_vec(pw_product_vec),
         .rq_product_vec(rq_product_vec), .rq_result_vec(rq_result_vec),
         .metadata_out(metadata_out)
     );
@@ -56,7 +61,9 @@ module tb_edgembconv_hwacandidate_d4_vstream_elastic_rq_pool;
     always @(posedge clk) cycle_count = cycle_count + 1;
     task clear_input;
         begin
-            valid_in = 1'b0; rq_acc_vec = 128'sd0; rq_multiplier_vec = 128'sd0;
+            valid_in = 1'b0; mode_rq = 1'b1;
+            rq_acc_vec = 128'sd0; rq_multiplier_vec = 128'sd0;
+            pw_act_vec = 128'd0; pw_wgt_vec = 128'd0;
             rq_shift_vec = 24'd0; rq_zero_point_vec = 128'sd0;
             rq_min_vec = 128'sd0; rq_max_vec = 128'sd0; metadata_in = 32'd0;
         end
