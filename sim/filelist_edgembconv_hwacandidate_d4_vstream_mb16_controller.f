@@ -1,0 +1,7 @@
+rtl/cnn/edgembconv_hwacandidate_d4_dsp_pool.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_elastic_rq_pool.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_pw112.v
+rtl/cnn/edgembconv_hwacandidate_d4_dw16_stream_tile.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_datapath.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_mb16_controller.v
+sim/tb_edgembconv_hwacandidate_d4_vstream_mb16_controller.v
