@@ -1,0 +1,2 @@
+sim/ds12_stream_future_dut_if.v
+sim/tb_ds12_stream_harness.v

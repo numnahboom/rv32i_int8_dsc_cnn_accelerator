@@ -1,0 +1,8 @@
+# Fixed physical-attempt labels for the DS2 PW consumer OOC scan.
+# Vivado 2025.2 does not expose an explicit place/route seed property in
+# non-project mode; the Tcl records these labels and reopens the immutable
+# post-synthesis DCP for each independent Explore P&R attempt.
+2
+3
+7
+11

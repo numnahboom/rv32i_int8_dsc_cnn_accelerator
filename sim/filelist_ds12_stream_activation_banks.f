@@ -1,0 +1,2 @@
+rtl/cnn/ds12_stream_activation_banks.v
+sim/tb_ds12_stream_activation_banks.v

@@ -1,0 +1,2 @@
+rtl/cnn/ds12_stream_ds2_pw_consumer.v
+sim/tb_ds12_stream_ds2_slot_ledger_sweep.v

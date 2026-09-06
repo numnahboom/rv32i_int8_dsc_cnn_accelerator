@@ -1,0 +1,4 @@
+rtl/cnn/ds12_stream_vector_lane_bank.v
+rtl/cnn/ds12_stream_dual_vector_activation_store.v
+rtl/cnn/ds12_stream_two_layer_top.v
+sim/tb_ds12_stream_two_layer_top.v

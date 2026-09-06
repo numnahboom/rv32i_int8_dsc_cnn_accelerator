@@ -1,0 +1,2 @@
+rtl/cnn/ds12_stream_ds1_pw_consumer.v
+sim/tb_ds12_stream_ds1_pw_consumer.v

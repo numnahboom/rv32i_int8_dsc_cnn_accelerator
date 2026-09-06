@@ -1,0 +1,3 @@
+rtl/cnn/ds12_stream_activation_banks.v
+rtl/cnn/ds12_stream_ds2_window_reader.v
+sim/tb_ds12_stream_ds2_window_reader.v

@@ -1,0 +1,3 @@
+rtl/cnn/ds12_stream_config_banks.v
+rtl/cnn/ds12_stream_ds2_pw_consumer.v
+sim/tb_ds12_stream_ds2_pw_consumer.v
