@@ -1,0 +1,12 @@
+rtl/cnn/ds12_stream_vector_lane_bank.v
+rtl/cnn/ds12_stream_dual_vector_activation_store.v
+rtl/cnn/ds12_shared_pw_ds1_dw_bram_endpoint.v
+rtl/cnn/ds12_stream_ds2_window_vector_reader.v
+rtl/cnn/ds12_stream_ds2_dw_compute.v
+rtl/cnn/ds12_shared_pw_service.v
+rtl/cnn/ds12_shared_pw_config_port.v
+rtl/cnn/ds12_shared_pw_scheduler.v
+rtl/cnn/ds12_shared_pw_ds1_adapter.v
+rtl/cnn/ds12_shared_pw_ds2_adapter.v
+rtl/cnn/ds12_shared_pw_two_layer_top.v
+sim/tb_ds12_shared_pw_two_layer_top.v
