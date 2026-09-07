@@ -1,0 +1,1030 @@
+{
+  "schema": "m11a-nonzero-fixture-v1",
+  "status": "NONZERO_FIXTURE_REFERENCE_PASS",
+  "source": {
+    "weights_header": {
+      "path": "sw/model/model_weights.h",
+      "sha256": "3febd7f6d0baaa3749a7fb3140a76068710c09fd33dc27c0f76905d18bd9f7bf"
+    },
+    "quant_header": {
+      "path": "sw/model/model_quant.h",
+      "sha256": "da0e99811913b9c4a96690060139c4a143175c94f1b06556b031af2fbfc92c91"
+    },
+    "descriptor_header": {
+      "path": "sw/model/model_desc.h",
+      "sha256": "086fcccb06dee748a82d6766c1ef579462ee4c529c2a031518c43a4467ae0485"
+    },
+    "expected_source_boundary": "headers and this independent software reference; never RTL output"
+  },
+  "descriptor": {
+    "activation_min": 0,
+    "activation_max": 127,
+    "input_layout": "NHWC pixel-major signed int8; 16-byte per-pixel memory beat",
+    "DS1": {
+      "in_shape": [
+        32,
+        32,
+        16
+      ],
+      "out_shape": [
+        32,
+        32,
+        32
+      ],
+      "stride": 1,
+      "row_stride_bytes": 512,
+      "input_base": "0x00000000",
+      "sink_base": "0x00100000",
+      "input_zero_point": 0,
+      "dw_output_zero_point": 0,
+      "pw_output_zero_point": 0,
+      "cfg_words": 308,
+      "output_words": 8192,
+      "dw_mac": 147456,
+      "pw_mac": 524288,
+      "dw_vectors": 1024,
+      "pw_tokens": 8192
+    },
+    "DS2": {
+      "in_shape": [
+        32,
+        32,
+        32
+      ],
+      "out_shape": [
+        16,
+        16,
+        64
+      ],
+      "stride": 2,
+      "row_stride_bytes": 1024,
+      "input_base": "0x00000000",
+      "sink_base": "0x00200000",
+      "input_zero_point": 0,
+      "dw_output_zero_point": 0,
+      "pw_output_zero_point": 0,
+      "cfg_words": 872,
+      "output_words": 4096,
+      "dw_mac": 73728,
+      "pw_mac": 524288,
+      "dw_vectors": 512,
+      "pw_tokens": 8192
+    }
+  },
+  "quant": {
+    "input_zero_point": 0,
+    "stem_output_zero_point": 0,
+    "ds1_input_zero_point": 0,
+    "ds1_dw_output_zero_point": 0,
+    "ds1_pw_output_zero_point": 0,
+    "ds2_input_zero_point": 0,
+    "ds2_dw_output_zero_point": 0,
+    "ds2_pw_output_zero_point": 0
+  },
+  "arrays": {
+    "model_input": {
+      "shape": [
+        32,
+        32,
+        3
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 3072,
+      "nonzero_count": 3049,
+      "min": -128,
+      "max": 127,
+      "source_symbol": "g_model_input_image_i8_packed"
+    },
+    "stem_weight": {
+      "shape": [
+        16,
+        3,
+        3,
+        3
+      ],
+      "layout": "[Cout,Cin,Kh,Kw] signed int8",
+      "count": 432,
+      "nonzero_count": 428,
+      "min": -127,
+      "max": 127,
+      "source_symbol": "g_stem_weight_i8_packed"
+    },
+    "DS1_dw_weight": {
+      "shape": [
+        16,
+        3,
+        3
+      ],
+      "layout": "[Cin,Kh,Kw] signed int8",
+      "count": 144,
+      "nonzero_count": 143,
+      "min": -127,
+      "max": 127,
+      "source_symbol": "g_ds1_dw_weight_i8_packed"
+    },
+    "DS1_pw_weight": {
+      "shape": [
+        32,
+        16
+      ],
+      "layout": "[Cout,Cin] signed int8",
+      "count": 512,
+      "nonzero_count": 510,
+      "min": -127,
+      "max": 127,
+      "source_symbol": "g_ds1_pw_weight_i8_packed"
+    },
+    "DS2_dw_weight": {
+      "shape": [
+        32,
+        3,
+        3
+      ],
+      "layout": "[Cin,Kh,Kw] signed int8",
+      "count": 288,
+      "nonzero_count": 286,
+      "min": -127,
+      "max": 127,
+      "source_symbol": "g_ds2_dw_weight_i8_packed"
+    },
+    "DS2_pw_weight": {
+      "shape": [
+        64,
+        32
+      ],
+      "layout": "[Cout,Cin] signed int8",
+      "count": 2048,
+      "nonzero_count": 2028,
+      "min": -127,
+      "max": 127,
+      "source_symbol": "g_ds2_pw_weight_i8_packed"
+    }
+  },
+  "quant_arrays": {
+    "stem_bias": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": -11431,
+      "max": 23220,
+      "source_symbol": "g_stem_bias"
+    },
+    "stem_multiplier": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": 1218480911,
+      "max": 2133166294,
+      "source_symbol": "g_stem_mul"
+    },
+    "stem_shift": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": 10,
+      "max": 12,
+      "source_symbol": "g_stem_shift_words"
+    },
+    "DS1_dw_bias": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": -3217,
+      "max": 2099,
+      "source_symbol": "g_ds1_dw_bias"
+    },
+    "DS1_dw_multiplier": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": 1076470016,
+      "max": 2091968640,
+      "source_symbol": "g_ds1_dw_mul"
+    },
+    "DS1_dw_shift": {
+      "shape": [
+        16
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 16,
+      "nonzero_count": 16,
+      "min": 7,
+      "max": 9,
+      "source_symbol": "g_ds1_dw_shift_words"
+    },
+    "DS1_pw_bias": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": -2706,
+      "max": 2167,
+      "source_symbol": "g_ds1_pw_bias"
+    },
+    "DS1_pw_multiplier": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": 1078471040,
+      "max": 2137172608,
+      "source_symbol": "g_ds1_pw_mul"
+    },
+    "DS1_pw_shift": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": 7,
+      "max": 9,
+      "source_symbol": "g_ds1_pw_shift_words"
+    },
+    "DS2_dw_bias": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": -2274,
+      "max": 2923,
+      "source_symbol": "g_ds2_dw_bias"
+    },
+    "DS2_dw_multiplier": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": 1082112896,
+      "max": 2127948672,
+      "source_symbol": "g_ds2_dw_mul"
+    },
+    "DS2_dw_shift": {
+      "shape": [
+        32
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 32,
+      "nonzero_count": 32,
+      "min": 7,
+      "max": 9,
+      "source_symbol": "g_ds2_dw_shift_words"
+    },
+    "DS2_pw_bias": {
+      "shape": [
+        64
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 64,
+      "nonzero_count": 64,
+      "min": -2670,
+      "max": 2329,
+      "source_symbol": "g_ds2_pw_bias"
+    },
+    "DS2_pw_multiplier": {
+      "shape": [
+        64
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 64,
+      "nonzero_count": 64,
+      "min": 1119201792,
+      "max": 2128298496,
+      "source_symbol": "g_ds2_pw_mul"
+    },
+    "DS2_pw_shift": {
+      "shape": [
+        64
+      ],
+      "layout": "signed int32 quantization words",
+      "count": 64,
+      "nonzero_count": 64,
+      "min": 7,
+      "max": 9,
+      "source_symbol": "g_ds2_pw_shift_words"
+    }
+  },
+  "streams": {
+    "model_input": {
+      "shape": [
+        32,
+        32,
+        3
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 3072,
+      "nonzero_count": 3049,
+      "min": -128,
+      "max": 127,
+      "source_symbol": "g_model_input_image_i8_packed"
+    },
+    "DS1_input": {
+      "shape": [
+        32,
+        32,
+        16
+      ],
+      "layout": "NHWC pixel-major signed int8 (stem output)",
+      "count": 16384,
+      "nonzero_count": 7441,
+      "min": 0,
+      "max": 42
+    },
+    "DS1_DW_expected": {
+      "shape": [
+        32,
+        32,
+        16
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 16384,
+      "nonzero_count": 9146,
+      "min": 0,
+      "max": 84
+    },
+    "DS1_PW_expected": {
+      "shape": [
+        32,
+        32,
+        32
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 32768,
+      "nonzero_count": 16707,
+      "min": 0,
+      "max": 75
+    },
+    "DS2_input": {
+      "shape": [
+        32,
+        32,
+        32
+      ],
+      "layout": "NHWC pixel-major signed int8 (DS1 PW output)",
+      "count": 32768,
+      "nonzero_count": 16707,
+      "min": 0,
+      "max": 75
+    },
+    "DS2_DW_expected": {
+      "shape": [
+        16,
+        16,
+        32
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 8192,
+      "nonzero_count": 4948,
+      "min": 0,
+      "max": 127
+    },
+    "DS2_PW_expected": {
+      "shape": [
+        16,
+        16,
+        64
+      ],
+      "layout": "NHWC pixel-major signed int8",
+      "count": 16384,
+      "nonzero_count": 9416,
+      "min": 0,
+      "max": 127
+    },
+    "DS1_sink_bytes": {
+      "shape": [
+        32,
+        32,
+        32
+      ],
+      "layout": "context/tile/drain-word sink byte order",
+      "count": 32768,
+      "nonzero_count": 16707,
+      "min": 0,
+      "max": 75
+    },
+    "DS2_sink_bytes": {
+      "shape": [
+        16,
+        16,
+        64
+      ],
+      "layout": "context/tile/drain-word sink byte order",
+      "count": 16384,
+      "nonzero_count": 9416,
+      "min": 0,
+      "max": 127
+    }
+  },
+  "files": {
+    "config": "ds12_stream_cfg_transactions.hex",
+    "sink_words": "ds12_stream_sink_words.hex",
+    "DS1_input": "ds12_stream_ds1_input_i8.hex",
+    "DS1_DW_expected": "ds12_stream_ds1_dw_output_i8.hex",
+    "DS1_PW_expected": "ds12_stream_ds1_pw_output_i8.hex",
+    "DS1_sink_bytes": "ds12_stream_ds1_output_i8.hex",
+    "DS2_input": "ds12_stream_ds2_input_i8.hex",
+    "DS2_DW_expected": "ds12_stream_ds2_dw_output_i8.hex",
+    "DS2_PW_expected": "ds12_stream_ds2_pw_output_i8.hex",
+    "DS2_sink_bytes": "ds12_stream_ds2_output_i8.hex"
+  },
+  "spot_checks": [
+    {
+      "name": "DS1_DW",
+      "kind": "depthwise",
+      "pixel": [
+        0,
+        0
+      ],
+      "channel": 0,
+      "terms": [
+        {
+          "kh": 0,
+          "kw": 0,
+          "iy": -1,
+          "ix": -1,
+          "act": 0,
+          "weight": 119,
+          "product": 0
+        },
+        {
+          "kh": 0,
+          "kw": 1,
+          "iy": -1,
+          "ix": 0,
+          "act": 0,
+          "weight": 127,
+          "product": 0
+        },
+        {
+          "kh": 0,
+          "kw": 2,
+          "iy": -1,
+          "ix": 1,
+          "act": 0,
+          "weight": 121,
+          "product": 0
+        },
+        {
+          "kh": 1,
+          "kw": 0,
+          "iy": 0,
+          "ix": -1,
+          "act": 0,
+          "weight": 27,
+          "product": 0
+        },
+        {
+          "kh": 1,
+          "kw": 1,
+          "iy": 0,
+          "ix": 0,
+          "act": 27,
+          "weight": -2,
+          "product": -54
+        },
+        {
+          "kh": 1,
+          "kw": 2,
+          "iy": 0,
+          "ix": 1,
+          "act": 23,
+          "weight": 50,
+          "product": 1150
+        },
+        {
+          "kh": 2,
+          "kw": 0,
+          "iy": 1,
+          "ix": -1,
+          "act": 0,
+          "weight": 108,
+          "product": 0
+        },
+        {
+          "kh": 2,
+          "kw": 1,
+          "iy": 1,
+          "ix": 0,
+          "act": 40,
+          "weight": 23,
+          "product": 920
+        },
+        {
+          "kh": 2,
+          "kw": 2,
+          "iy": 1,
+          "ix": 1,
+          "act": 25,
+          "weight": 124,
+          "product": 3100
+        }
+      ],
+      "trace": {
+        "acc": 5116,
+        "bias": 428,
+        "x": 5544,
+        "multiplier": 1179365760,
+        "product": 6538403773440,
+        "rounded_q31": 3045,
+        "shift": 7,
+        "shifted": 23,
+        "zero_point": 0,
+        "before_int8_clamp": 23,
+        "int8_clamped": 23,
+        "activation_min": 0,
+        "activation_max": 127,
+        "output": 23
+      },
+      "expected": 23
+    },
+    {
+      "name": "DS1_PW",
+      "kind": "pointwise",
+      "pixel": [
+        0,
+        0
+      ],
+      "channel": 0,
+      "terms": [
+        {
+          "ci": 0,
+          "act": 23,
+          "weight": 99,
+          "product": 2277
+        },
+        {
+          "ci": 1,
+          "act": 2,
+          "weight": -105,
+          "product": -210
+        },
+        {
+          "ci": 2,
+          "act": 0,
+          "weight": -14,
+          "product": 0
+        },
+        {
+          "ci": 3,
+          "act": 8,
+          "weight": 8,
+          "product": 64
+        },
+        {
+          "ci": 4,
+          "act": 8,
+          "weight": -35,
+          "product": -280
+        },
+        {
+          "ci": 5,
+          "act": 7,
+          "weight": -127,
+          "product": -889
+        },
+        {
+          "ci": 6,
+          "act": 0,
+          "weight": -12,
+          "product": 0
+        },
+        {
+          "ci": 7,
+          "act": 0,
+          "weight": -67,
+          "product": 0
+        },
+        {
+          "ci": 8,
+          "act": 0,
+          "weight": -9,
+          "product": 0
+        },
+        {
+          "ci": 9,
+          "act": 0,
+          "weight": -19,
+          "product": 0
+        },
+        {
+          "ci": 10,
+          "act": 0,
+          "weight": 60,
+          "product": 0
+        },
+        {
+          "ci": 11,
+          "act": 5,
+          "weight": -74,
+          "product": -370
+        },
+        {
+          "ci": 12,
+          "act": 0,
+          "weight": 15,
+          "product": 0
+        },
+        {
+          "ci": 13,
+          "act": 20,
+          "weight": 82,
+          "product": 1640
+        },
+        {
+          "ci": 14,
+          "act": 0,
+          "weight": -17,
+          "product": 0
+        },
+        {
+          "ci": 15,
+          "act": 12,
+          "weight": -40,
+          "product": -480
+        }
+      ],
+      "trace": {
+        "acc": 1752,
+        "bias": 684,
+        "x": 2436,
+        "multiplier": 2073890944,
+        "product": 5051998339584,
+        "rounded_q31": 2353,
+        "shift": 8,
+        "shifted": 9,
+        "zero_point": 0,
+        "before_int8_clamp": 9,
+        "int8_clamped": 9,
+        "activation_min": 0,
+        "activation_max": 127,
+        "output": 9
+      },
+      "expected": 9
+    },
+    {
+      "name": "DS2_DW",
+      "kind": "depthwise",
+      "pixel": [
+        0,
+        0
+      ],
+      "channel": 6,
+      "terms": [
+        {
+          "kh": 0,
+          "kw": 0,
+          "iy": -1,
+          "ix": -1,
+          "act": 0,
+          "weight": -89,
+          "product": 0
+        },
+        {
+          "kh": 0,
+          "kw": 1,
+          "iy": -1,
+          "ix": 0,
+          "act": 0,
+          "weight": -31,
+          "product": 0
+        },
+        {
+          "kh": 0,
+          "kw": 2,
+          "iy": -1,
+          "ix": 1,
+          "act": 0,
+          "weight": -5,
+          "product": 0
+        },
+        {
+          "kh": 1,
+          "kw": 0,
+          "iy": 0,
+          "ix": -1,
+          "act": 0,
+          "weight": -127,
+          "product": 0
+        },
+        {
+          "kh": 1,
+          "kw": 1,
+          "iy": 0,
+          "ix": 0,
+          "act": 1,
+          "weight": 0,
+          "product": 0
+        },
+        {
+          "kh": 1,
+          "kw": 2,
+          "iy": 0,
+          "ix": 1,
+          "act": 2,
+          "weight": -30,
+          "product": -60
+        },
+        {
+          "kh": 2,
+          "kw": 0,
+          "iy": 1,
+          "ix": -1,
+          "act": 0,
+          "weight": -117,
+          "product": 0
+        },
+        {
+          "kh": 2,
+          "kw": 1,
+          "iy": 1,
+          "ix": 0,
+          "act": 6,
+          "weight": 5,
+          "product": 30
+        },
+        {
+          "kh": 2,
+          "kw": 2,
+          "iy": 1,
+          "ix": 1,
+          "act": 10,
+          "weight": 13,
+          "product": 130
+        }
+      ],
+      "trace": {
+        "acc": 100,
+        "bias": 2683,
+        "x": 2783,
+        "multiplier": 1196075520,
+        "product": 3328678172160,
+        "rounded_q31": 1550,
+        "shift": 7,
+        "shifted": 12,
+        "zero_point": 0,
+        "before_int8_clamp": 12,
+        "int8_clamped": 12,
+        "activation_min": 0,
+        "activation_max": 127,
+        "output": 12
+      },
+      "expected": 12
+    },
+    {
+      "name": "DS2_PW",
+      "kind": "pointwise",
+      "pixel": [
+        8,
+        13
+      ],
+      "channel": 13,
+      "terms": [
+        {
+          "ci": 0,
+          "act": 5,
+          "weight": 6,
+          "product": 30
+        },
+        {
+          "ci": 1,
+          "act": 0,
+          "weight": 0,
+          "product": 0
+        },
+        {
+          "ci": 2,
+          "act": 0,
+          "weight": 6,
+          "product": 0
+        },
+        {
+          "ci": 3,
+          "act": 0,
+          "weight": -3,
+          "product": 0
+        },
+        {
+          "ci": 4,
+          "act": 19,
+          "weight": 31,
+          "product": 589
+        },
+        {
+          "ci": 5,
+          "act": 127,
+          "weight": 36,
+          "product": 4572
+        },
+        {
+          "ci": 6,
+          "act": 0,
+          "weight": -49,
+          "product": 0
+        },
+        {
+          "ci": 7,
+          "act": 105,
+          "weight": 45,
+          "product": 4725
+        },
+        {
+          "ci": 8,
+          "act": 4,
+          "weight": 3,
+          "product": 12
+        },
+        {
+          "ci": 9,
+          "act": 2,
+          "weight": 33,
+          "product": 66
+        },
+        {
+          "ci": 10,
+          "act": 86,
+          "weight": 52,
+          "product": 4472
+        },
+        {
+          "ci": 11,
+          "act": 0,
+          "weight": -6,
+          "product": 0
+        },
+        {
+          "ci": 12,
+          "act": 11,
+          "weight": 21,
+          "product": 231
+        },
+        {
+          "ci": 13,
+          "act": 0,
+          "weight": 39,
+          "product": 0
+        },
+        {
+          "ci": 14,
+          "act": 60,
+          "weight": -8,
+          "product": -480
+        },
+        {
+          "ci": 15,
+          "act": 10,
+          "weight": -20,
+          "product": -200
+        },
+        {
+          "ci": 16,
+          "act": 0,
+          "weight": -12,
+          "product": 0
+        },
+        {
+          "ci": 17,
+          "act": 0,
+          "weight": -16,
+          "product": 0
+        },
+        {
+          "ci": 18,
+          "act": 23,
+          "weight": 76,
+          "product": 1748
+        },
+        {
+          "ci": 19,
+          "act": 10,
+          "weight": 41,
+          "product": 410
+        },
+        {
+          "ci": 20,
+          "act": 0,
+          "weight": 10,
+          "product": 0
+        },
+        {
+          "ci": 21,
+          "act": 57,
+          "weight": 12,
+          "product": 684
+        },
+        {
+          "ci": 22,
+          "act": 13,
+          "weight": 15,
+          "product": 195
+        },
+        {
+          "ci": 23,
+          "act": 7,
+          "weight": 46,
+          "product": 322
+        },
+        {
+          "ci": 24,
+          "act": 18,
+          "weight": 31,
+          "product": 558
+        },
+        {
+          "ci": 25,
+          "act": 6,
+          "weight": -127,
+          "product": -762
+        },
+        {
+          "ci": 26,
+          "act": 11,
+          "weight": 68,
+          "product": 748
+        },
+        {
+          "ci": 27,
+          "act": 30,
+          "weight": -19,
+          "product": -570
+        },
+        {
+          "ci": 28,
+          "act": 5,
+          "weight": 36,
+          "product": 180
+        },
+        {
+          "ci": 29,
+          "act": 1,
+          "weight": -46,
+          "product": -46
+        },
+        {
+          "ci": 30,
+          "act": 9,
+          "weight": 15,
+          "product": 135
+        },
+        {
+          "ci": 31,
+          "act": 0,
+          "weight": -14,
+          "product": 0
+        }
+      ],
+      "trace": {
+        "acc": 17619,
+        "bias": 1106,
+        "x": 18725,
+        "multiplier": 1902001792,
+        "product": 35614983555200,
+        "rounded_q31": 16585,
+        "shift": 7,
+        "shifted": 129,
+        "zero_point": 0,
+        "before_int8_clamp": 129,
+        "int8_clamped": 127,
+        "activation_min": 0,
+        "activation_max": 127,
+        "output": 127
+      },
+      "expected": 127
+    }
+  ],
+  "independent_software_spot_checks": {
+    "status": "PASS",
+    "checks": 4,
+    "coverage": [
+      "signed products",
+      "multiply",
+      "Q31 nearest-away-from-zero rounding",
+      "arithmetic right shift",
+      "zero-point addition (header zp=0)",
+      "INT8/activation saturation"
+    ]
+  },
+  "rtl_evidence_boundary": "This fixture is a direct M1.1-A unit gate only; it is not full-network or full-top evidence."
+}
