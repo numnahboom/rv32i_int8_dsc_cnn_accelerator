@@ -9,18 +9,12 @@ module m11a_pw_mac_cell (
     input  wire               clear_acc,
     input  wire signed [7:0]  act_in,
     input  wire signed [7:0]  weight_in,
-    output wire signed [31:0] sum_next
+    output wire signed [47:0] sum_next
 );
-    reg signed [31:0] acc_reg;
-    wire signed [15:0] product = act_in * weight_in;
-    assign sum_next = clear_acc ? {{16{product[15]}}, product} :
-                      (acc_reg + {{16{product[15]}}, product});
-    always @(posedge clk) begin
-        if (!rst_n)
-            acc_reg <= 32'sd0;
-        else if (en)
-            acc_reg <= sum_next;
-    end
+    m11a_dsp48e1_int8_accum u_dsp48e1 (
+        .clk(clk), .rst_p(!rst_n), .ce(en), .clear_acc(clear_acc),
+        .a_in(act_in), .b_in(weight_in), .p_out(sum_next)
+    );
 endmodule
 
 module m11a_pw64_shared_core (
@@ -103,6 +97,9 @@ module m11a_pw64_shared_core (
     reg pending_owner;
     reg [31:0] pending_epoch, pending_context_ordinal;
     reg final_token_done;
+    /* The last K product becomes visible after the DSP PREG edge. */
+    reg dsp_drain;
+    reg dsp_drain_bank;
 
     reg signed [31:0] result_bank0 [0:63];
     reg signed [31:0] result_bank1 [0:63];
@@ -121,6 +118,19 @@ module m11a_pw64_shared_core (
     reg done_r, error_r;
     reg [31:0] token_count_r, mac_count_r, out_count_r;
 
+    reg [127:0] rq_acc_bus, rq_bias_bus, rq_multiplier_bus;
+    reg [23:0] rq_shift_bus;
+    integer rq_lane;
+    integer rq_chan;
+    integer rq_idx;
+    wire rq_bank = drain_bank;
+    wire [3:0] rq_word_sel = (output_fire && (drain_word != 4'd15)) ?
+                              (drain_word + 1'b1) : drain_word;
+    wire rq_in_valid;
+    wire rq_in_ready;
+    wire rq_out_valid;
+    wire [31:0] rq_out_data;
+
     wire token_fire = token_valid && token_ready;
     wire process_fire = pending && pw_row_valid;
     wire output_fire = out_valid && out_ready;
@@ -136,81 +146,68 @@ module m11a_pw64_shared_core (
                          (current_active || free_any);
     assign pw_row_rd_en = token_fire;
     assign pw_row_rd_addr = token_weight_row;
-    assign out_valid = drain_active;
+    /* The RQ4 pipeline is the valid/data boundary.  It only accepts a new
+     * word when the current word is absent or is being consumed, which gives
+     * one-cycle startup latency and one-word-per-cycle steady-state drain. */
+    /* Word 15 always terminates the current result bank.  A following bank
+     * is launched by drain_start on the next edge, so never replay word 15
+     * into the RQ pipeline at a bank boundary (that would present the old
+     * tile's data under the new tile's metadata). */
+    /* RQ4 now has an explicit multi-cycle pipeline and cannot accept the
+     * next word on the same edge as an output.  Feed word 15 on the cycle
+     * after word 14 is consumed; drain_active remains asserted until that
+     * final word is emitted. */
+    assign rq_in_valid = drain_active && rq_in_ready;
+    assign out_valid = drain_active && rq_out_valid;
     assign out_addr = drain_addr_r;
     assign out_be = 4'hf;
     assign out_context = result_context[drain_bank];
     assign out_owner = result_owner[drain_bank];
     assign out_epoch = result_epoch[drain_bank];
-    assign out_last = drain_active && result_last_layer[drain_bank] && (drain_word == 4'd15);
+    assign out_data = rq_out_data;
+    assign out_last = drain_active && rq_out_valid &&
+                      result_last_layer[drain_bank] && (drain_word == 4'd15);
     assign done = done_r;
     assign error = error_r;
     assign pw_token_count = token_count_r;
     assign pw_mac_count = mac_count_r;
     assign out_word_count = out_count_r;
 
-    function automatic signed [7:0] requant_pw;
-        input signed [31:0] acc_value;
-        input signed [31:0] bias_value;
-        input signed [31:0] multiplier_value;
-        input [5:0] shift_value;
-        reg signed [32:0] x;
-        reg signed [64:0] product;
-        reg signed [64:0] magnitude;
-        reg signed [64:0] rounded;
-        reg signed [64:0] shifted;
-        reg signed [64:0] q;
-        begin
-            x = acc_value + bias_value;
-            product = x * multiplier_value;
-            if (product < 0) begin
-                magnitude = -product;
-                rounded = -((magnitude + 65'sd1073741824) >>> 31);
-            end else begin
-                rounded = (product + 65'sd1073741824) >>> 31;
-            end
-            shifted = rounded >>> shift_value;
-            q = shifted + pw_zp_r;
-            if (q > 65'sd127) q = 65'sd127;
-            if (q < -65'sd128) q = -65'sd128;
-            if (q < pw_min_r) q = pw_min_r;
-            if (q > pw_max_r) q = pw_max_r;
-            requant_pw = q[7:0];
-        end
-    endfunction
-
-    reg [31:0] rq_word;
-    integer rq_lane;
-    integer rq_chan;
-    integer rq_idx;
-    reg signed [31:0] rq_acc_i, rq_bias_i, rq_mul_i;
-    reg [5:0] rq_shift_i;
+    /* Select the four accumulators and quantization parameters for the
+     * current drain word.  On a simultaneous output/input handshake the
+     * next word is selected before the edge, so the RQ4 pipeline can sustain
+     * one accepted word per cycle after its initial PREG latency. */
     always @* begin
-        rq_word = 32'd0;
+        rq_acc_bus = 128'd0;
+        rq_bias_bus = 128'd0;
+        rq_multiplier_bus = 128'd0;
+        rq_shift_bus = 24'd0;
         for (rq_lane = 0; rq_lane < 4; rq_lane = rq_lane + 1) begin
-            rq_idx = {drain_word[3:1],3'b000} + {drain_word[0],2'b0} + rq_lane;
-            rq_chan = {result_tile[drain_bank],3'b000} + {drain_word[0],2'b0} + rq_lane;
-                /* Each result word carries four lanes.  The low/high word
-                 * of a pixel pair selects lanes 0..3/4..7; the bit-0 term
-                 * is therefore a four-entry stride, not an eight-entry
-                 * stride.  The old 3'b000 concatenation skipped the upper
-                 * half of every eight-lane pixel and made Vivado remove 32
-                 * of the 64 PW MAC cells as unobserved. */
-                if (drain_bank)
-                    rq_acc_i = result_bank1[{drain_word[3:1],3'b000} + rq_lane +
-                                       {drain_word[0],2'b0}];
-                else
-                    rq_acc_i = result_bank0[{drain_word[3:1],3'b000} + rq_lane +
-                                       {drain_word[0],2'b0}];
-            rq_bias_i = pw_bias_bus[rq_chan*32 +: 32];
-            rq_mul_i = pw_multiplier_bus[rq_chan*32 +: 32];
-            rq_shift_i = pw_shift_bus[rq_chan*6 +: 6];
-            rq_word[rq_lane*8 +: 8] = requant_pw(rq_acc_i, rq_bias_i, rq_mul_i, rq_shift_i);
+            rq_idx = {rq_word_sel[3:1],3'b000} +
+                     {rq_word_sel[0],2'b0} + rq_lane;
+            rq_chan = {result_tile[rq_bank],3'b000} +
+                      {rq_word_sel[0],2'b0} + rq_lane;
+            if (rq_bank)
+                rq_acc_bus[rq_lane*32 +: 32] = result_bank1[rq_idx];
+            else
+                rq_acc_bus[rq_lane*32 +: 32] = result_bank0[rq_idx];
+            rq_bias_bus[rq_lane*32 +: 32] = pw_bias_bus[rq_chan*32 +: 32];
+            rq_multiplier_bus[rq_lane*32 +: 32] =
+                pw_multiplier_bus[rq_chan*32 +: 32];
+            rq_shift_bus[rq_lane*6 +: 6] = pw_shift_bus[rq_chan*6 +: 6];
         end
     end
-    assign out_data = rq_word;
 
-    wire signed [31:0] mac_sum_next [0:63];
+    m11a_rq4 pwrq4 (
+        .clk(clk), .rst_p(!rst_n), .in_valid(rq_in_valid),
+        .in_ready(rq_in_ready), .acc_bus(rq_acc_bus), .bias_bus(rq_bias_bus),
+        .multiplier_bus(rq_multiplier_bus), .shift_bus(rq_shift_bus),
+        .zero_point(pw_zp_r), .activation_min(pw_min_r),
+        .activation_max(pw_max_r), .out_valid(rq_out_valid),
+        .out_ready(out_ready && drain_active), .out_data(rq_out_data)
+    );
+
+    wire signed [47:0] mac_sum_next [0:63];
     wire mac_en = process_fire;
     wire mac_clear = pending_first;
     genvar gp;
@@ -240,6 +237,8 @@ module m11a_pw64_shared_core (
             pending_last_layer <= 0;
             pending_tile <= 0; pending_row <= 0; pending_context <= 0;
             pending_owner <= 0; pending_epoch <= 0; pending_context_ordinal <= 0;
+            dsp_drain <= 1'b0;
+            dsp_drain_bank <= 1'b0;
             final_token_done <= 0; drain_active <= 0; drain_bank <= 0;
             drain_word <= 0; drain_addr_r <= 0; done_r <= 0; error_r <= 0;
             token_count_r <= 0; mac_count_r <= 0; out_count_r <= 0;
@@ -270,6 +269,8 @@ module m11a_pw64_shared_core (
                 bank_state[1] <= BANK_FREE;
                 current_active <= 0;
                 pending <= 0;
+                dsp_drain <= 1'b0;
+                dsp_drain_bank <= 1'b0;
                 drain_active <= 0;
                 final_token_done <= 0;
                 done_r <= 0;
@@ -308,22 +309,32 @@ module m11a_pw64_shared_core (
                 pending <= 1'b0;
                 mac_count_r <= mac_count_r + 32'd64;
                 if (pending_last_k) begin
-                    if (current_bank)
-                        for (i = 0; i < 64; i = i + 1) result_bank1[i] <= mac_sum_next[i];
-                    else
-                        for (i = 0; i < 64; i = i + 1) result_bank0[i] <= mac_sum_next[i];
-                    result_context[current_bank] <= pending_context;
-                    result_owner[current_bank] <= pending_owner;
-                    result_epoch[current_bank] <= pending_epoch;
-                    result_context_ordinal[current_bank] <= pending_context_ordinal;
-                    result_tile[current_bank] <= pending_tile;
-                    result_last_tile[current_bank] <= pending_last_tile;
-                    result_last_layer[current_bank] <= pending_last_layer;
-                    bank_state[current_bank] <= BANK_READY;
+                    /* The PREG output contains the final product only after
+                     * this edge.  Commit it on the following edge, while a
+                     * new K token may already be accepted into the same
+                     * 64-lane physical array. */
+                    dsp_drain <= 1'b1;
+                    dsp_drain_bank <= current_bank;
                     current_active <= 1'b0;
-                    if (pending_last_layer)
-                        final_token_done <= 1'b1;
                 end
+            end
+
+            if (dsp_drain) begin
+                dsp_drain <= 1'b0;
+                if (dsp_drain_bank)
+                    for (i = 0; i < 64; i = i + 1) result_bank1[i] <= mac_sum_next[i][31:0];
+                else
+                    for (i = 0; i < 64; i = i + 1) result_bank0[i] <= mac_sum_next[i][31:0];
+                result_context[dsp_drain_bank] <= pending_context;
+                result_owner[dsp_drain_bank] <= pending_owner;
+                result_epoch[dsp_drain_bank] <= pending_epoch;
+                result_context_ordinal[dsp_drain_bank] <= pending_context_ordinal;
+                result_tile[dsp_drain_bank] <= pending_tile;
+                result_last_tile[dsp_drain_bank] <= pending_last_tile;
+                result_last_layer[dsp_drain_bank] <= pending_last_layer;
+                bank_state[dsp_drain_bank] <= BANK_READY;
+                if (pending_last_layer)
+                    final_token_done <= 1'b1;
             end
 
             if (drain_start) begin

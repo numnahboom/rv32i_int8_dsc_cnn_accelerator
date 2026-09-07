@@ -7,6 +7,7 @@ set part xc7z020clg400-1
 set top m11a_runtime_dw_pw_core
 set_param general.maxThreads 8
 set files {
+    rtl/cnn/m11a_dsp48e1_wrappers.v
     rtl/cnn/m11a_runtime_cfg_store.v
     rtl/cnn/m11a_dw16_shared_line.v
     rtl/cnn/m11a_context_packer.v

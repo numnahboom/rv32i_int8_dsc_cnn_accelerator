@@ -67,6 +67,8 @@ module m11a_dw16_shared_line (
     localparam [3:0] ST_RQ         = 4'd5;
     localparam [3:0] ST_OUT        = 4'd6;
     localparam [3:0] ST_DONE       = 4'd7;
+    localparam [3:0] ST_RQ_WAIT    = 4'd8;
+    localparam [3:0] ST_RQ_FIRE    = 4'd9;
 
     reg [3:0] state;
     reg [1:0] layer_r;
@@ -95,8 +97,11 @@ module m11a_dw16_shared_line (
     reg [5:0] out_row, out_col;
     reg [1:0] group_r;
     reg [3:0] tap_idx;
-    reg signed [31:0] accum [0:15];
-    reg [127:0] dw_data_r;
+    reg [1:0] rq_group;
+    /* Keep each requantized group in its own register bank.  A variable
+     * part-select here made rq_group a long control-to-data timing arc and
+     * forced Vivado to build a 128-bit dynamic writeback mux. */
+    reg [31:0] dw_data_r0, dw_data_r1, dw_data_r2, dw_data_r3;
     reg dw_valid_r;
     reg done_r, error_r;
     reg [9:0] pixel_r;
@@ -104,13 +109,22 @@ module m11a_dw16_shared_line (
     reg [2:0] context_pixel_r;
     reg [31:0] dw_mac_count_r, dw_vector_count_r, pad_count_r, input_count_r;
 
+    wire signed [47:0] dw_accum_dsp [0:15];
+    wire [31:0] dw_rq_data;
+    wire dw_rq_valid, dw_rq_ready;
+    wire dw_rq_start = (state == ST_RQ_FIRE) && dw_rq_ready;
+    reg [127:0] dw_rq_acc_bus_c, dw_rq_bias_bus_c, dw_rq_multiplier_bus_c;
+    reg [23:0] dw_rq_shift_bus_c;
+    reg [127:0] dw_rq_acc_bus_r, dw_rq_bias_bus_r, dw_rq_multiplier_bus_r;
+    reg [23:0] dw_rq_shift_bus_r;
+
     wire start_fire = start_valid && start_ready;
     wire dw_fire = dw_valid_r && dw_ready;
     assign start_ready = rst_n && (state == ST_IDLE);
     assign mem_req_valid = (state == ST_LOAD_REQ);
     assign mem_req_addr = load_addr;
     assign dw_valid = dw_valid_r;
-    assign dw_data = dw_data_r;
+    assign dw_data = {dw_data_r3, dw_data_r2, dw_data_r1, dw_data_r0};
     assign dw_pixel = pixel_r;
     assign dw_group = group_r;
     assign dw_context = context_ordinal_r[1:0];
@@ -136,8 +150,6 @@ module m11a_dw16_shared_line (
     reg [127:0] tap_word;
     reg signed [7:0] tap_act [0:15];
     reg signed [7:0] tap_wgt [0:15];
-    reg signed [31:0] acc_next [0:15];
-    reg signed [63:0] tap_product;
     integer li;
 
     /* The nine tap positions are decoded explicitly.  This keeps the live
@@ -190,45 +202,54 @@ module m11a_dw16_shared_line (
                 tap_wgt[li] = dw_weight_bus[(li*72 + tap_idx*8) +: 8];
             else
                 tap_wgt[li] = dw_weight_bus[(1152 + li*72 + tap_idx*8) +: 8];
-            tap_product = $signed(tap_act[li]) * $signed(tap_wgt[li]);
-            acc_next[li] = accum[li] + $signed(tap_product[31:0]);
         end
     end
-
-    function automatic signed [7:0] requant_dw;
-        input signed [31:0] acc_value;
-        input signed [31:0] bias_value;
-        input signed [31:0] multiplier_value;
-        input [5:0] shift_value;
-        reg signed [32:0] x;
-        reg signed [64:0] product;
-        reg signed [64:0] magnitude;
-        reg signed [64:0] rounded;
-        reg signed [64:0] shifted;
-        reg signed [64:0] q;
-        begin
-            x = acc_value + bias_value;
-            product = x * multiplier_value;
-            if (product < 0) begin
-                magnitude = -product;
-                rounded = -((magnitude + 65'sd1073741824) >>> 31);
-            end else begin
-                rounded = (product + 65'sd1073741824) >>> 31;
-            end
-            shifted = rounded >>> shift_value;
-            q = shifted + dw_zp_r;
-            if (q > 65'sd127) q = 65'sd127;
-            if (q < -65'sd128) q = -65'sd128;
-            if (q < dw_min_r) q = dw_min_r;
-            if (q > dw_max_r) q = dw_max_r;
-            requant_dw = q[7:0];
+    /* One physical DSP accumulator per active DW lane. */
+    genvar gd;
+    generate
+        for (gd = 0; gd < 16; gd = gd + 1) begin : GEN_DW16_MAC
+            m11a_dsp48e1_int8_accum u_dsp48e1 (
+                .clk(clk), .rst_p(!rst_n), .ce(state == ST_TAP),
+                .clear_acc((state == ST_TAP) && (tap_idx == 4'd0)),
+                .a_in(tap_act[gd]), .b_in(tap_wgt[gd]),
+                .p_out(dw_accum_dsp[gd])
+            );
         end
-    endfunction
+    endgenerate
 
     integer i;
     integer global_ch;
-    reg signed [31:0] bias_i, mul_i;
-    reg [5:0] shift_i;
+    integer rq_lane;
+    always @* begin
+        dw_rq_acc_bus_c = 128'd0;
+        dw_rq_bias_bus_c = 128'd0;
+        dw_rq_multiplier_bus_c = 128'd0;
+        dw_rq_shift_bus_c = 24'd0;
+        for (rq_lane = 0; rq_lane < 4; rq_lane = rq_lane + 1) begin
+            global_ch = (group_r == 0) ? ((rq_group * 4) + rq_lane) :
+                                         (16 + (rq_group * 4) + rq_lane);
+            dw_rq_acc_bus_c[rq_lane*32 +: 32] =
+                dw_accum_dsp[(rq_group * 4) + rq_lane][31:0];
+            dw_rq_bias_bus_c[rq_lane*32 +: 32] = dw_bias_bus[global_ch*32 +: 32];
+            dw_rq_multiplier_bus_c[rq_lane*32 +: 32] =
+                dw_multiplier_bus[global_ch*32 +: 32];
+            dw_rq_shift_bus_c[rq_lane*6 +: 6] = dw_shift_bus[global_ch*32 +: 6];
+        end
+        /* The four-lane DWRQ4 is time-multiplexed over the 16-channel
+         * vector.  It therefore remains exactly 16 DSPs while the output
+         * ABI still carries all sixteen bytes in one held vector. */
+    end
+
+    /* DWRQ4 is issued once per DW vector.  Its four lanes use 16 DSPs. */
+    m11a_rq4 dwrq4 (
+        .clk(clk), .rst_p(!rst_n), .in_valid(dw_rq_start),
+        .in_ready(dw_rq_ready), .acc_bus(dw_rq_acc_bus_r),
+        .bias_bus(dw_rq_bias_bus_r), .multiplier_bus(dw_rq_multiplier_bus_r),
+        .shift_bus(dw_rq_shift_bus_r), .zero_point(dw_zp_r),
+        .activation_min(dw_min_r), .activation_max(dw_max_r),
+        .out_valid(dw_rq_valid), .out_ready(dw_ready),
+        .out_data(dw_rq_data)
+    );
     always @(posedge clk) begin
         if (!rst_n) begin
             state <= ST_IDLE;
@@ -241,11 +262,13 @@ module m11a_dw16_shared_line (
             load_slot <= 0; load_x <= 0; load_addr <= 0; center_row_addr <= 0;
             center_row <= 0; out_row <= 0; out_col <= 0; group_r <= 0;
             tap_idx <= 0;
-            dw_data_r <= 0; dw_valid_r <= 0; done_r <= 0; error_r <= 0;
+            dw_data_r0 <= 0; dw_data_r1 <= 0; dw_data_r2 <= 0; dw_data_r3 <= 0;
+            dw_valid_r <= 0; done_r <= 0; error_r <= 0;
+            rq_group <= 0;
+            dw_rq_acc_bus_r <= 0; dw_rq_bias_bus_r <= 0;
+            dw_rq_multiplier_bus_r <= 0; dw_rq_shift_bus_r <= 0;
             pixel_r <= 0; context_ordinal_r <= 0; context_pixel_r <= 0;
             dw_mac_count_r <= 0; dw_vector_count_r <= 0; pad_count_r <= 0; input_count_r <= 0;
-            for (i = 0; i < 16; i = i + 1)
-                accum[i] <= 0;
         end else begin
             if (start_fire) begin
                 layer_r <= desc_layer;
@@ -276,6 +299,12 @@ module m11a_dw16_shared_line (
                 dw_vector_count_r <= 0;
                 pad_count_r <= 0;
                 input_count_r <= 0;
+                dw_valid_r <= 1'b0;
+                dw_data_r0 <= 32'd0;
+                dw_data_r1 <= 32'd0;
+                dw_data_r2 <= 32'd0;
+                dw_data_r3 <= 32'd0;
+                rq_group <= 2'd0;
                 done_r <= 0;
                 error_r <= 0;
                 state <= ST_LOAD_PREP;
@@ -291,7 +320,6 @@ module m11a_dw16_shared_line (
                     else line2_valid <= 1'b0;
                     if (load_slot == 2) begin
                         tap_idx <= 0;
-                        for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
                         state <= ST_TAP;
                     end else begin
                         load_slot <= load_slot + 1'b1;
@@ -321,7 +349,6 @@ module m11a_dw16_shared_line (
                     if (load_x == in_w_r - 1'b1) begin
                         if (load_slot == 2) begin
                             tap_idx <= 0;
-                            for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
                             state <= ST_TAP;
                         end else begin
                             load_slot <= load_slot + 1'b1;
@@ -339,32 +366,49 @@ module m11a_dw16_shared_line (
                     end
                 end
             end else if (state == ST_TAP) begin
-                for (i = 0; i < 16; i = i + 1) begin
-                    accum[i] <= acc_next[i];
-                    dw_mac_count_r <= dw_mac_count_r + 32'd16;
-                end
+                dw_mac_count_r <= dw_mac_count_r + 32'd16;
                 if ((!tap_spatial_valid || !tap_line_valid) && group_r == 0)
                     pad_count_r <= pad_count_r + 1'b1;
                 if (tap_idx == 4'd8) begin
+                    rq_group <= 2'd0;
+                    dw_data_r0 <= 32'd0;
+                    dw_data_r1 <= 32'd0;
+                    dw_data_r2 <= 32'd0;
+                    dw_data_r3 <= 32'd0;
                     state <= ST_RQ;
                 end else begin
                     tap_idx <= tap_idx + 1'b1;
                 end
             end else if (state == ST_RQ) begin
-                /* One DW16 result vector carries every channel in the active
-                 * 16-channel group.  The old four-lane loop emitted four
-                 * successive partial vectors into one 128-bit register; the
-                 * final iteration therefore left only channels 12..15 in
-                 * lanes 0..3 and zeroed the remaining twelve lanes. */
-                for (i = 0; i < 16; i = i + 1) begin
-                    global_ch = (group_r == 0) ? i : (16+i);
-                    bias_i = dw_bias_bus[global_ch*32 +: 32];
-                    mul_i = dw_multiplier_bus[global_ch*32 +: 32];
-                    shift_i = dw_shift_bus[global_ch*32 +: 6];
-                    dw_data_r[i*8 +: 8] <= requant_dw(accum[i], bias_i, mul_i, shift_i);
+                /* Capture the dynamic channel/bias selection at a real
+                 * register boundary before starting the four-lane RQ DSP
+                 * pipeline.  rq_group no longer fans directly into DWRQ4. */
+                if (dw_rq_ready) begin
+                    dw_rq_acc_bus_r <= dw_rq_acc_bus_c;
+                    dw_rq_bias_bus_r <= dw_rq_bias_bus_c;
+                    dw_rq_multiplier_bus_r <= dw_rq_multiplier_bus_c;
+                    dw_rq_shift_bus_r <= dw_rq_shift_bus_c;
+                    state <= ST_RQ_FIRE;
                 end
-                dw_valid_r <= 1'b1;
-                state <= ST_OUT;
+            end else if (state == ST_RQ_FIRE) begin
+                if (dw_rq_start)
+                    state <= ST_RQ_WAIT;
+            end else if (state == ST_RQ_WAIT) begin
+                if (dw_rq_valid && dw_ready) begin
+                    case (rq_group)
+                        2'd0: dw_data_r0 <= dw_rq_data;
+                        2'd1: dw_data_r1 <= dw_rq_data;
+                        2'd2: dw_data_r2 <= dw_rq_data;
+                        default: dw_data_r3 <= dw_rq_data;
+                    endcase
+                    if (rq_group == 2'd3) begin
+                        dw_valid_r <= 1'b1;
+                        state <= ST_OUT;
+                    end else begin
+                        rq_group <= rq_group + 1'b1;
+                        state <= ST_RQ;
+                    end
+                end
             end else if (state == ST_OUT) begin
                 if (dw_fire) begin
                     dw_valid_r <= 1'b0;
@@ -401,7 +445,6 @@ module m11a_dw16_shared_line (
                             end
                             group_r <= 0;
                             tap_idx <= 0;
-                            for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
                             /* DS2 reuses the one three-line store for the
                              * second 16-channel group.  Once group 1 has
                              * been emitted, group 0 must be reloaded before
