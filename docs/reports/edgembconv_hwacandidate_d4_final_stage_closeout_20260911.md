@@ -78,7 +78,7 @@ C0 保持独立 control：`cnn_top` / `model_quant.h` ABI、10,273,792 ops、no-
 
 ## 8. 未达原因、否决候选与未来入口
 
-candidate1--3、5、6 的共同问题是 setup/TNS 仍为负；candidate5/6 的 mandatory WNS/TNS simultaneous-improvement gate 失败，candidate6 虽改善 WNS 至 -2.334 ns，却把 TNS 恶化至 -1544.753 ns。最终能效门等价于 `cycles × power_W ≤ 145568`，但当前没有覆盖完整 D4 推理的同源 cycles/power 组合，所以既不能宣称达标，也不能用 OOC 数字做乐观外推。若未来恢复工作，应以当前 candidate4 manifest、OOC run 与功能回归入口为起点，并仅在父级重新授权后继续；本收尾不提出新优化方向。
+candidate1--3、5、6 的共同问题是 setup/TNS 仍为负；candidate5/6 的 mandatory WNS/TNS simultaneous-improvement gate 失败，candidate6 虽改善 WNS 至 -2.334 ns，却把 TNS 恶化至 -1544.753 ns。最终能效门等价于 `cycles × power_W ≤ 145568`，但当前没有覆盖完整 D4 推理的同源 cycles/power 组合，所以既不能宣称达标，也不能用 OOC 数字做乐观外推。后续工作应以当前 candidate4 manifest、OOC run 与功能回归入口为同源起点；本收尾不提出新优化方向。
 
 ## 9. Git 收尾与证据边界
 

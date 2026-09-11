@@ -24,10 +24,9 @@ Python/PyTorch checkpoint
 
 完整目标仍为 8 ns、WNS/WHS `>=0`、TNS/THS `=0`、完整推理 `<=2,000,000 cycles`、LUT/FF/DSP/BRAM 各严格 `<70%`、DSP `<=153`、post-route estimated power `<=3 W`，以及按真实 D4 ops 计算 `>=20 GOPS/W`。
 
-阅读入口：
+核心文档：
 
-- [项目进化史](docs/project_evolution_20260911.md)
-- [分阶段阅读与 AI 导读](docs/project_reading_guide_20260911.md)
+- [工程演进与验证报告](docs/project_evolution_20260911.md)
 - [权威报告索引](docs/reports/README.md)
 - [C0 frozen control 收尾](docs/reports/c0_frozen_control_closeout_20260911.md)
 - [D4 最终阶段收尾](docs/reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md)
@@ -354,10 +353,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
 - 历史报告属于各自日期和 source snapshot；不得用旧数字描述当前源码。
 
-## 停止点与恢复条件
+## 当前发布状态与后续工作
 
-当前阶段已停止继续优化。若未来重新授权恢复 D4，应从 candidate4 retained
-source manifest 开始，先保持所有功能/ledger 门，再完成 shape sweep、独立 D4
+当前版本冻结为可复现的阶段性研究检查点。后续 D4 工作应从 candidate4
+retained source manifest 开始，先保持所有功能/ledger 门，再完成 shape sweep、独立 D4
 full-network logits 与三种 backpressure/response 模式，最后取得同源 8 ns
 full-top timing/resources/power。没有这些证据，不报告 D4 full inference latency、
 mJ/inference 或 GOPS/W。
@@ -368,7 +367,5 @@ mJ/inference 或 GOPS/W。
 - `docs/verification_plan.md`
 - `docs/known_limits_next_steps.md`
 - `docs/project_evolution_20260911.md`
-- `docs/project_reading_guide_20260911.md`
-- `docs/project_next_optimization_bringup_guide.md`（历史路线图）
 - `docs/streaming_engine_refactor_guide.md`
 - `docs/reports/README.md`

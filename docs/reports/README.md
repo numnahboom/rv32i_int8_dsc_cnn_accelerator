@@ -6,7 +6,7 @@
 
 | 范围 | 报告 | 当前结论 |
 | --- | --- | --- |
-| 项目完整进化史 | [`../project_evolution_20260911.md`](../project_evolution_20260911.md) | 从 2026-06 初始 C0 闭环到 D4 v6 收尾 |
+| 工程演进与验证报告 | [`../project_evolution_20260911.md`](../project_evolution_20260911.md) | 从 2026-06 初始 C0 闭环到 D4 v6 收尾 |
 | C0 frozen control | [`c0_frozen_control_closeout_20260911.md`](c0_frozen_control_closeout_20260911.md) | 完整 logits/full-top control；资源门通过，8 ns setup 与 20 GOPS/W 未通过 |
 | D4 软件身份 | [`edgembconv_hwacandidate_d4_promotion_contract_20260909.md`](edgembconv_hwacandidate_d4_promotion_contract_20260909.md) | 204,090 参数、11,645,440 MAC、23,290,880 ops、INT8 91.46% |
 | D4 最终 retained 状态 | [`edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`](edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md) | candidate4 standalone exact、24,039 cycles、OOC 资源通过；8 ns setup/fullnet/full-top 未完成 |
@@ -85,7 +85,7 @@ scripts/run_edgembconv_hwacandidate_d4_vstream_v6_mb16_controller_two_epoch.sh
 scripts/run_edgembconv_hwacandidate_d4_vstream_v6_ooc_20260910.ps1
 ```
 
-项目当前已停止推进；这些入口用于复核或未来重新授权后的恢复，不表示应立即启动新实验。
+当前发布版本冻结为阶段性研究检查点；这些入口用于结果复核和后续同源迭代。
 
 ## 历史报告保留策略
 

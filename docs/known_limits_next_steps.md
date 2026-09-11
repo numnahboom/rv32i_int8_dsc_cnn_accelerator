@@ -1,8 +1,8 @@
-# 当前限制与恢复条件（2026-09-11）
+# 当前限制与后续验证（2026-09-11）
 
 ## 当前结论
 
-项目已停止继续优化。C0 冻结为完整系统 control；D4 是唯一网络主线，但当前只完成软件冻结和 retained v6 candidate4 standalone/OOC，尚未完成 D4 full-network/full-top。
+当前版本冻结为可复现的阶段性研究检查点。C0 冻结为完整系统 control；D4 是唯一网络主线，但当前只完成软件冻结和 retained v6 candidate4 standalone/OOC，尚未完成 D4 full-network/full-top。
 
 | 项目 | 当前权威结果 | 状态 |
 | --- | --- | --- |
@@ -45,9 +45,9 @@
 
 当前缺少 D4 full-network/full-top 同源证据，因此 full inference latency、mJ/inference 和 GOPS/W 必须标为“未验证”。
 
-## 如果未来恢复
+## 后续验证路线
 
-只有用户重新授权后才继续。恢复入口是：
+后续迭代应从以下同源入口开始：
 
 1. 以 `docs/reports/edgembconv_hwacandidate_d4_v6_retained_source_manifest_20260911.txt` 核对 candidate4。
 2. 先重跑 DW adapter/tile、no-BP、random BP、final stall、two-epoch 和全部 ledger。
@@ -55,4 +55,4 @@
 4. 集成独立 D4 top 或与 C0 互斥的 generate 路径，验证完整 logits 和三种响应模式。
 5. 最后运行 XC7Z020 8 ns full-top P&R/power，并只用同源 cycles/power 计算能效。
 
-这是一条恢复条件，不是当前待执行计划。当前接受状态详见 `reports/c0_frozen_control_closeout_20260911.md` 和 `reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`。
+当前发布版本不包含这些后续实验。已接受状态详见 `reports/c0_frozen_control_closeout_20260911.md` 和 `reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`。

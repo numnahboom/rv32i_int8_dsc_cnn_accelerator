@@ -19,7 +19,8 @@ full-top gate.
 
 本项目采用严格的分阶段门禁：一个模块必须先有 Python/integer golden 对照、
 testbench 和 simulator PASS，才进入综合；只有资源和路径结构值得继续的候选
-才进入 place/route。项目当前已停止推进，以下入口用于复核或未来恢复。
+才进入 place/route。当前发布版本冻结为阶段性研究检查点，以下入口用于
+结果复核和后续同源迭代。
 
 ## D4 retained v6 gate
 

@@ -1,4 +1,4 @@
-# EdgeDSCNet-C10 项目进化史（截至 2026-09-11）
+# EdgeDSCNet-C10 工程演进与验证报告（截至 2026-09-11）
 
 ## 1. 立项问题
 
@@ -61,7 +61,7 @@ v6 candidate1--6 继续优化 RQ/DW 控制锥。candidate5/6 没有同时改善 
 
 candidate4 fresh OOC fully routed：LUT 18,000、FF 25,133、DSP 145、BRAM 28、power 0.406 W；WNS/TNS `-1.028/-1461.586 ns`，WHS/THS `+0.071/0`。它证明 standalone 功能、周期和局部资源可行性，但没有闭合 8 ns，且 OOC 不是 full-top。
 
-## 8. 当前停止点
+## 8. 当前发布状态
 
 已经证明：D4 official test10k INT8 91.46%、固定整数语义和运算账本；candidate4 standalone exact、真实局部周期、source manifest 和 OOC 资源门。
 
@@ -69,11 +69,10 @@ candidate4 fresh OOC fully routed：LUT 18,000、FF 25,133、DSP 145、BRAM 28�
 
 项目因此以一个可复现、功能精确、资源可实现、失败边界明确的 v6 检查点收尾，而不是以“完整 FPGA 部署达标”收尾。C0 保留为完整系统 control，D4 保留为唯一网络主线。
 
-## 9. 权威阅读入口
+## 9. 技术资料索引
 
 - 当前总状态：`README.md`
 - 报告索引：`docs/reports/README.md`
 - C0 收尾：`docs/reports/c0_frozen_control_closeout_20260911.md`
 - D4 软件契约：`docs/reports/edgembconv_hwacandidate_d4_promotion_contract_20260909.md`
 - D4 最终收尾：`docs/reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`
-- 分阶段学习：`docs/project_reading_guide_20260911.md`
