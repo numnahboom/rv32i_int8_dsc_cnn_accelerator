@@ -98,6 +98,12 @@ module dw_tile_fusion_engine_vector4 #(
     wire [5:0] last_pixel_idx;
     wire input_fire;
 
+`ifndef SYNTHESIS
+    /* Simulation-only semantic ledger: each accepted 3x3 window contains
+     * nine products per active depthwise lane. */
+    integer sim_mac_count;
+`endif
+
     genvar rq_group_g;
 
     assign input_fire = valid_in && ready_in;
@@ -262,6 +268,9 @@ module dw_tile_fusion_engine_vector4 #(
             requant_group_idx <= 2'd0;
             final_output_seen <= 1'b0;
             done <= 1'b0;
+`ifndef SYNTHESIS
+            sim_mac_count <= 0;
+`endif
         end else begin
             done <= 1'b0;
 
@@ -270,6 +279,9 @@ module dw_tile_fusion_engine_vector4 #(
             end
 
             if (mac_input_fire) begin
+`ifndef SYNTHESIS
+                sim_mac_count <= sim_mac_count + (DW_LANES * 9);
+`endif
                 batch_in_progress <= 1'b1;
                 mac_pixel_pending <= selected_pixel_w[5:0];
                 expected_outputs_remaining <= 5'd16;

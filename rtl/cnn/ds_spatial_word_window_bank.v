@@ -38,7 +38,6 @@ module ds_spatial_word_window_bank #(
     input  wire [31:0]                  wr_data,
     input  wire [EPOCH_WIDTH-1:0]       wr_epoch,
     output reg  [EPOCH_WIDTH-1:0]       wr_epoch_seen,
-
     input  wire                         rd_req_valid,
     output wire                         rd_req_ready,
     input  wire [ADDR_WIDTH-1:0]        rd_vector_addr,
@@ -65,13 +64,17 @@ module ds_spatial_word_window_bank #(
     reg [1:0]                   wr_q_quarter;
     reg [31:0]                  wr_q_data;
     reg [EPOCH_WIDTH-1:0]       wr_q_epoch;
-
     reg                         rd_pending;
     reg [ADDR_WIDTH-1:0]        rd_q_addr;
     reg [15:0]                  rd_q_mask;
     reg [TAG_WIDTH-1:0]         rd_q_tag;
     reg [EPOCH_WIDTH-1:0]       rd_q_epoch;
     reg                         rd_data_pending;
+    /* Second-stage metadata.  The request registers are overwritten every
+     * cycle once the synchronous-read pipe is full. */
+    reg [15:0]                  rd_meta_mask;
+    reg [TAG_WIDTH-1:0]         rd_meta_tag;
+    reg [EPOCH_WIDTH-1:0]       rd_meta_epoch;
     reg                         rd_collision0;
     reg                         rd_collision1;
     reg                         rd_collision2;
@@ -87,16 +90,15 @@ module ds_spatial_word_window_bank #(
     reg [TAG_WIDTH-1:0]         resp_tag_q;
     reg [EPOCH_WIDTH-1:0]       resp_epoch_q;
 
-    /* There is one registered write command and one registered read.  The
-     * write command retires to RAM every cycle, so writes can be accepted at
-     * one per clock after reset.  Read admission is deliberately stopped
-     * while either read pipeline stage is occupied; this gives unambiguous
-     * metadata alignment under arbitrary response backpressure. */
+    /* There is one registered write command and a two-stage synchronous-read
+     * pipe.  The response register is an elastic third stage.  Admission is
+     * allowed whenever the current stages can advance, giving one read per
+     * clock after warm-up while still stopping under response backpressure. */
     wire wr_fire = wr_valid && wr_ready;
     wire rd_fire = rd_req_valid && rd_req_ready;
     assign wr_ready = rst_n;
-    assign rd_req_ready = rst_n && !rd_pending && !rd_data_pending &&
-                          (!resp_valid_q || rd_resp_ready);
+    assign rd_req_ready = rst_n && (!resp_valid_q || rd_resp_ready) &&
+        (!rd_pending || !rd_data_pending || !resp_valid_q || rd_resp_ready);
     assign rd_resp_valid = resp_valid_q;
     assign rd_data_vector = resp_data_q;
     assign rd_resp_lane_mask = resp_mask_q;
@@ -139,8 +141,9 @@ module ds_spatial_word_window_bank #(
                  * the command bit so a quarter write updates all four bytes,
                  * rather than only byte zero after scalar extension. */
                 .wea({4{wr_q_valid && (wr_q_quarter == plane[1:0])}}),
-                .addra(wr_q_addr), .dina(wr_q_data),
-                .addrb(rd_q_addr), .enb(rd_pending),
+                .addra(wr_q_addr),
+                .dina(wr_q_data),
+                .addrb(rd_q_addr), .enb(rd_pending && (!resp_valid_q || rd_resp_ready)),
                 .doutb(plane_dout[plane]),
                 .regceb(1'b1), .rstb(!rst_n), .sleep(1'b0),
                 .injectdbiterra(1'b0), .injectsbiterra(1'b0),
@@ -153,7 +156,7 @@ module ds_spatial_word_window_bank #(
             always @(posedge clk) begin
                 if (wr_q_valid && (wr_q_quarter == plane[1:0]))
                     mem[wr_q_addr] <= wr_q_data;
-                if (rd_pending)
+                if (rd_pending && (!resp_valid_q || rd_resp_ready))
                     plane_dout_reg <= mem[rd_q_addr];
             end
 `endif
@@ -178,6 +181,9 @@ module ds_spatial_word_window_bank #(
             rd_q_tag <= {TAG_WIDTH{1'b0}};
             rd_q_epoch <= {EPOCH_WIDTH{1'b0}};
             rd_data_pending <= 1'b0;
+            rd_meta_mask <= 16'd0;
+            rd_meta_tag <= {TAG_WIDTH{1'b0}};
+            rd_meta_epoch <= {EPOCH_WIDTH{1'b0}};
             rd_collision0 <= 1'b0;
             rd_collision1 <= 1'b0;
             rd_collision2 <= 1'b0;
@@ -209,8 +215,9 @@ module ds_spatial_word_window_bank #(
                 wr_q_data <= wr_data;
                 wr_q_epoch <= wr_epoch;
             end
-
-            /* First read stage: four 32-bit synchronous RAM reads. */
+            /* First read stage: four 32-bit synchronous RAM reads.  Hold the
+             * complete pipe whenever its output is backpressured. */
+            if (!resp_valid_q || rd_resp_ready) begin
             rd_pending <= rd_fire;
             if (rd_fire) begin
                 rd_q_addr <= rd_vector_addr;
@@ -220,6 +227,9 @@ module ds_spatial_word_window_bank #(
             end
             rd_data_pending <= rd_pending;
             if (rd_pending) begin
+                rd_meta_mask <= rd_q_mask;
+                rd_meta_tag <= rd_q_tag;
+                rd_meta_epoch <= rd_q_epoch;
                 rd_collision0 <= wr_q_valid && (wr_q_quarter == 2'd0) &&
                                  (wr_q_addr == rd_q_addr);
                 rd_collision1 <= wr_q_valid && (wr_q_quarter == 2'd1) &&
@@ -243,12 +253,13 @@ module ds_spatial_word_window_bank #(
                                              rd_collision2 ? rd_collision_data2 : plane_dout[2],
                                              rd_collision1 ? rd_collision_data1 : plane_dout[1],
                                              rd_collision0 ? rd_collision_data0 : plane_dout[0]},
-                                            rd_q_mask);
-                resp_mask_q <= rd_q_mask;
-                resp_tag_q <= rd_q_tag;
-                resp_epoch_q <= rd_q_epoch;
+                                             rd_meta_mask);
+                resp_mask_q <= rd_meta_mask;
+                resp_tag_q <= rd_meta_tag;
+                resp_epoch_q <= rd_meta_epoch;
             end else if (resp_valid_q && rd_resp_ready) begin
                 resp_valid_q <= 1'b0;
+            end
             end
         end
     end

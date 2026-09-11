@@ -411,7 +411,14 @@ module stem_static_window_banks #(
      * per completed source row; no row modulo is present on the address or
      * control path. */
     reg [1:0] load_bank;
-    wire [31:0] load_addr_offset = (load_row * 32'd96) +
+    // The packed proof ABI stores four NHWC bytes per external word, while
+    // the production runner's scalar ABI stores one byte in bits [7:0] of
+    // each word.  Preserve the same 96-byte row in the local staging buffer
+    // but advance the external row base by 96 or 384 bytes respectively;
+    // using a fixed 96-byte stride aliases scalar rows after the first one.
+    localparam integer SOURCE_ROW_STRIDE_BYTES = PACKED_INPUT ? 96 : 384;
+    wire [31:0] load_addr_offset =
+                                    (load_row * SOURCE_ROW_STRIDE_BYTES) +
                                     (load_word << 2);
 
     assign mem_req_valid = (state == ST_LOAD_REQ) && !load_pending && busy;
@@ -432,6 +439,20 @@ module stem_static_window_banks #(
     (* ram_style = "block" *) reg [63:0] line_mem_b2_c0 [0:3];
     (* ram_style = "block" *) reg [63:0] line_mem_b2_c1 [0:3];
     (* ram_style = "block" *) reg [63:0] line_mem_b2_c2 [0:3];
+
+    reg [2:0] block_x;
+    reg [5:0] block_y;
+    reg [63:0] line_q_b0_c0, line_q_b0_c1, line_q_b0_c2;
+    reg [63:0] line_q_b1_c0, line_q_b1_c1, line_q_b1_c2;
+    reg [63:0] line_q_b2_c0, line_q_b2_c1, line_q_b2_c2;
+    reg [63:0] line_qn_b0_c0, line_qn_b0_c1, line_qn_b0_c2;
+    reg [63:0] line_qn_b1_c0, line_qn_b1_c1, line_qn_b1_c2;
+    reg [63:0] line_qn_b2_c0, line_qn_b2_c1, line_qn_b2_c2;
+    reg [63:0] line_qp_b0_c0, line_qp_b0_c1, line_qp_b0_c2;
+    reg [63:0] line_qp_b1_c0, line_qp_b1_c1, line_qp_b1_c2;
+    reg [63:0] line_qp_b2_c0, line_qp_b2_c1, line_qp_b2_c2;
+    reg [2:0] col_word;
+    reg [1:0] row_mid_bank;
 
     /* One physical read per plane per block.  Even blocks fetch the current
      * word and latch the preceding word from the prior block; odd blocks
@@ -544,17 +565,6 @@ module stem_static_window_banks #(
     /* A synchronous read of every physical plane.  Only one selected word is
      * used for a tap, but all nine reads are static and therefore retain
      * independent BRAM locality. */
-    reg [63:0] line_q_b0_c0, line_q_b0_c1, line_q_b0_c2;
-    reg [63:0] line_q_b1_c0, line_q_b1_c1, line_q_b1_c2;
-    reg [63:0] line_q_b2_c0, line_q_b2_c1, line_q_b2_c2;
-    reg [63:0] line_qn_b0_c0, line_qn_b0_c1, line_qn_b0_c2;
-    reg [63:0] line_qn_b1_c0, line_qn_b1_c1, line_qn_b1_c2;
-    reg [63:0] line_qn_b2_c0, line_qn_b2_c1, line_qn_b2_c2;
-    reg [63:0] line_qp_b0_c0, line_qp_b0_c1, line_qp_b0_c2;
-    reg [63:0] line_qp_b1_c0, line_qp_b1_c1, line_qp_b1_c2;
-    reg [63:0] line_qp_b2_c0, line_qp_b2_c1, line_qp_b2_c2;
-    reg [2:0] block_x;
-    reg [5:0] block_y;
     /* Local tap cursor.  It advances through the fixed 3x3x3 schedule and
      * is deliberately separate from the MAC cells and from the address
      * generation fabric. */
@@ -569,9 +579,7 @@ module stem_static_window_banks #(
     wire signed [31:0] acc [0:63];
     reg [1:0] rq_pixel_in_block;
     reg [1:0] rq_group;
-    reg [2:0] col_word;
     wire [2:0] rq_read_word = col_word;
-    reg [1:0] row_mid_bank;
     reg [63:0] logical_q_top_c0, logical_q_top_c1, logical_q_top_c2;
     reg [63:0] logical_q_mid_c0, logical_q_mid_c1, logical_q_mid_c2;
     reg [63:0] logical_q_bot_c0, logical_q_bot_c1, logical_q_bot_c2;

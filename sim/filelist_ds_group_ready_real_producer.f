@@ -19,4 +19,5 @@ rtl/cnn/ds_pw_spatial_tile_bank_tagless.v
 rtl/cnn/ds_word_window_dw_tagless_stream4_pipeline.v
 rtl/cnn/ds_word_window_dw_tagless_stream4_4x8.v
 rtl/cnn/ds_group_ready_real_producer.v
+rtl/cnn/ds1_group_fill_address_adapter.v
 sim/tb_ds_group_ready_real_producer.v

@@ -111,6 +111,8 @@ module ds_pw_spatial_tile_bank_tagless #(
     wire [5:0] mem_rd_addr = {pw_read_channel_idx[6:4], pw_read_pixel_base[5:3]};
     wire [1:0] rd_bank = pw_read_channel_idx[3:2];
     wire [1:0] rd_lane = pw_read_channel_idx[1:0];
+    /* Must be visible to the generated memory read enables below. */
+    wire pw_read_fire = pw_read_valid && pw_read_ready;
     genvar b;
     generate for (b = 0; b < 4; b = b + 1) begin : gen_mem
         wire selected = cmd_valid && (cmd_lane_base == b[1:0]);
@@ -180,7 +182,6 @@ module ds_pw_spatial_tile_bank_tagless #(
     reg [5:0] rd_pixel_q;
     reg [63:0] rd_pixels_q;
     reg [127:0] rd_channels_q;
-    wire pw_read_fire = pw_read_valid && pw_read_ready;
     assign pw_read_ready = rst_n && (owner == OWNER_PW) && !rd_data_pending &&
                            (!pw_out_valid || pw_out_ready);
     wire pw_release_match = (owner == OWNER_PW) &&

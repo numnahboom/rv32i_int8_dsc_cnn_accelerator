@@ -1,0 +1,2 @@
+rtl/cnn/ds_group_feature_word_address_adapter.v
+sim/tb_ds_group_feature_word_address_adapter_context_slot.v

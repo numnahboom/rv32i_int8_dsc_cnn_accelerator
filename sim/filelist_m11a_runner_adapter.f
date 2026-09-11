@@ -1,0 +1,16 @@
+rtl/common/round_shift.v
+rtl/common/saturate_int8.v
+rtl/common/requant_activation_core.v
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/requant_activation_vector4.v
+rtl/cnn/requant_activation_stream4.v
+rtl/cnn/requant_activation_pipeline.v
+rtl/cnn/requant_product_pipeline.v
+rtl/cnn/m11a_dsp48e1_wrappers.v
+rtl/cnn/m11a_runtime_cfg_store.v
+rtl/cnn/m11a_dw16_shared_line.v
+rtl/cnn/m11a_context_packer.v
+rtl/cnn/m11a_pw64_shared_core.v
+rtl/cnn/m11a_runtime_dw_pw_core.v
+rtl/cnn/m11a_runner_adapter.v
+sim/tb_m11a_runner_adapter.v

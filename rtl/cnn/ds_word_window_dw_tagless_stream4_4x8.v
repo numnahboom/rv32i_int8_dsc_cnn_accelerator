@@ -44,6 +44,7 @@ module ds_word_window_dw_tagless_stream4_4x8 #(
     output wire mem_req_valid, input wire mem_req_ready,
     output wire [ADDR_WIDTH-1:0] mem_req_addr,
     input wire mem_resp_valid, input wire [31:0] mem_resp_data,
+    output wire mem_resp_ready,
 
     input wire cfg_valid, output wire cfg_ready,
     input wire [3:0] cfg_tap_idx,
@@ -116,7 +117,7 @@ module ds_word_window_dw_tagless_stream4_4x8 #(
         .fill_done_bank(fill_done_bank), .fill_done_epoch(fill_done_epoch),
         .mem_req_valid(mem_req_valid), .mem_req_ready(mem_req_ready),
         .mem_req_addr(mem_req_addr), .mem_resp_valid(mem_resp_valid),
-        .mem_resp_data(mem_resp_data), .cfg_valid(cfg_valid), .cfg_ready(cfg_ready),
+        .mem_resp_data(mem_resp_data), .mem_resp_ready(mem_resp_ready), .cfg_valid(cfg_valid), .cfg_ready(cfg_ready),
         .cfg_tap_idx(cfg_tap_idx), .cfg_weight_vec(cfg_weight_vec),
         .cfg_bias_vec(cfg_bias_vec), .cfg_multiplier_vec(cfg_multiplier_vec),
         .cfg_shift_vec(cfg_shift_vec), .dw_job_valid(dw_job_valid),

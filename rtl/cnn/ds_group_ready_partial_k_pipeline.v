@@ -163,10 +163,45 @@ module ds_group_ready_partial_k_pipeline #(
     wire half_pipe_push = asm_half_valid && asm_half_ready;
     wire half_pipe_pop = half_pipe_valid && half_ready_i;
     wire half_valid_i = half_pipe_valid && asm_to_bank;
+    /* The bank write handshake is the architectural completion fence for a
+     * source row/group.  Some simulators schedule the assembler's half_done
+     * pulse in a different active region from this downstream register; use
+     * the terminal accepted half as an equivalent, stronger completion event.
+     * It cannot occur before every programmed half has reached the scratch
+     * bank, so commit/release timing remains conservative. */
+    wire terminal_half_retire = half_pipe_pop && half_pipe_sel &&
+        ((half_pipe_row + 1'b1) >= row_count_reg) &&
+        ((half_pipe_group + 1'b1) >= group_count_reg);
 
     wire commit_valid_i = (state == ST_RUN) && input_done_reg && !commit_done_reg;
     wire commit_ready_i = start_bank_reg ? s1_commit_ready : s0_commit_ready;
     wire commit_fire_i = commit_valid_i && commit_ready_i;
+
+    wire [1:0] bank0_owner_state, bank1_owner_state;
+    wire [511:0] s0_gdata, s1_gdata;
+    wire [2:0] s0_grow, s1_grow;
+    wire [3:0] s0_ggroup, s1_ggroup;
+    wire s0_gfirst, s1_gfirst, s0_glast, s1_glast;
+    wire [7:0] s0_gkcount, s1_gkcount, s0_gpmask, s1_gpmask;
+    wire [7:0] s0_gcmask, s1_gcmask;
+
+    /* These declarations must precede the descriptor-ready cone for Vivado
+     * Verilog elaboration.  They are intentionally only moved, not changed:
+     * the cache remains the same row/group reorder fence. */
+    reg [7:0] cache_count;
+    reg [127:0] cache_valid;
+    reg [511:0] cache_data [0:127];
+    reg [7:0] cache_kcount [0:127];
+    reg [7:0] cache_pmask [0:127];
+    reg [7:0] cache_cmask [0:127];
+    wire [511:0] group_data_i = start_bank_reg ? s1_gdata : s0_gdata;
+    wire [2:0] group_row_i = start_bank_reg ? s1_grow : s0_grow;
+    wire [3:0] group_idx_i = start_bank_reg ? s1_ggroup : s0_ggroup;
+    wire group_first_i = start_bank_reg ? s1_gfirst : s0_gfirst;
+    wire group_last_i = start_bank_reg ? s1_glast : s0_glast;
+    wire [7:0] group_kcount_i = start_bank_reg ? s1_gkcount : s0_gkcount;
+    wire [7:0] group_pmask_i = row_pixel_mask(group_row_i, pixels_reg);
+    wire [7:0] group_cmask_i = start_bank_reg ? s1_gcmask : s0_gcmask;
 
     /* Keep accepting ready groups into a row/group reorder cache while PW is
      * consuming an earlier reduction. */
@@ -179,14 +214,6 @@ module ds_group_ready_partial_k_pipeline #(
                     !cache_valid[{group_idx_i, group_row_i}];
     assign s0_gready = gready_i && !start_bank_reg;
     assign s1_gready = gready_i && start_bank_reg;
-
-    wire [1:0] bank0_owner_state, bank1_owner_state;
-    wire [511:0] s0_gdata, s1_gdata;
-    wire [2:0] s0_grow, s1_grow;
-    wire [3:0] s0_ggroup, s1_ggroup;
-    wire s0_gfirst, s1_gfirst, s0_glast, s1_glast;
-    wire [7:0] s0_gkcount, s1_gkcount, s0_gpmask, s1_gpmask;
-    wire [7:0] s0_gcmask, s1_gcmask;
 
     ds_group_ready_scratch_bank #(
         .MAX_ROWS(MAX_ROWS), .MAX_GROUPS(MAX_GROUPS), .ROW_WIDTH(3),
@@ -257,26 +284,11 @@ module ds_group_ready_partial_k_pipeline #(
     /* The assembler's own ready is the authoritative source handshake. */
     wire stream_fire = stream_valid && stream_ready;
 
-    wire [511:0] group_data_i = start_bank_reg ? s1_gdata : s0_gdata;
-    wire [2:0] group_row_i = start_bank_reg ? s1_grow : s0_grow;
-    wire [3:0] group_idx_i = start_bank_reg ? s1_ggroup : s0_ggroup;
-    wire group_first_i = start_bank_reg ? s1_gfirst : s0_gfirst;
-    wire group_last_i = start_bank_reg ? s1_glast : s0_glast;
-    wire [7:0] group_kcount_i = start_bank_reg ? s1_gkcount : s0_gkcount;
-    wire [7:0] group_pmask_i = row_pixel_mask(group_row_i, pixels_reg);
-    wire [7:0] group_cmask_i = start_bank_reg ? s1_gcmask : s0_gcmask;
-
     reg token_active, waiting_output;
     /* Row/group reorder cache.  DW producer traffic is bundle-major, whereas
      * one PW output transaction must see all K groups of one row contiguously.
      * This cache stores only one 8-pixel group per address and avoids exposing
      * bank ownership or live cursors to the top-level control cone. */
-    reg [7:0] cache_count;
-    reg [127:0] cache_valid;
-    reg [511:0] cache_data [0:127];
-    reg [7:0] cache_kcount [0:127];
-    reg [7:0] cache_pmask [0:127];
-    reg [7:0] cache_cmask [0:127];
     reg [2:0] pw_row_expect;
     reg [3:0] pw_group_expect;
     reg [3:0] token_idx;
@@ -434,7 +446,7 @@ module ds_group_ready_partial_k_pipeline #(
                 error <= 1'b1;
             if (s0_bank_error || s1_bank_error)
                 error <= 1'b1;
-            if (asm_done)
+            if (asm_done || terminal_half_retire)
                 input_done_reg <= 1'b1;
             if (commit_fire_i)
                 commit_done_reg <= 1'b1;

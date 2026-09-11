@@ -86,8 +86,8 @@ fi
   echo
   echo "## Latest first mismatches and ledgers"
   echo
-  echo "| Case | First mismatch (word/address) | Expected -> actual | Cycles | Outputs | DW vectors/MAC | PW tokens/MAC | Stalls | error |"
-  echo "|---|---|---|---:|---:|---:|---:|---:|---:|"
+  echo "| Case | First mismatch (word/address) | Expected -> actual | Cycles | Outputs | DW vectors/MAC | PW tokens/MAC | PW rows/overlap | PW max gap/run | Stalls | error |"
+  echo "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
   for log in "$out"/layer*.log; do
     [[ -f "$log" ]] || continue
     line=$(grep -m1 'M11A_FIRST_MISMATCH' "$log" || true)
@@ -103,9 +103,11 @@ fi
       out_words=$(echo "$summary" | sed -E 's/.* out=([0-9]+) dw_vec=.*/\1/')
       dw_ledger=$(echo "$summary" | sed -E 's/.*dw_vec=([0-9]+) dw_mac=([0-9]+).*/\1\/\2/')
       pw_ledger=$(echo "$summary" | sed -E 's/.*pw_tokens=([0-9]+) pw_mac=([0-9]+).*/\1\/\2/')
+      pw_rows=$(echo "$summary" | sed -E 's/.*pw_rows=([0-9]+) pw_overlap=([0-9]+).*/\1\/\2/')
+      pw_gap=$(echo "$summary" | sed -E 's/.*pw_max_gap=([0-9]+) pw_gap_gt1=([0-9]+) pw_max_run=([0-9]+).*/\1\/\3/')
       stalls=$(echo "$summary" | sed -E 's/.*stalls=([0-9]+).*/\1/')
       error_code=$(echo "$summary" | sed -E 's/.*error=([^ ]+).*/\1/')
-      echo "| $case_name | $mismatch | | $cycles | $out_words | $dw_ledger | $pw_ledger | $stalls | $error_code |"
+      echo "| $case_name | $mismatch | | $cycles | $out_words | $dw_ledger | $pw_ledger | $pw_rows | $pw_gap | $stalls | $error_code |"
     fi
   done
   echo

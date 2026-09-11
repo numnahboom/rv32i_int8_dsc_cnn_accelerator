@@ -109,11 +109,16 @@ module row_image_bram_store (
         end
     endgenerate
 
-    /* Static concatenation: no variable-address array mux on the read path. */
+    /* Static interleave: each pixel's 4-channel words (planes 0..3 and
+     * 4..7) must be adjacent for the paired scratch ABI.  A flat 0..7
+     * concatenation would present all low-channel words first and make the
+     * PW consumer see [c0..3(pixel0), c0..3(pixel1), ...]. */
     generate
-        for (b = 0; b < 8; b = b + 1) begin : gen_unpack
-            assign rd_data[(b*32) +: 32] = bank_rd_data[b][31:0];
-            assign rd_mask[(b*4) +: 4] = bank_rd_data[b][35:32];
+        for (b = 0; b < 4; b = b + 1) begin : gen_unpack
+            assign rd_data[(b*64) +: 32] = bank_rd_data[b][31:0];
+            assign rd_data[(b*64+32) +: 32] = bank_rd_data[b+4][31:0];
+            assign rd_mask[(b*8) +: 4] = bank_rd_data[b][35:32];
+            assign rd_mask[(b*8+4) +: 4] = bank_rd_data[b+4][35:32];
         end
     endgenerate
 

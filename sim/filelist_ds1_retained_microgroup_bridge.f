@@ -1,0 +1,2 @@
+rtl/cnn/ds1_retained_microgroup_bridge.v
+sim/tb_ds1_retained_microgroup_bridge.v

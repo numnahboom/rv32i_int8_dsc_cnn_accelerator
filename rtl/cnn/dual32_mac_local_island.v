@@ -542,7 +542,11 @@ module dual32_mac_local_island_lane #(
      * these operations on the acc-to-port path (and routed thousands of
      * loads); registering each boundary preserves commit II=1. */
     reg q0_valid, q0_last;
-    reg signed [31:0] q0_acc [0:3], q0_bias [0:3], q0_mult [0:3];
+    /* q0_sum_reg is the explicit arithmetic boundary between the completed
+     * accumulator/bias sum and the DSP product stage.  Keep the sum at 33
+     * bits, matching the previous sign-extended q0_sum expression exactly. */
+    reg signed [32:0] q0_sum_reg [0:3];
+    reg signed [31:0] q0_mult [0:3];
     reg [5:0] q0_shift [0:3];
     reg [3:0] q0_mask;
     reg [7:0] q0_pixel, q0_tag;
@@ -568,15 +572,6 @@ module dual32_mac_local_island_lane #(
     reg [7:0] qf_pixel, qf_tag;
     reg [8:0] qf_channel;
     reg [1:0] qf_mode;
-
-    wire signed [32:0] q0_sum [0:3];
-    genvar qsum_g;
-    generate
-        for (qsum_g = 0; qsum_g < 4; qsum_g = qsum_g + 1) begin : gen_q0_sum
-            assign q0_sum[qsum_g] = {q0_acc[qsum_g][31],q0_acc[qsum_g]} +
-                                    {q0_bias[qsum_g][31],q0_bias[qsum_g]};
-        end
-    endgenerate
 
     /* This is local output-pipeline elasticity only.  It is intentionally
      * downstream of result_fifo_count/acc admission; ready_out cannot stall
@@ -713,7 +708,7 @@ module dual32_mac_local_island_lane #(
             q0_mode <= MODE_PW; q1_mode <= MODE_PW; q2_mode <= MODE_PW;
             q2_group <= 0;
             for (qi = 0; qi < 4; qi = qi + 1) begin
-                q0_acc[qi] <= 0; q0_bias[qi] <= 0; q0_mult[qi] <= 0;
+                q0_sum_reg[qi] <= 0; q0_mult[qi] <= 0;
                 q0_shift[qi] <= 0; q1_prod[qi] <= 0; q1_shift[qi] <= 0;
                 qf_fixed[qi] <= 0; q2_bytes[qi] <= 0;
             end
@@ -747,7 +742,7 @@ module dual32_mac_local_island_lane #(
                     q1_tag <= q0_tag; q1_mode <= q0_mode;
                     for (qi = 0; qi < 4; qi = qi + 1) begin
                         q1_shift[qi] <= q0_shift[qi];
-                        q1_prod[qi] <= $signed({{95{q0_sum[qi][32]}},q0_sum[qi]}) *
+                        q1_prod[qi] <= $signed({{95{q0_sum_reg[qi][32]}},q0_sum_reg[qi]}) *
                                        $signed({{96{q0_mult[qi][31]}},q0_mult[qi]});
                     end
                 end
@@ -759,8 +754,11 @@ module dual32_mac_local_island_lane #(
                     q0_pixel <= capture_pixel; q0_channel <= capture_channel;
                     q0_tag <= saved_tag; q0_mode <= saved_mode;
                     for (qi = 0; qi < 4; qi = qi + 1) begin
-                        q0_acc[qi] <= drain_acc[capture_idx[qi]];
-                        q0_bias[qi] <= bias_mem[capture_idx[qi]];
+                        q0_sum_reg[qi] <=
+                            $signed({drain_acc[capture_idx[qi]][31],
+                                     drain_acc[capture_idx[qi]]}) +
+                            $signed({bias_mem[capture_idx[qi]][31],
+                                     bias_mem[capture_idx[qi]]});
                         q0_mult[qi] <= mult_mem[capture_idx[qi]];
                         q0_shift[qi] <= shift_mem[capture_idx[qi]];
                     end

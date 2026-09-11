@@ -250,4 +250,69 @@ module edgembconv_hwacandidate_d4_vstream_v2_pw112 (
         end
     end
 endmodule
+
+/*
+ * D4 v6 dedicated-PW operand/token boundary.
+ *
+ * The v6 activation banks have a registered RAMB response.  Feeding that
+ * response directly through the spatial byte-select mux into the DSP A port
+ * created a long bank-to-DSP path and made the response descriptor live on a
+ * different (combinational) boundary from the operands.  This one-entry
+ * elastic register captures the complete activation/weight pair and its
+ * descriptor before the seven-pixel PW island.  It is deliberately a
+ * replacement-capable register: when the island consumes the current entry,
+ * the same edge may capture the next pair, preserving II=1 and the existing
+ * request/consume semantics.
+ *
+ * The descriptor is carried as one token rather than reconstructed from live
+ * scheduler counters.  Thus a synchronous-bank response, a bubble, or a
+ * context transition cannot retag the operand that reaches the DSP lanes.
+ */
+module edgembconv_hwacandidate_d4_vstream_v6_pw_operand_stage #(
+    parameter integer ACT_WIDTH = 256,
+    parameter integer WGT_WIDTH = 128
+) (
+    input  wire                     clk,
+    input  wire                     rst_n,
+    input  wire                     in_valid,
+    output wire                     in_ready,
+    input  wire [ACT_WIDTH-1:0]     in_act_data,
+    input  wire [WGT_WIDTH-1:0]     in_wgt_data,
+    input  wire [15:0]              in_desc,
+    output wire                     out_valid,
+    input  wire                     out_ready,
+    output wire [ACT_WIDTH-1:0]     out_act_data,
+    output wire [WGT_WIDTH-1:0]     out_wgt_data,
+    output wire [15:0]              out_desc
+);
+    (* keep = "yes" *) reg                    entry_valid;
+    (* keep = "yes" *) reg [ACT_WIDTH-1:0]    entry_act_data;
+    (* keep = "yes" *) reg [WGT_WIDTH-1:0]    entry_wgt_data;
+    (* keep = "yes" *) reg [15:0]             entry_desc;
+
+    /* Empty or being consumed means the single storage entry can be replaced. */
+    assign in_ready = rst_n && (!entry_valid || out_ready);
+    assign out_valid = entry_valid;
+    assign out_act_data = entry_act_data;
+    assign out_wgt_data = entry_wgt_data;
+    assign out_desc = entry_desc;
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            entry_valid <= 1'b0;
+            entry_act_data <= {ACT_WIDTH{1'b0}};
+            entry_wgt_data <= {WGT_WIDTH{1'b0}};
+            entry_desc <= 16'd0;
+        end else if (in_ready) begin
+            /* in_valid=0 clears an empty/replaced entry; otherwise capture the
+             * exact response pair and token together. */
+            entry_valid <= in_valid;
+            if (in_valid) begin
+                entry_act_data <= in_act_data;
+                entry_wgt_data <= in_wgt_data;
+                entry_desc <= in_desc;
+            end
+        end
+    end
+endmodule
 `default_nettype wire

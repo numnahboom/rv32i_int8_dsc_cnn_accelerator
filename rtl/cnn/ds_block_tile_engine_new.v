@@ -30,12 +30,18 @@ module ds_block_tile_engine_new #(
 
     input  wire               cfg_wr_en,
     output wire               cfg_ready,
+    output wire               cfg_weight_word_ready,
     input  wire [3:0]         cfg_target,
     input  wire [15:0]        cfg_index,
     input  wire [31:0]        cfg_data,
     input  wire               cfg_vec4_wr_en,
     input  wire [15:0]        cfg_vec4_index,
     input  wire [31:0]        cfg_vec4_data,
+    input  wire               cfg_weight_word_wr_en,
+    input  wire               cfg_weight_word_target,
+    input  wire [15:0]        cfg_weight_word_index,
+    input  wire [31:0]        cfg_weight_word_data,
+    input  wire [3:0]         cfg_weight_word_be,
     input  wire               start,
     output reg                busy,
     output reg                done,
@@ -117,6 +123,8 @@ module ds_block_tile_engine_new #(
     localparam ST_ADVANCE         = 5'd11;
     localparam ST_DONE            = 5'd12;
     localparam ST_ERROR           = 5'd13;
+    localparam ST_DW_PARAM_CAPTURE = 5'd14;
+    localparam ST_DW_PARAM_READ    = 5'd15;
 
     localparam DW_LANES = 16;
     localparam PW_LANES = 8;
@@ -129,6 +137,14 @@ module ds_block_tile_engine_new #(
     reg [7:0] channels_reg;
     reg [8:0] out_channels_reg;
     reg [1:0] stride_reg;
+    /* A local physical copy prevents the DW line-buffer control cone from
+     * routing back to the top-level configuration register.  It is captured
+     * with the other start-time parameters, well before DW input begins. */
+    (* keep = "true" *) reg [1:0] dw_stride_engine_reg;
+    (* keep = "true" *) reg [3:0] dw_out_h_engine_reg;
+    (* keep = "true" *) reg [3:0] dw_out_w_engine_reg;
+    (* keep = "true" *) reg [6:0] dw_channel_engine_reg;
+    (* keep = "true" *) reg [7:0] persistent_output_pixels_reg;
     reg signed [7:0] input_zero_point_reg;
     reg signed [31:0] dw_output_zero_point_reg;
     reg signed [31:0] dw_activation_min_reg;
@@ -161,6 +177,8 @@ module ds_block_tile_engine_new #(
     wire signed [(DW_LANES*8)-1:0] dw_pixel_vec;
 
     wire pw_weight_wr_en;
+    wire pw_weight_word_wr_en;
+    wire pw_weight_word_ready;
     wire pw_weight_rd_en;
     wire pw_weight_rd_valid;
     wire signed [63:0] pw_weight_rd_data;
@@ -168,6 +186,12 @@ module ds_block_tile_engine_new #(
     reg [6:0] dw_channel_base;
     reg [3:0] dw_param_lane;
     reg [3:0] dw_param_kernel;
+    reg [7:0] dw_param_channel_reg;
+    reg [10:0] dw_param_addr_reg;
+    reg signed [7:0] dw_param_weight_reg;
+    reg signed [31:0] dw_param_bias_reg;
+    reg signed [31:0] dw_param_multiplier_reg;
+    reg [5:0] dw_param_shift_reg;
     reg [4:0] stream_x;
     reg [4:0] stream_y;
     wire [4:0] stream_in_h;
@@ -178,6 +202,10 @@ module ds_block_tile_engine_new #(
     reg signed [(DW_LANES*32)-1:0] dw_bias_vec;
     reg signed [(DW_LANES*32)-1:0] dw_multiplier_vec;
     reg        [(DW_LANES*6)-1:0] dw_shift_vec;
+    /* Keep the kernel read select local to one lane, then commit the
+     * completed lane through a fixed destination case.  This avoids the
+     * lane*kernel variable part-select on the full 1152-bit bus. */
+    reg signed [71:0] dw_weight_lane_tmp;
 
     wire dw_valid_in;
     wire dw_ready_in;
@@ -313,8 +341,13 @@ module ds_block_tile_engine_new #(
     genvar pw_mask_g;
 
     assign cfg_ready = !busy;
+    assign cfg_weight_word_ready = !busy &&
+                                   (cfg_weight_word_target ?
+                                    pw_weight_word_ready : 1'b1);
     assign input_buf_wr_en = cfg_wr_en && cfg_ready && (cfg_target == CFG_INPUT);
     assign pw_weight_wr_en = cfg_wr_en && cfg_ready && (cfg_target == CFG_PW_WEIGHT);
+    assign pw_weight_word_wr_en = cfg_weight_word_wr_en && cfg_ready &&
+                                  cfg_weight_word_target;
 
     assign stream_in_h = (({1'b0, out_h_reg} - 5'd1) * stride_reg) + 5'd3;
     assign stream_in_w = (({1'b0, out_w_reg} - 5'd1) * stride_reg) + 5'd3;
@@ -489,6 +522,11 @@ module ds_block_tile_engine_new #(
         .wr_en(pw_weight_wr_en),
         .wr_linear_idx(cfg_index[14:0]),
         .wr_data_int8(cfg_data[7:0]),
+        .wr_word_en(pw_weight_word_wr_en),
+        .wr_word_index(cfg_weight_word_index[14:0]),
+        .wr_word_data_int8(cfg_weight_word_data),
+        .wr_word_be(cfg_weight_word_be),
+        .wr_word_ready(pw_weight_word_ready),
         .rd_en(pw_weight_rd_en),
         .rd_cout_base(USE_PERSISTENT_FEED ? persistent_weight_rd_cout_base : pw_cout_base),
         .rd_channel_idx(USE_PERSISTENT_FEED ? persistent_weight_rd_channel_idx : pw_read_idx),
@@ -507,10 +545,10 @@ module ds_block_tile_engine_new #(
         .x_idx(stream_x),
         .y_idx(stream_y),
         .pixel_vec_in(dw_pixel_vec),
-        .out_h(out_h_reg),
-        .out_w(out_w_reg),
-        .stride(stride_reg),
-        .channel_base(dw_channel_base),
+        .out_h(dw_out_h_engine_reg),
+        .out_w(dw_out_w_engine_reg),
+        .stride(dw_stride_engine_reg),
+        .channel_base(dw_channel_engine_reg),
         .weight_vec(dw_weight_vec),
         .bias_vec(dw_bias_vec),
         .multiplier_vec(dw_multiplier_vec),
@@ -571,7 +609,7 @@ module ds_block_tile_engine_new #(
         .clk(clk), .rst_n(rst_n), .start(persistent_start),
         .busy(persistent_busy), .done(persistent_done), .error(persistent_error),
         .channels(channels_reg), .out_channels(out_channels_reg),
-        .output_pixels(output_pixels),
+        .output_pixels(USE_PERSISTENT_FEED ? persistent_output_pixels_reg : output_pixels),
         .source_rd_en(persistent_source_rd_en),
         .source_rd_pixel_base(persistent_source_rd_pixel_base),
         .source_rd_channel_idx(persistent_source_rd_channel_idx),
@@ -715,10 +753,14 @@ module ds_block_tile_engine_new #(
                         pw_shift_mem[cfg_addr] <= cfg_data[5:0];
                     end
                 end
-                default: begin
-                end
+            default: begin
+            end
             endcase
         end
+        // Packed DW words are retired through the scalar parameter port by
+        // the layer runner.  Keeping this word ABI PW-only avoids a second
+        // four-way write mux over the 1152-byte DW parameter array; PW still
+        // forwards to its layout-aware canonical BRAM unpacker above.
     end
 
     always @(posedge clk) begin
@@ -732,6 +774,11 @@ module ds_block_tile_engine_new #(
             channels_reg <= 8'd0;
             out_channels_reg <= 9'd0;
             stride_reg <= 2'd1;
+            dw_stride_engine_reg <= 2'd1;
+            dw_out_h_engine_reg <= 4'd0;
+            dw_out_w_engine_reg <= 4'd0;
+            dw_channel_engine_reg <= 7'd0;
+            persistent_output_pixels_reg <= 8'd0;
             input_zero_point_reg <= 8'sd0;
             dw_output_zero_point_reg <= 32'sd0;
             dw_activation_min_reg <= 32'sd0;
@@ -742,12 +789,19 @@ module ds_block_tile_engine_new #(
             dw_channel_base <= 7'd0;
             dw_param_lane <= 4'd0;
             dw_param_kernel <= 4'd0;
+            dw_param_channel_reg <= 8'd0;
+            dw_param_addr_reg <= 11'd0;
+            dw_param_weight_reg <= 8'sd0;
+            dw_param_bias_reg <= 32'sd0;
+            dw_param_multiplier_reg <= 32'sd0;
+            dw_param_shift_reg <= 6'd0;
             stream_x <= 5'd0;
             stream_y <= 5'd0;
             dw_weight_vec <= {(DW_LANES*9*8){1'b0}};
             dw_bias_vec <= {(DW_LANES*32){1'b0}};
             dw_multiplier_vec <= {(DW_LANES*32){1'b0}};
             dw_shift_vec <= {(DW_LANES*6){1'b0}};
+            dw_weight_lane_tmp <= 72'sd0;
             pw_pixel_base <= 6'd0;
             pw_cout_base <= 9'd0;
             pw_read_idx <= 8'd0;
@@ -796,6 +850,11 @@ module ds_block_tile_engine_new #(
                         channels_reg <= channels;
                         out_channels_reg <= out_channels[8:0];
                         stride_reg <= stride;
+                        dw_stride_engine_reg <= stride;
+                        dw_out_h_engine_reg <= out_h;
+                        dw_out_w_engine_reg <= out_w;
+                        dw_channel_engine_reg <= 7'd0;
+                        persistent_output_pixels_reg <= out_h * out_w;
                         input_zero_point_reg <= input_zero_point;
                         dw_output_zero_point_reg <= dw_output_zero_point;
                         dw_activation_min_reg <= dw_activation_min;
@@ -823,42 +882,286 @@ module ds_block_tile_engine_new #(
                         end else begin
                             busy <= 1'b1;
                             dw_channel_base <= 7'd0;
+                            dw_channel_engine_reg <= 7'd0;
                             dw_param_lane <= 4'd0;
                             dw_param_kernel <= 4'd0;
+                            dw_param_channel_reg <= 8'd0;
+                            dw_param_addr_reg <= 11'd0;
+                            dw_param_weight_reg <= 8'sd0;
+                            dw_param_bias_reg <= 32'sd0;
+                            dw_param_multiplier_reg <= 32'sd0;
+                            dw_param_shift_reg <= 6'd0;
                             dw_weight_vec <= {(DW_LANES*9*8){1'b0}};
                             dw_bias_vec <= {(DW_LANES*32){1'b0}};
                             dw_multiplier_vec <= {(DW_LANES*32){1'b0}};
                             dw_shift_vec <= {(DW_LANES*6){1'b0}};
+                            dw_weight_lane_tmp <= 72'sd0;
                             state <= ST_DW_PARAM_LOAD;
                         end
                     end
                 end
 
                 ST_DW_PARAM_LOAD: begin
-                    param_channel = dw_channel_base + dw_param_lane;
-                    if (param_channel < channels_reg) begin
-                        dw_weight_vec[
-                            ((dw_param_lane*9 + dw_param_kernel)*8) +: 8
-                        ] <= dw_weight_mem[(param_channel*9) + dw_param_kernel];
+                    /* Register both the channel and packed byte address
+                     * before reading the distributed parameter store. */
+                    dw_param_channel_reg <= dw_channel_base + dw_param_lane;
+                    dw_param_addr_reg <=
+                        ((dw_channel_base + dw_param_lane) * 11'd9) + dw_param_kernel;
+                    state <= ST_DW_PARAM_READ;
+                end
+
+                ST_DW_PARAM_READ: begin
+                    /* The registered address breaks the lane/control cone
+                     * before the RAM output register. */
+                    dw_param_weight_reg <= dw_weight_mem[dw_param_addr_reg];
+                    if (dw_param_channel_reg < channels_reg) begin
+                        dw_param_bias_reg <= dw_bias_mem[dw_param_channel_reg];
+                        dw_param_multiplier_reg <= dw_multiplier_mem[dw_param_channel_reg];
+                        dw_param_shift_reg <= dw_shift_mem[dw_param_channel_reg];
                     end else begin
-                        dw_weight_vec[
-                            ((dw_param_lane*9 + dw_param_kernel)*8) +: 8
-                        ] <= 8'sd0;
+                        dw_param_bias_reg <= 32'sd0;
+                        dw_param_multiplier_reg <= 32'sd0;
+                        dw_param_shift_reg <= 6'd0;
                     end
+                    state <= ST_DW_PARAM_CAPTURE;
+                end
+
+                ST_DW_PARAM_CAPTURE: begin
+                    param_channel = dw_param_channel_reg;
+                    dw_weight_lane_tmp[(dw_param_kernel*8) +: 8] <=
+                        dw_param_weight_reg;
 
                     if (dw_param_kernel == 4'd8) begin
-                        if (param_channel < channels_reg) begin
-                            dw_bias_vec[(dw_param_lane*32) +: 32] <=
-                                dw_bias_mem[param_channel];
-                            dw_multiplier_vec[(dw_param_lane*32) +: 32] <=
-                                dw_multiplier_mem[param_channel];
-                            dw_shift_vec[(dw_param_lane*6) +: 6] <=
-                                dw_shift_mem[param_channel];
-                        end else begin
-                            dw_bias_vec[(dw_param_lane*32) +: 32] <= 32'sd0;
-                            dw_multiplier_vec[(dw_param_lane*32) +: 32] <= 32'sd0;
-                            dw_shift_vec[(dw_param_lane*6) +: 6] <= 6'd0;
-                        end
+                        /* Commit one finished 9-byte lane to a fixed slice.
+                         * This keeps dw_param_lane out of the 1152-bit
+                         * variable part-select while retaining one scalar
+                         * parameter read port and the original 16x9 timing. */
+                        case (dw_param_lane)
+                            4'd0: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[0 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[0 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[0 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[0 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[0 +: 72] <= 72'sd0;
+                                    dw_bias_vec[0 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[0 +: 32] <= 32'sd0;
+                                    dw_shift_vec[0 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd1: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[72 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[32 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[32 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[6 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[72 +: 72] <= 72'sd0;
+                                    dw_bias_vec[32 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[32 +: 32] <= 32'sd0;
+                                    dw_shift_vec[6 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd2: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[144 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[64 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[64 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[12 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[144 +: 72] <= 72'sd0;
+                                    dw_bias_vec[64 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[64 +: 32] <= 32'sd0;
+                                    dw_shift_vec[12 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd3: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[216 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[96 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[96 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[18 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[216 +: 72] <= 72'sd0;
+                                    dw_bias_vec[96 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[96 +: 32] <= 32'sd0;
+                                    dw_shift_vec[18 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd4: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[288 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[128 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[128 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[24 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[288 +: 72] <= 72'sd0;
+                                    dw_bias_vec[128 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[128 +: 32] <= 32'sd0;
+                                    dw_shift_vec[24 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd5: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[360 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[160 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[160 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[30 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[360 +: 72] <= 72'sd0;
+                                    dw_bias_vec[160 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[160 +: 32] <= 32'sd0;
+                                    dw_shift_vec[30 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd6: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[432 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[192 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[192 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[36 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[432 +: 72] <= 72'sd0;
+                                    dw_bias_vec[192 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[192 +: 32] <= 32'sd0;
+                                    dw_shift_vec[36 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd7: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[504 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[224 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[224 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[42 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[504 +: 72] <= 72'sd0;
+                                    dw_bias_vec[224 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[224 +: 32] <= 32'sd0;
+                                    dw_shift_vec[42 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd8: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[576 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[256 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[256 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[48 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[576 +: 72] <= 72'sd0;
+                                    dw_bias_vec[256 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[256 +: 32] <= 32'sd0;
+                                    dw_shift_vec[48 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd9: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[648 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[288 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[288 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[54 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[648 +: 72] <= 72'sd0;
+                                    dw_bias_vec[288 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[288 +: 32] <= 32'sd0;
+                                    dw_shift_vec[54 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd10: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[720 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[320 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[320 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[60 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[720 +: 72] <= 72'sd0;
+                                    dw_bias_vec[320 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[320 +: 32] <= 32'sd0;
+                                    dw_shift_vec[60 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd11: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[792 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[352 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[352 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[66 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[792 +: 72] <= 72'sd0;
+                                    dw_bias_vec[352 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[352 +: 32] <= 32'sd0;
+                                    dw_shift_vec[66 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd12: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[864 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[384 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[384 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[72 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[864 +: 72] <= 72'sd0;
+                                    dw_bias_vec[384 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[384 +: 32] <= 32'sd0;
+                                    dw_shift_vec[72 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd13: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[936 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[416 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[416 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[78 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[936 +: 72] <= 72'sd0;
+                                    dw_bias_vec[416 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[416 +: 32] <= 32'sd0;
+                                    dw_shift_vec[78 +: 6] <= 6'd0;
+                                end
+                            end
+                            4'd14: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[1008 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[448 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[448 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[84 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[1008 +: 72] <= 72'sd0;
+                                    dw_bias_vec[448 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[448 +: 32] <= 32'sd0;
+                                    dw_shift_vec[84 +: 6] <= 6'd0;
+                                end
+                            end
+                            default: begin
+                                if (param_channel < channels_reg) begin
+                                    dw_weight_vec[1080 +: 72] <=
+                                        {dw_param_weight_reg, dw_weight_lane_tmp[63:0]};
+                                    dw_bias_vec[480 +: 32] <= dw_param_bias_reg;
+                                    dw_multiplier_vec[480 +: 32] <= dw_param_multiplier_reg;
+                                    dw_shift_vec[90 +: 6] <= dw_param_shift_reg;
+                                end else begin
+                                    dw_weight_vec[1080 +: 72] <= 72'sd0;
+                                    dw_bias_vec[480 +: 32] <= 32'sd0;
+                                    dw_multiplier_vec[480 +: 32] <= 32'sd0;
+                                    dw_shift_vec[90 +: 6] <= 6'd0;
+                                end
+                            end
+                        endcase
                         dw_param_kernel <= 4'd0;
                         if (dw_param_lane == 4'd15) begin
                             dw_param_lane <= 4'd0;
@@ -867,9 +1170,11 @@ module ds_block_tile_engine_new #(
                             state <= ST_DW_INPUT_REQ;
                         end else begin
                             dw_param_lane <= dw_param_lane + 4'd1;
+                            state <= ST_DW_PARAM_LOAD;
                         end
                     end else begin
                         dw_param_kernel <= dw_param_kernel + 4'd1;
+                        state <= ST_DW_PARAM_LOAD;
                     end
                 end
 
@@ -898,6 +1203,7 @@ module ds_block_tile_engine_new #(
                     if (dw_done) begin
                         if (({1'b0, dw_channel_base} + DW_LANES) < channels_reg) begin
                             dw_channel_base <= dw_channel_base + DW_LANES;
+                            dw_channel_engine_reg <= dw_channel_base + DW_LANES;
                             dw_param_lane <= 4'd0;
                             dw_param_kernel <= 4'd0;
                             state <= ST_DW_PARAM_LOAD;

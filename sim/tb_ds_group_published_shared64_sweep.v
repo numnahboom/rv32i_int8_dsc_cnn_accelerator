@@ -21,13 +21,19 @@ module tb_ds_group_published_shared64_sweep;
 
     ds_group_published_shared64_sweep dut (
         .clk(clk), .rst_n(rst_n), .start_valid(start_valid), .start_ready(start_ready),
-        .start_pixels(start_pixels), .start_cin(start_cin), .start_cout(start_cout),
+         .start_pixels(start_pixels), .start_output_height(11'd0), .start_output_width(11'd8),
+         .start_cin(start_cin), .start_cout(start_cout),
         .start_bank(start_bank), .start_session(start_session), .start_epoch(start_epoch),
         .dw_valid(dw_valid), .dw_ready(dw_ready), .dw_macro(dw_macro),
         .dw_row(dw_row), .dw_group(dw_group), .dw_channel_half(dw_channel_half),
         .dw_pixel(dw_pixel), .dw_data(dw_data), .dw_mask(dw_mask), .dw_last(dw_last),
         .weight_load_valid(wv), .weight_load_ready(wr), .weight_load_tile(wt),
         .weight_load_k(wk), .weight_load_vec(wvec), .result_valid(rv),
+        .pw_param_load_valid(1'b0), .pw_param_load_ready(),
+        .pw_param_load_channel(9'd0), .pw_param_load_bias(32'sd0),
+        .pw_param_load_multiplier(32'sh4000_0000), .pw_param_load_shift(6'd0),
+        .pw_output_zero_point_int32(32'sd0),
+        .pw_activation_min_int32(-32'sd128), .pw_activation_max_int32(32'sd127),
         .result_ready(rr), .result_pixel_idx(rp), .result_channel_base(rc),
         .result_lane_mask(rm), .result_data(rd), .done(done), .error(error),
         .perf_total_cycles(total_cyc), .perf_dw_writes(dw_writes),
@@ -235,7 +241,7 @@ module tb_ds_group_published_shared64_sweep;
                                             disable wait_dw_accept;
                                         end
                                         if (wait_beats==10000) begin
-                                            $display("DW_STALL li=%0d macro=%0d row=%0d group=%0d half=%0d pixel=%0d state=%0d desc=%0d pwrow=%0d pwtile=%0d pwgroup=%0d pub=%b busy0=%b busy1=%b core=%b",li,mb,rrw,gg,hh,pp,dut.state,dut.desc_count,dut.pw_row_block_q,dut.pw_tile_q,dut.pw_group_q,dut.pw_published,dut.bank_busy0,dut.bank_busy1,dut.core_busy);
+                                            $display("DW_STALL li=%0d macro=%0d row=%0d group=%0d half=%0d pixel=%0d state=%0d published=%0d pwrow=%0d pwtile=%0d pwgroup=%0d pub=%b busy0=%b busy1=%b core=%b out=%0d",li,mb,rrw,gg,hh,pp,dut.state,dut.perf_group_descriptors,dut.pw_row_block_q,dut.pw_tile_q,dut.pw_group_q,dut.pw_published,dut.bank_busy0,dut.bank_busy1,dut.core_busy,out_writes);
                                             errors=errors+1; $fatal(1,"DW stall");
                                         end
                                     end
@@ -245,7 +251,7 @@ module tb_ds_group_published_shared64_sweep;
             while (!done) begin
                 @(posedge clk);
                 if (total_cyc > 200000) begin
-                    $display("LAYER_WATCHDOG li=%0d state=%0d total=%0d dw=%0d desc=%0d pw=%0d out=%0d core_busy=%b pw_row=%0d pw_tile=%0d pw_group=%0d published=%b desc_count=%0d",li,dut.state,total_cyc,dw_writes,descs,pw_tokens,out_writes,dut.core_busy,dut.pw_row_block_q,dut.pw_tile_q,dut.pw_group_q,dut.pw_published,dut.desc_count);
+                    $display("LAYER_WATCHDOG li=%0d state=%0d total=%0d dw=%0d desc=%0d pw=%0d out=%0d core_busy=%b pw_row=%0d pw_tile=%0d pw_group=%0d published=%b",li,dut.state,total_cyc,dw_writes,descs,pw_tokens,out_writes,dut.core_busy,dut.pw_row_block_q,dut.pw_tile_q,dut.pw_group_q,dut.pw_published);
                     errors=errors+1; $fatal(1,"WATCHDOG");
                 end
             end

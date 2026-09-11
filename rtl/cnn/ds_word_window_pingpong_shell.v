@@ -25,7 +25,10 @@ module ds_word_window_pingpong_shell #(
         $clog2(MAX_IN_H*MAX_IN_W*MAX_CHANNEL_GROUPS) : 1,
     parameter integer EPOCH_WIDTH = 4,
     parameter integer TAG_WIDTH = 16,
-    parameter integer FIFO_DEPTH = 8
+    parameter integer FIFO_DEPTH = 8,
+    /* Producer-only mode: caller supplies tap addresses; ownership and
+     * registered BRAM response handling remain local to this shell. */
+    parameter integer DIRECT_READ_ENABLE = 0
 ) (
     input wire clk,
     input wire rst_n,
@@ -46,6 +49,7 @@ module ds_word_window_pingpong_shell #(
     output wire [ADDR_WIDTH-1:0] mem_req_addr,
     input wire mem_resp_valid,
     input wire [31:0] mem_resp_data,
+    output wire mem_resp_ready,
 
     input wire read_start_valid,
     output wire read_start_ready,
@@ -58,6 +62,13 @@ module ds_word_window_pingpong_shell #(
     input wire [VECTOR_ADDR_WIDTH-1:0] read_base_vector,
     input wire [1:0] read_group,
     input wire [15:0] read_lane_mask,
+    input wire direct_req_valid,
+    output wire direct_req_ready,
+    input wire [VECTOR_ADDR_WIDTH-1:0] direct_req_addr,
+    input wire [15:0] direct_req_lane_mask,
+    input wire [TAG_WIDTH-1:0] direct_req_tag,
+    input wire [EPOCH_WIDTH-1:0] direct_req_epoch,
+    input wire direct_req_last,
     output reg read_done_valid,
     input wire read_done_ready,
     output reg read_done_bank,
@@ -108,7 +119,16 @@ module ds_word_window_pingpong_shell #(
     reg [7:0] read_row, read_col;
     reg [COUNT_WIDTH-1:0] read_total, read_issued;
     reg [VECTOR_ADDR_WIDTH-1:0] read_addr;
-    reg read_inflight;
+    reg direct_last_issued;
+    /* Number of accepted synchronous reads not yet consumed by the shell
+     * output register.  The bank now has a two-stage read pipe, so a single
+     * in-flight bit would unnecessarily reintroduce the old stop-and-wait
+     * bubble. */
+    reg [9:0] read_outstanding;
+    localparam integer READ_ADDR_FIFO_DEPTH = 8;
+    reg [VECTOR_ADDR_WIDTH-1:0] read_addr_fifo [0:READ_ADDR_FIFO_DEPTH-1];
+    reg [2:0] read_addr_wr_ptr, read_addr_rd_ptr;
+    reg [3:0] read_addr_fifo_count;
     reg out_valid_q;
     reg [VECTOR_ADDR_WIDTH-1:0] out_addr_q;
     reg [15:0] out_mask_q;
@@ -153,6 +173,7 @@ module ds_word_window_pingpong_shell #(
         .done_bank(), .done_epoch(), .mem_req_valid(mem_req_valid),
         .mem_req_ready(mem_req_ready), .mem_req_addr(mem_req_addr),
         .mem_resp_valid(mem_resp_valid), .mem_resp_data(mem_resp_data),
+        .mem_resp_ready(mem_resp_ready),
         .wr_valid(fill_wr_valid), .wr_ready(fill_wr_ready),
         .wr_vector_addr(fill_wr_addr), .wr_quarter(fill_wr_quarter),
         .wr_data(fill_wr_data), .wr_epoch(fill_wr_epoch),
@@ -181,9 +202,9 @@ module ds_word_window_pingpong_shell #(
         .wr_vector_addr(fill_wr_addr), .wr_quarter(fill_wr_quarter),
         .wr_data(fill_wr_data), .wr_epoch(fill_wr_epoch), .wr_epoch_seen(),
         .rd_req_valid(read_active && !read_bank_reg && rd_req_fire),
-        .rd_req_ready(b0_rd_req_ready), .rd_vector_addr(read_addr),
-        .rd_lane_mask(read_mask_reg), .rd_tag(read_issued[TAG_WIDTH-1:0]),
-        .rd_epoch(read_epoch_reg), .rd_resp_valid(b0_rd_resp_valid),
+        .rd_req_ready(b0_rd_req_ready), .rd_vector_addr(rd_req_addr),
+        .rd_lane_mask(rd_req_mask), .rd_tag(rd_req_tag),
+        .rd_epoch(rd_req_epoch), .rd_resp_valid(b0_rd_resp_valid),
         .rd_resp_ready((!read_bank_reg) && (!out_valid_q || rd_ready)),
         .rd_data_vector(b0_rd_data), .rd_resp_lane_mask(b0_rd_mask),
         .rd_resp_tag(b0_rd_tag), .rd_resp_epoch(b0_rd_epoch)
@@ -199,18 +220,34 @@ module ds_word_window_pingpong_shell #(
         .wr_vector_addr(fill_wr_addr), .wr_quarter(fill_wr_quarter),
         .wr_data(fill_wr_data), .wr_epoch(fill_wr_epoch), .wr_epoch_seen(),
         .rd_req_valid(read_active && read_bank_reg && rd_req_fire),
-        .rd_req_ready(b1_rd_req_ready), .rd_vector_addr(read_addr),
-        .rd_lane_mask(read_mask_reg), .rd_tag(read_issued[TAG_WIDTH-1:0]),
-        .rd_epoch(read_epoch_reg), .rd_resp_valid(b1_rd_resp_valid),
+        .rd_req_ready(b1_rd_req_ready), .rd_vector_addr(rd_req_addr),
+        .rd_lane_mask(rd_req_mask), .rd_tag(rd_req_tag),
+        .rd_epoch(rd_req_epoch), .rd_resp_valid(b1_rd_resp_valid),
         .rd_resp_ready(read_bank_reg && (!out_valid_q || rd_ready)),
         .rd_data_vector(b1_rd_data), .rd_resp_lane_mask(b1_rd_mask),
         .rd_resp_tag(b1_rd_tag), .rd_resp_epoch(b1_rd_epoch)
     );
 
     wire read_bank_req_ready = read_bank_reg ? b1_rd_req_ready : b0_rd_req_ready;
-    wire rd_req_fire = read_active && !read_complete && !read_inflight &&
-                       !out_valid_q && (read_issued < read_total) &&
-                       read_bank_req_ready;
+    wire [VECTOR_ADDR_WIDTH-1:0] rd_req_addr =
+        (DIRECT_READ_ENABLE != 0) ? direct_req_addr : read_addr;
+    wire [15:0] rd_req_mask =
+        (DIRECT_READ_ENABLE != 0) ? direct_req_lane_mask : read_mask_reg;
+    wire [TAG_WIDTH-1:0] rd_req_tag =
+        (DIRECT_READ_ENABLE != 0) ? direct_req_tag : read_issued[TAG_WIDTH-1:0];
+    wire [EPOCH_WIDTH-1:0] rd_req_epoch =
+        (DIRECT_READ_ENABLE != 0) ? direct_req_epoch : read_epoch_reg;
+    wire rd_req_intent = (DIRECT_READ_ENABLE != 0) ? direct_req_valid : 1'b1;
+    wire rd_req_has_room = (DIRECT_READ_ENABLE != 0) ? direct_req_valid :
+                           (read_issued < read_total);
+    wire rd_req_fire = read_active && !read_complete && rd_req_intent &&
+                       (!out_valid_q || rd_ready) && rd_req_has_room &&
+                       read_bank_req_ready &&
+                       (read_addr_fifo_count < READ_ADDR_FIFO_DEPTH);
+    assign direct_req_ready = (DIRECT_READ_ENABLE != 0) && read_active &&
+                       !read_complete && (!out_valid_q || rd_ready) &&
+                       read_bank_req_ready &&
+                       (read_addr_fifo_count < READ_ADDR_FIFO_DEPTH);
     wire bank_resp_valid = read_bank_reg ? b1_rd_resp_valid : b0_rd_resp_valid;
     wire bank_resp_fire = bank_resp_valid && (!out_valid_q || rd_ready);
     wire out_fire = out_valid_q && rd_ready;
@@ -252,8 +289,10 @@ module ds_word_window_pingpong_shell #(
             read_pitch_reg <= 0; read_group_reg <= 0; read_mask_reg <= 0;
             read_col_step_reg <= 0; read_row_delta_reg <= 0;
             read_row <= 0; read_col <= 0; read_total <= 0; read_issued <= 0;
-            read_addr <= 0; read_inflight <= 0;
-            response_addr_reg <= 0;
+            read_addr <= 0; read_outstanding <= 0;
+            direct_last_issued <= 1'b0;
+            read_addr_wr_ptr <= 0; read_addr_rd_ptr <= 0;
+            read_addr_fifo_count <= 0;
             out_valid_q <= 0; out_addr_q <= 0; out_mask_q <= 0;
             out_tag_q <= 0; out_epoch_q <= 0; out_data_q <= 0;
             fill_word_count_seen <= 0;
@@ -303,38 +342,44 @@ module ds_word_window_pingpong_shell #(
                                      ((read_width - 1) * read_stride * LAYOUT_GROUPS);
                 read_active <= 1'b1;
                 read_complete <= 1'b0;
-                read_inflight <= 1'b0;
+                read_outstanding <= 0;
+                read_addr_wr_ptr <= 0;
+                read_addr_rd_ptr <= 0;
+                read_addr_fifo_count <= 0;
+                direct_last_issued <= 1'b0;
                 if (read_start_bank) bank1_state <= S_ACTIVE;
                 else bank0_state <= S_ACTIVE;
             end
 
             if (rd_req_fire) begin
-                read_issued <= read_issued + 1'b1;
-                read_inflight <= 1'b1;
-                if (read_col + 1 >= read_w_reg) begin
-                    read_col <= 0;
-                    read_row <= read_row + 1'b1;
-                    read_addr <= read_addr + read_row_delta_reg;
+                if (DIRECT_READ_ENABLE != 0) begin
+                    if (direct_req_last)
+                        direct_last_issued <= 1'b1;
                 end else begin
-                    read_col <= read_col + 1'b1;
-                    read_addr <= read_addr + read_col_step_reg;
+                    read_issued <= read_issued + 1'b1;
+                    if (read_col + 1 >= read_w_reg) begin
+                        read_col <= 0;
+                        read_row <= read_row + 1'b1;
+                        read_addr <= read_addr + read_row_delta_reg;
+                    end else begin
+                        read_col <= read_col + 1'b1;
+                        read_addr <= read_addr + read_col_step_reg;
+                    end
                 end
             end
 
             if (fill_wr_valid && fill_wr_ready)
                 fill_word_count_seen <= fill_word_count_seen + 1'b1;
-
             if (bank_resp_fire) begin
-                read_inflight <= 1'b0;
                 out_valid_q <= 1'b1;
                 if (read_bank_reg) begin
-                    out_addr_q <= read_addr_for_response;
+                    out_addr_q <= read_addr_fifo[read_addr_rd_ptr];
                     out_mask_q <= b1_rd_mask;
                     out_tag_q <= b1_rd_tag;
                     out_epoch_q <= b1_rd_epoch;
                     out_data_q <= b1_rd_data;
                 end else begin
-                    out_addr_q <= read_addr_for_response;
+                    out_addr_q <= read_addr_fifo[read_addr_rd_ptr];
                     out_mask_q <= b0_rd_mask;
                     out_tag_q <= b0_rd_tag;
                     out_epoch_q <= b0_rd_epoch;
@@ -345,8 +390,33 @@ module ds_word_window_pingpong_shell #(
                 out_valid_q <= 1'b0;
             end
 
-            if (read_active && (read_issued >= read_total) &&
-                !read_inflight && !out_valid_q && !read_complete) begin
+            if (rd_req_fire) begin
+                read_addr_fifo[read_addr_wr_ptr] <= rd_req_addr;
+                read_addr_wr_ptr <= read_addr_wr_ptr + 1'b1;
+            end
+            if (bank_resp_fire)
+                read_addr_rd_ptr <= read_addr_rd_ptr + 1'b1;
+            case ({rd_req_fire, bank_resp_fire})
+                2'b10: begin
+                    read_outstanding <= read_outstanding + 1'b1;
+                    read_addr_fifo_count <= read_addr_fifo_count + 1'b1;
+                end
+                2'b01: begin
+                    read_outstanding <= read_outstanding - 1'b1;
+                    read_addr_fifo_count <= read_addr_fifo_count - 1'b1;
+                end
+                default: ;
+            endcase
+
+            /* A response arriving on this edge is deliberately excluded: it
+             * has just populated out_valid_q and must be drained before the
+             * completion fence can be published. */
+            if (read_active &&
+                (((DIRECT_READ_ENABLE == 0) && (read_issued >= read_total)) ||
+                 ((DIRECT_READ_ENABLE != 0) && direct_last_issued)) &&
+                ((read_outstanding == 0) ||
+                 ((read_outstanding == 1) && bank_resp_fire && !rd_req_fire)) &&
+                !bank_resp_fire && !out_valid_q && !read_complete) begin
                 read_complete <= 1'b1;
                 read_active <= 1'b0;
                 read_done_valid <= 1'b1;
@@ -368,15 +438,6 @@ module ds_word_window_pingpong_shell #(
             if (fill_engine_busy && read_active)
                 overlap_cycles <= overlap_cycles + 1'b1;
         end
-    end
-
-    /* The bank response carries its accepted tag.  Keeping the address in a
-     * small parallel register avoids a live bank/address mux at the output. */
-    reg [VECTOR_ADDR_WIDTH-1:0] response_addr_reg;
-    wire [VECTOR_ADDR_WIDTH-1:0] read_addr_for_response = response_addr_reg;
-    always @(posedge clk) begin
-        if (rst_n && rd_req_fire)
-            response_addr_reg <= read_addr;
     end
 
 `ifndef SYNTHESIS

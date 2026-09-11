@@ -19,6 +19,14 @@ module pw_weight_buffer_bram #(
     input  wire                         wr_en,
     input  wire [LINEAR_ADDR_WIDTH-1:0] wr_linear_idx,
     input  wire signed [7:0]            wr_data_int8,
+    // Packed loader entry.  The four bytes are consecutive entries in the
+    // software's [Cout][Cin] linear layout; the buffer unpacks them before
+    // presenting the existing eight-Cout read vector.
+    input  wire                         wr_word_en,
+    input  wire [LINEAR_ADDR_WIDTH-1:0] wr_word_index,
+    input  wire [31:0]                  wr_word_data_int8,
+    input  wire [3:0]                   wr_word_be,
+    output wire                         wr_word_ready,
 
     input  wire                         rd_en,
     input  wire [8:0]                   rd_cout_base,
@@ -33,27 +41,66 @@ module pw_weight_buffer_bram #(
     localparam CIN_SHIFT = $clog2(MAX_CIN);
     localparam LANE_SHIFT = $clog2(LANES);
 
-    wire [$clog2(MAX_COUT)-1:0] wr_cout_idx;
-    wire [$clog2(MAX_CIN)-1:0] wr_channel_idx;
-    wire [$clog2(COUT_TILES)-1:0] wr_cout_tile;
-    wire [LANE_SHIFT-1:0] wr_lane_idx;
-    wire [ADDR_WIDTH-1:0] wr_addr;
     wire [ADDR_WIDTH-1:0] rd_addr;
     wire [DATA_WIDTH-1:0] rd_data_raw;
 
-    assign wr_cout_idx = wr_linear_idx >> CIN_SHIFT;
-    assign wr_channel_idx = wr_linear_idx[$clog2(MAX_CIN)-1:0];
-    assign wr_cout_tile = wr_cout_idx >> LANE_SHIFT;
-    assign wr_lane_idx = wr_cout_idx[LANE_SHIFT-1:0];
-    assign wr_addr = (wr_cout_tile * MAX_CIN) + wr_channel_idx;
     assign rd_addr = ((rd_cout_base >> LANE_SHIFT) * MAX_CIN) + rd_channel_idx;
+    // A packed external word is accepted once, then retired as four scalar
+    // canonical-store writes.  The runner uses wr_word_ready to hold the
+    // corresponding response until this tiny unpack queue is available.
+    reg packed_pending;
+    reg [LINEAR_ADDR_WIDTH-1:0] packed_pending_word_index;
+    reg [31:0] packed_pending_data;
+    reg [3:0] packed_pending_be;
+    reg [1:0] packed_pending_byte;
+    wire packed_pending_byte_valid = packed_pending_be[packed_pending_byte];
+    wire [LINEAR_ADDR_WIDTH-1:0] packed_pending_linear =
+        (packed_pending_word_index << 2) + packed_pending_byte;
+    wire canonical_wr_from_packed = packed_pending && packed_pending_byte_valid;
+    wire canonical_wr_en = wr_en || canonical_wr_from_packed;
+    wire [LINEAR_ADDR_WIDTH-1:0] canonical_wr_linear_idx =
+        canonical_wr_from_packed ? packed_pending_linear : wr_linear_idx;
+    wire signed [7:0] canonical_wr_data_int8 = canonical_wr_from_packed ?
+        packed_pending_data[(packed_pending_byte * 8) +: 8] : wr_data_int8;
+    wire [$clog2(MAX_COUT)-1:0] canonical_wr_cout_idx =
+        canonical_wr_linear_idx >> CIN_SHIFT;
+    wire [$clog2(MAX_CIN)-1:0] canonical_wr_channel_idx =
+        canonical_wr_linear_idx[$clog2(MAX_CIN)-1:0];
+    wire [$clog2(COUT_TILES)-1:0] canonical_wr_cout_tile =
+        canonical_wr_cout_idx >> LANE_SHIFT;
+    wire [LANE_SHIFT-1:0] canonical_wr_lane_idx =
+        canonical_wr_cout_idx[LANE_SHIFT-1:0];
+    wire [ADDR_WIDTH-1:0] canonical_wr_addr =
+        (canonical_wr_cout_tile * MAX_CIN) + canonical_wr_channel_idx;
+    assign wr_word_ready = !packed_pending;
+    // Packed and scalar loaders converge on the same canonical compute
+    // memory; only the write address/data/byte lane are selected here.
     assign rd_data_vector = rd_data_raw;
 
     always @(posedge clk) begin
         if (!rst_n) begin
             rd_valid <= 1'b0;
+            packed_pending <= 1'b0;
+            packed_pending_word_index <= {LINEAR_ADDR_WIDTH{1'b0}};
+            packed_pending_data <= 32'd0;
+            packed_pending_be <= 4'd0;
+            packed_pending_byte <= 2'd0;
         end else begin
             rd_valid <= rd_en;
+            if (packed_pending) begin
+                if (packed_pending_byte == 2'd3) begin
+                    packed_pending <= 1'b0;
+                    packed_pending_byte <= 2'd0;
+                end else begin
+                    packed_pending_byte <= packed_pending_byte + 2'd1;
+                end
+            end else if (wr_word_en) begin
+                packed_pending <= 1'b1;
+                packed_pending_word_index <= wr_word_index;
+                packed_pending_data <= wr_word_data_int8;
+                packed_pending_be <= wr_word_be;
+                packed_pending_byte <= 2'd0;
+            end
         end
     end
 
@@ -62,8 +109,8 @@ module pw_weight_buffer_bram #(
     wire [LANES-1:0] wr_byte_enable;
     wire [DATA_WIDTH-1:0] wr_data_replicated;
 
-    assign wr_byte_enable = {{(LANES-1){1'b0}}, 1'b1} << wr_lane_idx;
-    assign wr_data_replicated = {LANES{wr_data_int8}};
+    assign wr_byte_enable = {{(LANES-1){1'b0}}, 1'b1} << canonical_wr_lane_idx;
+    assign wr_data_replicated = {LANES{canonical_wr_data_int8}};
 
     xpm_memory_sdpram #(
         .ADDR_WIDTH_A(ADDR_WIDTH),
@@ -93,9 +140,9 @@ module pw_weight_buffer_bram #(
     ) u_weight_memory (
         .clka(clk),
         .clkb(clk),
-        .ena(wr_en),
+        .ena(canonical_wr_en),
         .enb(rd_en),
-        .addra(wr_addr),
+        .addra(canonical_wr_addr),
         .addrb(rd_addr),
         .dina(wr_data_replicated),
         .wea(wr_byte_enable),
@@ -115,8 +162,9 @@ module pw_weight_buffer_bram #(
     assign rd_data_raw = rd_data_reg;
 
     always @(posedge clk) begin
-        if (wr_en) begin
-            mem[wr_addr][(wr_lane_idx*8) +: 8] <= wr_data_int8;
+        if (canonical_wr_en) begin
+            mem[canonical_wr_addr][(canonical_wr_lane_idx*8) +: 8] <=
+                canonical_wr_data_int8;
         end
 
         if (!rst_n) begin

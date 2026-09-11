@@ -22,6 +22,10 @@ module dw_mac_lanes #(
      * single-outstanding interface and reuse the same arithmetic operators,
      * but explicitly separate product, row-sum, and accumulate phases. */
     reg [1:0] cycle_idx;
+    /* Physical replica for the row/accumulate decode.  Keeping the decode
+     * local avoids routing the original cycle counter across every lane's
+     * pixel and accumulator controls. */
+    (* keep = "true" *) reg [1:0] cycle_idx_local;
     reg [1:0] mac_phase;
     reg [LANES-1:0] lane_active_r;
     /* Each lane keeps the current 3-tap row and the two future rows in
@@ -79,6 +83,7 @@ module dw_mac_lanes #(
             busy <= 1'b0;
             valid_out <= 1'b0;
             cycle_idx <= 2'd0;
+            cycle_idx_local <= 2'd0;
             mac_phase <= 2'd0;
             lane_active_r <= {LANES{1'b0}};
             acc_vec <= {(LANES*32){1'b0}};
@@ -115,6 +120,7 @@ module dw_mac_lanes #(
             if (input_fire) begin
                 busy <= 1'b1;
                 cycle_idx <= 2'd0;
+                cycle_idx_local <= 2'd0;
                 mac_phase <= 2'd0;
                 lane_active_r <= lane_active;
                 for (lane = 0; lane < LANES; lane = lane + 1) begin
@@ -169,20 +175,20 @@ module dw_mac_lanes #(
                     for (lane = 0; lane < LANES; lane = lane + 1) begin
                         if (lane_active_r[lane]) begin
                             acc[lane] <= acc[lane] + row_sum_reg[lane];
-                            if (cycle_idx == 2'd2)
+                            if (cycle_idx_local == 2'd2)
                                 acc_vec[(lane*32) +: 32] <=
                                     acc[lane] + row_sum_reg[lane];
-                        end else if (cycle_idx == 2'd2) begin
+                        end else if (cycle_idx_local == 2'd2) begin
                             acc_vec[(lane*32) +: 32] <= 32'sd0;
                         end
-                        if (cycle_idx == 2'd0) begin
+                        if (cycle_idx_local == 2'd0) begin
                             pixel_cur0[lane] <= pixel_row1_0[lane];
                             pixel_cur1[lane] <= pixel_row1_1[lane];
                             pixel_cur2[lane] <= pixel_row1_2[lane];
                             weight_cur0[lane] <= weight_row1_0[lane];
                             weight_cur1[lane] <= weight_row1_1[lane];
                             weight_cur2[lane] <= weight_row1_2[lane];
-                        end else if (cycle_idx == 2'd1) begin
+                        end else if (cycle_idx_local == 2'd1) begin
                             pixel_cur0[lane] <= pixel_row2_0[lane];
                             pixel_cur1[lane] <= pixel_row2_1[lane];
                             pixel_cur2[lane] <= pixel_row2_2[lane];
@@ -192,12 +198,14 @@ module dw_mac_lanes #(
                         end
                     end
 
-                    if (cycle_idx == 2'd2) begin
+                    if (cycle_idx_local == 2'd2) begin
                         busy <= 1'b0;
                         valid_out <= 1'b1;
                         cycle_idx <= 2'd0;
+                        cycle_idx_local <= 2'd0;
                     end else begin
                         cycle_idx <= cycle_idx + 2'd1;
+                        cycle_idx_local <= cycle_idx_local + 2'd1;
                         mac_phase <= 2'd0;
                     end
                 end

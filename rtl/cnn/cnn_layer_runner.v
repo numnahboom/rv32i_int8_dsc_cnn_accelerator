@@ -19,7 +19,18 @@ module cnn_layer_runner #(
     parameter USE_SHARED_UNIFIED64 = 0,
     // Persistent DS PW row-feed candidate.  Default zero preserves the
     // existing unified64/legacy engines and their interfaces.
-    parameter USE_PERSISTENT_DS = 0
+    parameter USE_PERSISTENT_DS = 0,
+    // Compile-time-disabled retained DS1 integration hook.  Zero leaves the
+    // existing phase-loader/tiled engine path structurally unchanged.
+    parameter USE_DS1_RETAINED_ORCHESTRATOR = 0,
+    // Physical-envelope-only selector.  The legacy DS engine is not
+    // elaborated when this is set; retained DS1 remains the only supported DS
+    // shape in that build.  Keep zero for the production/fullnet path.
+    parameter USE_RETAINED_ONLY_DS = 0,
+    // Group-published shared64 is a top-level DS backend.  In that build the
+    // runner still owns Stem/GAP/FC, but its legacy DS engine is omitted so
+    // the selected production image cannot carry two DS arithmetic planes.
+    parameter USE_GROUP_SHARED64_DS = 0
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -66,6 +77,10 @@ module cnn_layer_runner #(
     localparam FLAG_TILED_STEM      = FLAG_TILED_DS_BLOCK;
     // External non-tiled Stem/DS input is four NHWC bytes per memory word.
     localparam FLAG_PACKED_INPUT    = 6;
+    // DS weights may be supplied as real contiguous four-byte words.  Bias,
+    // multiplier, and shift phases remain one complete 32-bit transaction per
+    // item; scalar mode (flag clear) is unchanged.
+    localparam FLAG_PACKED_WEIGHTS  = 7;
 
     localparam PH_INPUT     = 4'd0;
     localparam PH_DW_WEIGHT = 4'd1;
@@ -154,6 +169,41 @@ module cnn_layer_runner #(
     // and phase-control enables.
     localparam ST_VALIDATE_SPAN_VALID   = 6'd39;
     localparam ST_LOAD_COUNT_CALC       = 6'd40;
+    localparam ST_DS1_RETAINED_START    = 6'd41;
+    localparam ST_DS1_RETAINED_WAIT     = 6'd42;
+    // Recompute halo metadata only when a committed request crosses to a
+    // new pixel.  This is a bounded look-ahead bubble, not an every-element
+    // wait state; channel runs remain fully pipelined.
+    localparam ST_TILED_LOAD_LOOKAHEAD  = 6'd43;
+    // A packed weight response is held here until the DS-side canonical
+    // unpack queue can accept it.  The queue retires one byte per cycle, so
+    // advancing the external word cursor before this handshake would drop
+    // words whenever the queue is still draining.
+    localparam ST_PACKED_WEIGHT_WAIT     = 6'd44;
+    // Commit the halo-row product before adding one full input row.  Keeping
+    // this successor-base add in its own setup cycle prevents
+    // row_stride_reg -> (halo_row * stride + stride) from becoming one
+    // cascaded DSP path into tiled_input_next_row_base_reg.
+    localparam ST_TILED_ADDR_NEXT_BASE   = 6'd45;
+    // Compute transaction-invariant tile increments after row_stride has
+    // committed.  The tiled address walk then uses only registered adds;
+    // no per-tile origin*stride multiply remains in the load setup.
+    localparam ST_CALC_TILED_STEPS       = 6'd46;
+    // Tiled-loader request classes are captured one position ahead of the
+    // FSM.  Keeping the padding/word decision in flops prevents the cursor
+    // increment and halo comparisons from feeding the request-state CE cone.
+    localparam TILED_REQ_PADDING        = 2'd0;
+    localparam TILED_REQ_SCALAR_SRAM    = 2'd1;
+    localparam TILED_REQ_WORD_SRAM      = 2'd2;
+    localparam TILED_REQ_EXTERNAL       = 2'd3;
+    // The cursor successor is committed first; this state registers the
+    // wide signed halo/eligibility metadata from that already-registered
+    // successor.  It is used only at tile/pixel boundaries, never per item.
+    localparam ST_TILED_LOAD_METADATA   = 6'd47;
+    // Validation commits the output-span product in a separate state.  The
+    // span predicates below consume only registered counts, rather than a
+    // descriptor-derived product in the same control cycle.
+    localparam ST_VALIDATE_OUTPUT_COUNT  = 6'd48;
     localparam integer OUT_BUFFER_DEPTH = 64 * MAX_COUT;
     localparam integer OUT_BUFFER_ADDR_WIDTH =
         (OUT_BUFFER_DEPTH <= 2) ? 1 : $clog2(OUT_BUFFER_DEPTH);
@@ -168,6 +218,7 @@ module cnn_layer_runner #(
     reg op_is_gap_reg;
     reg op_is_fc_reg;
     reg op_is_valid_reg;
+    reg ds1_retained_mode_reg;
     // This is captured with the descriptor rather than recomputed from the
     // wide opcode in the FSM.  Tiled-vs-linear routing is a control invariant
     // for the whole transaction, so a registered bit is both sufficient and
@@ -206,6 +257,8 @@ module cnn_layer_runner #(
     reg [31:0] output_count_reg;
     reg [31:0] sram_input_count_seed_reg;
     reg [31:0] sram_input_count_factor_reg;
+    reg [31:0] sram_output_count_seed_reg;
+    reg [31:0] sram_output_count_factor_reg;
     // Valid descriptors constrain both span operands to 16 bits.  Keep the
     // multiply operands narrow so Vivado can use one 16x16 DSP instead of a
     // cascaded 32x32 implementation on the descriptor-validation cone.
@@ -218,6 +271,8 @@ module cnn_layer_runner #(
     reg        packed_word_valid;
     reg [31:0] packed_word_addr;
     reg [31:0] packed_word_data;
+    reg [31:0] packed_weight_data_reg;
+    reg [1:0]  packed_weight_byte_reg;
 
     reg [3:0] phase_idx;
     reg [31:0] phase_count;
@@ -232,6 +287,7 @@ module cnn_layer_runner #(
     reg [15:0] pw_load_cin;
     reg [31:0] store_idx;
     reg [31:0] store_count;
+    reg [31:0] tiled_store_area_reg;
     reg        store_write_word_eligible_reg;
     reg        store_issue_word_eligible_reg;
     reg [OUT_BUFFER_ADDR_WIDTH-1:0] store_issue_addr_reg;
@@ -241,16 +297,112 @@ module cnn_layer_runner #(
     reg [7:0] tiled_load_y;
     reg [7:0] tiled_load_x;
     reg [15:0] tiled_load_channel;
+    // Tiled channel wrap and four-lane eligibility use descriptor-local
+    // thresholds.  Registering the subtracts once avoids rebuilding
+    // channel+1/channel+4 carry chains in every successor metadata cone.
+    reg [15:0] tiled_channel_last_reg;
+    reg [15:0] tiled_channel_word_limit_reg;
+    reg        tiled_channel_ge4_reg;
     // Registered flattened input address state for tiled external loads.
     // These are signed because the halo origin may be outside the image.
     reg signed [31:0] tiled_input_index_reg;
     reg signed [31:0] tiled_input_row_base_reg;
+    // Keep the tile-row origin separate from the mutable current-row cursor.
+    // The loader advances row_base while filling a tile; reusing that cursor
+    // for the next tile would double-count the prior tile height.
+    reg signed [31:0] tiled_input_tile_row_base_reg;
     // Precomputed base for the next tiled-input row. Keeping the row-stride
     // multiply and active-load recurrence in separate registered cones
     // prevents stride_reg -> row_base -> index_next from becoming one path.
     reg signed [31:0] tiled_input_next_row_base_reg;
     reg signed [31:0] tiled_input_col_base_reg;
     reg signed [31:0] tiled_input_tile_col_base_reg;
+    // Tile-to-tile increments.  The scheduler walks a fixed 8x8 output tile
+    // raster, so the next tile row/column origins advance by 8*stride input
+    // positions.  Keeping these as registered values avoids multiplying the
+    // halo origin by row_stride in the active tile setup path.
+    (* DONT_TOUCH = "TRUE" *)
+    reg signed [31:0] tiled_input_tile_row_step_reg;
+    reg signed [31:0] tiled_input_tile_col_step_reg;
+    reg signed [31:0] tiled_input_halo_step_reg;
+    // Look-ahead metadata for the current cursor and the following cursor.
+    // These registers are updated when a load is committed, so a response
+    // can issue the next SRAM read without recomputing channel wrap/padding
+    // in the same cycle as the FSM transition.
+    reg        tiled_load_current_padding_reg;
+    reg        tiled_load_next_padding_reg;
+    // The successor cursor is a complete bundle.  Current state is held
+    // stable from request issue through response; commit copies this bundle
+    // into the current cursor and advances the successor using narrow c/x/y
+    // arithmetic only.
+    reg [7:0]  tiled_load_next_y_reg;
+    reg [7:0]  tiled_load_next_x_reg;
+    reg [15:0] tiled_load_next_channel_reg;
+    reg signed [31:0] tiled_input_next_index_cursor_reg;
+    reg signed [31:0] tiled_input_next_row_base_cursor_reg;
+    reg signed [31:0] tiled_input_next_row_next_base_cursor_reg;
+    reg signed [31:0] tiled_input_next_col_base_cursor_reg;
+    reg        tiled_load_next_word_channel_ok_reg;
+    reg        tiled_load_next_word_source_aligned_reg;
+    reg [3:0]  tiled_load_next_word_lane_mask_reg;
+    reg        tiled_load_next_pixel_end_reg;
+    reg        tiled_load_next_word_pixel_end_reg;
+    // Set for the first metadata fill of a tile.  Subsequent boundary
+    // lookahead cycles already have a registered successor cursor.
+    reg        tiled_load_prime_reg;
+    // Word eligibility is a current-cursor attribute.  It is registered on
+    // cursor commit so the FSM does not compare channel/address bits while
+    // selecting the request state.
+    // Registered request bundle.  Eligibility is consumed only from these
+    // flops; it is no longer rebuilt from channel/pixel-end carry chains in
+    // the request state's enable cone.
+    reg        tiled_load_word_channel_ok_reg;
+    reg        tiled_load_word_source_aligned_reg;
+    reg [3:0]  tiled_load_word_lane_mask_reg;
+    reg        tiled_load_current_pixel_end_reg;
+    reg        tiled_load_current_word_pixel_end_reg;
+
+`ifndef SYNTHESIS
+    // Simulation-only lookahead contract checks.  These shadows are updated
+    // at the same clock edge as the cursor task and checked on the following
+    // edge, after the nonblocking cursor commit has become observable.
+    integer sim_tiled_load_assert_errors;
+    reg     sim_tiled_load_expect_next_padding_valid;
+    reg     sim_tiled_load_expect_next_padding;
+    reg     sim_tiled_load_expect_current_padding_valid;
+    reg     sim_tiled_load_expect_current_padding;
+    reg     sim_tiled_load_hold_valid;
+    reg     sim_tiled_load_hold_current_padding;
+    reg     sim_tiled_load_hold_next_padding;
+    reg     sim_tiled_load_hold_word_channel_ok;
+    reg     sim_tiled_load_hold_word_source_aligned;
+    reg [3:0] sim_tiled_load_hold_word_lane_mask;
+    reg     sim_tiled_load_hold_next_word_channel_ok;
+    reg     sim_tiled_load_hold_next_word_source_aligned;
+    reg [3:0] sim_tiled_load_hold_next_word_lane_mask;
+    reg     sim_tiled_load_hold_current_pixel_end;
+    reg     sim_tiled_load_hold_current_word_pixel_end;
+    reg     sim_tiled_load_hold_next_pixel_end;
+    reg     sim_tiled_load_hold_next_word_pixel_end;
+    reg [7:0] sim_tiled_load_hold_y;
+    reg [7:0] sim_tiled_load_hold_x;
+    reg [15:0] sim_tiled_load_hold_channel;
+    reg [7:0] sim_tiled_load_hold_next_y;
+    reg [7:0] sim_tiled_load_hold_next_x;
+    reg [15:0] sim_tiled_load_hold_next_channel;
+    reg signed [31:0] sim_tiled_load_hold_index;
+    reg signed [31:0] sim_tiled_load_hold_next_index;
+    reg signed [31:0] sim_tiled_load_hold_row_base;
+    reg signed [31:0] sim_tiled_load_hold_next_row_base;
+    reg signed [31:0] sim_tiled_load_hold_next_row_next_base;
+    reg signed [31:0] sim_tiled_load_hold_col_base;
+    reg signed [31:0] sim_tiled_load_hold_next_col_base;
+`endif
+    // This transaction-invariant product is captured before tile traversal.
+    // Keep the narrow state boundary visible to Vivado: otherwise the
+    // row-base expression can be algebraically bypassed back to descriptor
+    // bits, recreating a cross-state DSP cascade.
+    (* DONT_TOUCH = "TRUE" *)
     reg signed [31:0] tiled_input_row_stride_reg;
     reg signed [31:0] tiled_input_halo_row_offset_reg;
     reg signed [31:0] tiled_input_halo_col_offset_reg;
@@ -369,11 +521,27 @@ module cnn_layer_runner #(
     reg [15:0] ds_cfg_index;
     reg [31:0] ds_cfg_data;
     wire ds_cfg_ready;
+    wire ds_cfg_weight_word_ready;
     wire ds_error;
     wire [31:0] ds_perf_total_cycles;
     wire [31:0] ds_perf_dw_cycles;
     wire [31:0] ds_perf_pw_cycles;
     wire [31:0] ds_perf_pw_issue_cycles;
+
+    /* Optional retained DS1 runner boundary.  All wires are tied off in the
+     * disabled generate branch, keeping the default production netlist on the
+     * legacy path. */
+    wire ds1_ret_start_valid;
+    wire ds1_ret_start_ready;
+    wire ds1_ret_source_word_en;
+    wire [SRAM_ADDR_WIDTH-1:0] ds1_ret_source_word_addr;
+    wire ds1_ret_output_word_en;
+    wire [15:0] ds1_ret_output_word_addr;
+    wire [31:0] ds1_ret_output_word_data;
+    wire [3:0] ds1_ret_output_word_be;
+    wire ds1_ret_done;
+    wire ds1_ret_error;
+    wire ds1_ret_busy;
     wire shared_ds_valid_in, shared_ds_ready_in;
     wire shared_ds_first_k, shared_ds_last_k;
     wire [7:0] shared_ds_k_idx;
@@ -415,6 +583,12 @@ module cnn_layer_runner #(
     reg ds_cfg_vec4_wr_en;
     reg [15:0] ds_cfg_vec4_index;
     reg [31:0] ds_cfg_vec4_data;
+    reg ds_cfg_weight_word_wr_en;
+    // 0 = DW linear byte stream, 1 = PW [Cout][Cin] linear byte stream.
+    reg ds_cfg_weight_word_target;
+    reg [15:0] ds_cfg_weight_word_index;
+    reg [31:0] ds_cfg_weight_word_data;
+    reg [3:0] ds_cfg_weight_word_be;
 
     reg tile_sched_start;
     reg tile_sched_next;
@@ -465,18 +639,14 @@ module cnn_layer_runner #(
     wire tiled_spatial_mode;
     wire packed_input_config_supported;
     wire packed_input_mode;
+    wire packed_weight_config_supported;
+    wire packed_weight_mode;
     wire [7:0] tiled_out_h;
     wire [7:0] tiled_out_w;
     wire [3:0] stem_engine_out_h;
     wire [3:0] stem_engine_out_w;
     wire [3:0] ds_engine_out_h;
     wire [3:0] ds_engine_out_w;
-    wire tiled_load_channel_wrap;
-    wire tiled_load_x_wrap;
-    wire [7:0] tiled_load_y_next;
-    wire [7:0] tiled_load_x_next;
-    wire [15:0] tiled_load_channel_next;
-
     assign desc_word0  = desc_words[(0*32) +: 32];
     assign desc_word1  = desc_words[(1*32) +: 32];
     assign desc_word2  = desc_words[(2*32) +: 32];
@@ -496,6 +666,17 @@ module cnn_layer_runner #(
     assign desc_word16 = desc_words[(16*32) +: 32];
     assign desc_word17 = desc_words[(17*32) +: 32];
     assign desc_word18 = desc_words[(18*32) +: 32];
+
+    /* The integration path is deliberately shape- and flag-specific.  Keep
+     * this predicate exact so an enabled build cannot silently redirect any
+     * other DS descriptor away from the established engine. */
+    wire ds1_retained_desc_match =
+        (USE_DS1_RETAINED_ORCHESTRATOR != 0) &&
+        (desc_word0 == OP_DS_BLOCK) &&
+        (desc_word11 == 32'h0020_0020) &&
+        (desc_word12 == 32'h0020_0010) &&
+        (desc_word13 == 32'h0000_0101) &&
+        (desc_word18 == 32'h0000_0036);
 
     assign effective_stride = (stride_reg == 8'd0) ? 8'd1 : stride_reg;
     assign conv_out_h = calc_out_dim(in_h_reg, effective_stride);
@@ -530,22 +711,13 @@ module cnn_layer_runner #(
                                (op_is_stem_reg || op_is_ds_reg);
     assign packed_input_mode = packed_input_config_supported &&
                                (phase_idx == PH_INPUT);
+    assign packed_weight_config_supported = flags_reg[FLAG_PACKED_WEIGHTS] &&
+                                            op_is_ds_reg;
+    assign packed_weight_mode = packed_weight_config_supported &&
+                                ((phase_idx == PH_DW_WEIGHT) ||
+                                 (phase_idx == PH_PW_WEIGHT));
     assign tiled_out_h = same_out_dim(in_h_reg, effective_stride);
     assign tiled_out_w = same_out_dim(in_w_reg, effective_stride);
-    assign tiled_load_channel_wrap =
-        (tiled_load_channel + 16'd1) >= in_c_reg;
-    assign tiled_load_x_wrap =
-        (tiled_load_x + 8'd1) >= tile_input_w_reg;
-    assign tiled_load_channel_next = tiled_load_channel_wrap ?
-                                     16'd0 :
-                                     (tiled_load_channel + 16'd1);
-    assign tiled_load_x_next = tiled_load_channel_wrap ?
-                               (tiled_load_x_wrap ? 8'd0 :
-                                (tiled_load_x + 8'd1)) :
-                               tiled_load_x;
-    assign tiled_load_y_next =
-        (tiled_load_channel_wrap && tiled_load_x_wrap) ?
-        (tiled_load_y + 8'd1) : tiled_load_y;
     assign stem_engine_out_h = tiled_stem_mode ? tile_h_size_reg[3:0] : conv_out_h;
     assign stem_engine_out_w = tiled_stem_mode ? tile_w_size_reg[3:0] : conv_out_w;
     assign ds_engine_out_h = tiled_ds_mode ? tile_h_size_reg[3:0] : conv_out_h;
@@ -676,74 +848,161 @@ module cnn_layer_runner #(
         end
     endgenerate
 
-    ds_block_tile_engine_new #(
-        .MAX_CIN(MAX_CIN),
-        .MAX_COUT(MAX_COUT),
-        .MAX_IN_H(MAX_DS_IN_H),
-        .MAX_IN_W(MAX_DS_IN_W),
-        .USE_UNIFIED64(USE_UNIFIED64_DS || USE_SHARED_UNIFIED64),
-        .USE_SHARED_ARRAY(USE_SHARED_UNIFIED64),
-        .USE_PERSISTENT_FEED(USE_PERSISTENT_DS)
-    ) u_ds_block_engine (
-        .clk(clk),
-        .rst_n(rst_n),
-        .start(ds_start),
-        .busy(ds_busy),
-        .done(ds_done),
-        .error(ds_error),
-        .cfg_wr_en(ds_cfg_wr_en),
-        .cfg_ready(ds_cfg_ready),
-        .cfg_target(ds_cfg_target),
-        .cfg_index(ds_cfg_index),
-        .cfg_data(ds_cfg_data),
-        .cfg_vec4_wr_en(ds_cfg_vec4_wr_en),
-        .cfg_vec4_index(ds_cfg_vec4_index),
-        .cfg_vec4_data(ds_cfg_vec4_data),
-        .out_h(ds_engine_out_h),
-        .out_w(ds_engine_out_w),
-        .channels(in_c_reg[7:0]),
-        .out_channels(out_c_reg),
-        .stride(effective_stride[1:0]),
-        .input_zero_point(input_zero_point_reg[7:0]),
-        .dw_output_zero_point(dw_output_zero_point_reg),
-        .dw_activation_min(dw_activation_min_reg),
-        .dw_activation_max(dw_activation_max_reg),
-        .pw_output_zero_point(pw_output_zero_point_reg),
-        .pw_activation_min(pw_activation_min_reg),
-        .pw_activation_max(pw_activation_max_reg),
-        .out_wr_en(ds_out_wr_en),
-        .out_wr_pixel_idx(ds_out_wr_pixel_idx),
-        .out_wr_channel_idx(ds_out_wr_channel_idx),
-        .out_wr_data_int8(ds_out_wr_data_int8),
-        .out_wr_vec4_en(ds_out_wr_vec4_en),
-        .out_wr_vec4_pixel_idx(ds_out_wr_vec4_pixel_idx),
-        .out_wr_vec4_channel_idx(ds_out_wr_vec4_channel_idx),
-        .out_wr_vec4_data_int8(ds_out_wr_vec4_data_int8),
-        .perf_total_cycles(ds_perf_total_cycles),
-        .perf_dw_cycles(ds_perf_dw_cycles),
-        .perf_pw_cycles(ds_perf_pw_cycles),
-        .perf_pw_issue_cycles(ds_perf_pw_issue_cycles),
-        .shared_valid_in(shared_ds_valid_in),
-        .shared_ready_in(shared_ds_ready_in),
-        .shared_first_k(shared_ds_first_k),
-        .shared_last_k(shared_ds_last_k),
-        .shared_k_idx(shared_ds_k_idx),
-        .shared_act_vec(shared_ds_act_vec),
-        .shared_wgt_vec16(shared_ds_wgt_vec16),
-        .shared_pixel_mask(shared_ds_pixel_mask),
-        .shared_cout_mask(shared_ds_cout_mask),
-        .shared_pixel_base(shared_ds_pixel_base),
-        .shared_cout_base(shared_ds_cout_base),
-        .shared_bias_vec(shared_ds_bias_vec),
-        .shared_multiplier_vec(shared_ds_multiplier_vec),
-        .shared_shift_vec(shared_ds_shift_vec),
-        .shared_out_valid(shared_ds_out_valid),
-        .shared_out_ready(shared_ds_out_ready),
-        .shared_out_pixel_idx(shared_ds_out_pixel_idx),
-        .shared_out_channel_base(shared_ds_out_channel_base),
-        .shared_out_lane_mask(shared_ds_out_lane_mask),
-        .shared_out_data(shared_ds_out_data)
-    );
+    /* The default branch is the production/fullnet legacy DS engine.  A
+     * retained DS1 build is a mutually-exclusive physical variant: selecting
+     * the retained orchestrator must omit the legacy instance at elaboration,
+     * rather than merely leaving it idle behind a runtime mux.  Keep the
+     * explicit retained-only knob as an equivalent envelope selector for
+     * standalone implementation runs. */
+    generate
+        if ((USE_RETAINED_ONLY_DS == 0) &&
+            (USE_GROUP_SHARED64_DS == 0) &&
+            (USE_DS1_RETAINED_ORCHESTRATOR == 0)) begin : gen_legacy_ds_engine
+            ds_block_tile_engine_new #(
+                .MAX_CIN(MAX_CIN),
+                .MAX_COUT(MAX_COUT),
+                .MAX_IN_H(MAX_DS_IN_H),
+                .MAX_IN_W(MAX_DS_IN_W),
+                .USE_UNIFIED64(USE_UNIFIED64_DS || USE_SHARED_UNIFIED64),
+                .USE_SHARED_ARRAY(USE_SHARED_UNIFIED64),
+                .USE_PERSISTENT_FEED(USE_PERSISTENT_DS)
+            ) u_ds_block_engine (
+                .clk(clk),
+                .rst_n(rst_n),
+                .start(ds_start),
+                .busy(ds_busy),
+                .done(ds_done),
+                .error(ds_error),
+                .cfg_wr_en(ds_cfg_wr_en),
+                .cfg_ready(ds_cfg_ready),
+                .cfg_weight_word_ready(ds_cfg_weight_word_ready),
+                .cfg_target(ds_cfg_target),
+                .cfg_index(ds_cfg_index),
+                .cfg_data(ds_cfg_data),
+                .cfg_vec4_wr_en(ds_cfg_vec4_wr_en),
+                .cfg_vec4_index(ds_cfg_vec4_index),
+                .cfg_vec4_data(ds_cfg_vec4_data),
+                .cfg_weight_word_wr_en(ds_cfg_weight_word_wr_en),
+                .cfg_weight_word_target(ds_cfg_weight_word_target),
+                .cfg_weight_word_index(ds_cfg_weight_word_index),
+                .cfg_weight_word_data(ds_cfg_weight_word_data),
+                .cfg_weight_word_be(ds_cfg_weight_word_be),
+                .out_h(ds_engine_out_h),
+                .out_w(ds_engine_out_w),
+                .channels(in_c_reg[7:0]),
+                .out_channels(out_c_reg),
+                .stride(effective_stride[1:0]),
+                .input_zero_point(input_zero_point_reg[7:0]),
+                .dw_output_zero_point(dw_output_zero_point_reg),
+                .dw_activation_min(dw_activation_min_reg),
+                .dw_activation_max(dw_activation_max_reg),
+                .pw_output_zero_point(pw_output_zero_point_reg),
+                .pw_activation_min(pw_activation_min_reg),
+                .pw_activation_max(pw_activation_max_reg),
+                .out_wr_en(ds_out_wr_en),
+                .out_wr_pixel_idx(ds_out_wr_pixel_idx),
+                .out_wr_channel_idx(ds_out_wr_channel_idx),
+                .out_wr_data_int8(ds_out_wr_data_int8),
+                .out_wr_vec4_en(ds_out_wr_vec4_en),
+                .out_wr_vec4_pixel_idx(ds_out_wr_vec4_pixel_idx),
+                .out_wr_vec4_channel_idx(ds_out_wr_vec4_channel_idx),
+                .out_wr_vec4_data_int8(ds_out_wr_vec4_data_int8),
+                .perf_total_cycles(ds_perf_total_cycles),
+                .perf_dw_cycles(ds_perf_dw_cycles),
+                .perf_pw_cycles(ds_perf_pw_cycles),
+                .perf_pw_issue_cycles(ds_perf_pw_issue_cycles),
+                .shared_valid_in(shared_ds_valid_in),
+                .shared_ready_in(shared_ds_ready_in),
+                .shared_first_k(shared_ds_first_k),
+                .shared_last_k(shared_ds_last_k),
+                .shared_k_idx(shared_ds_k_idx),
+                .shared_act_vec(shared_ds_act_vec),
+                .shared_wgt_vec16(shared_ds_wgt_vec16),
+                .shared_pixel_mask(shared_ds_pixel_mask),
+                .shared_cout_mask(shared_ds_cout_mask),
+                .shared_pixel_base(shared_ds_pixel_base),
+                .shared_cout_base(shared_ds_cout_base),
+                .shared_bias_vec(shared_ds_bias_vec),
+                .shared_multiplier_vec(shared_ds_multiplier_vec),
+                .shared_shift_vec(shared_ds_shift_vec),
+                .shared_out_valid(shared_ds_out_valid),
+                .shared_out_ready(shared_ds_out_ready),
+                .shared_out_pixel_idx(shared_ds_out_pixel_idx),
+                .shared_out_channel_base(shared_ds_out_channel_base),
+                .shared_out_lane_mask(shared_ds_out_lane_mask),
+                .shared_out_data(shared_ds_out_data)
+            );
+        end else begin : gen_retained_only_ds_no_legacy
+            assign ds_busy = 1'b0;
+            assign ds_done = 1'b0;
+            assign ds_error = 1'b0;
+            assign ds_cfg_ready = 1'b0;
+            assign ds_cfg_weight_word_ready = 1'b0;
+            assign ds_out_wr_en = 1'b0;
+            assign ds_out_wr_pixel_idx = 6'd0;
+            assign ds_out_wr_channel_idx = 8'd0;
+            assign ds_out_wr_data_int8 = 8'sd0;
+            assign ds_out_wr_vec4_en = 1'b0;
+            assign ds_out_wr_vec4_pixel_idx = 6'd0;
+            assign ds_out_wr_vec4_channel_idx = 8'd0;
+            assign ds_out_wr_vec4_data_int8 = 32'd0;
+            assign ds_perf_total_cycles = 32'd0;
+            assign ds_perf_dw_cycles = 32'd0;
+            assign ds_perf_pw_cycles = 32'd0;
+            assign ds_perf_pw_issue_cycles = 32'd0;
+        end
+    endgenerate
+
+    generate
+        if (USE_DS1_RETAINED_ORCHESTRATOR != 0) begin : gen_ds1_retained_runner
+            assign ds1_ret_start_valid =
+                (state == ST_DS1_RETAINED_START) && ds1_retained_mode_reg;
+            ds1_retained_runner_adapter #(
+                .ADDR_WIDTH(24),
+                .SRAM_ADDR_WIDTH(SRAM_ADDR_WIDTH),
+                .MAX_CIN(MAX_CIN),
+                .FIFO_DEPTH(8)
+            ) u_ds1_retained_adapter (
+                .clk(clk), .rst_n(rst_n),
+                .layer_start_valid(ds1_ret_start_valid),
+                .layer_start_ready(ds1_ret_start_ready),
+                .input_base_addr(input_addr_reg[23:0]),
+                .input_zero_point(input_zero_point_reg[7:0]),
+                .config_write_en(ds_cfg_wr_en),
+                .config_target(ds_cfg_target),
+                .config_index(ds_cfg_index),
+                .config_data(ds_cfg_data),
+                .dw_output_zero_point(dw_output_zero_point_reg),
+                .dw_activation_min(dw_activation_min_reg),
+                .dw_activation_max(dw_activation_max_reg),
+                .pw_output_zero_point(pw_output_zero_point_reg),
+                .pw_activation_min(pw_activation_min_reg),
+                .pw_activation_max(pw_activation_max_reg),
+                .source_word_en(ds1_ret_source_word_en),
+                .source_word_addr(ds1_ret_source_word_addr),
+                .source_word_valid(sram_input_rd_word_valid),
+                .source_word_data(sram_input_rd_word_data),
+                .output_word_en(ds1_ret_output_word_en),
+                .output_word_addr(ds1_ret_output_word_addr),
+                .output_word_data(ds1_ret_output_word_data),
+                .output_word_be(ds1_ret_output_word_be),
+                .done(ds1_ret_done), .error(ds1_ret_error),
+                .busy(ds1_ret_busy)
+            );
+        end else begin : gen_no_ds1_retained_runner
+            assign ds1_ret_start_valid = 1'b0;
+            assign ds1_ret_start_ready = 1'b0;
+            assign ds1_ret_source_word_en = 1'b0;
+            assign ds1_ret_source_word_addr = {SRAM_ADDR_WIDTH{1'b0}};
+            assign ds1_ret_output_word_en = 1'b0;
+            assign ds1_ret_output_word_addr = 16'd0;
+            assign ds1_ret_output_word_data = 32'd0;
+            assign ds1_ret_output_word_be = 4'd0;
+            assign ds1_ret_done = 1'b0;
+            assign ds1_ret_error = 1'b0;
+            assign ds1_ret_busy = 1'b0;
+        end
+    endgenerate
 
     /* Shared unified64 arithmetic island.  Stem and DS front ends are both
      * present for the complete network, but their layer transactions are
@@ -1074,11 +1333,17 @@ module cnn_layer_runner #(
                     case (phase)
                         PH_INPUT:     phase_count_seed_for =
                             {16'd0, in_h_reg} * {16'd0, in_w_reg};
-                        PH_DW_WEIGHT: phase_count_seed_for = {16'd0, in_c_reg};
+                        PH_DW_WEIGHT: phase_count_seed_for =
+                            flags_reg[FLAG_PACKED_WEIGHTS] ?
+                            ((({16'd0, in_c_reg} * 32'd9) + 32'd3) >> 2) :
+                            {16'd0, in_c_reg};
                         PH_DW_BIAS:   phase_count_seed_for = {16'd0, in_c_reg};
                         PH_DW_MUL:    phase_count_seed_for = {16'd0, in_c_reg};
                         PH_DW_SHIFT:  phase_count_seed_for = {16'd0, in_c_reg};
-                        PH_PW_WEIGHT: phase_count_seed_for = {16'd0, out_c_reg};
+                        PH_PW_WEIGHT: phase_count_seed_for =
+                            flags_reg[FLAG_PACKED_WEIGHTS] ?
+                            ((({16'd0, out_c_reg} * {16'd0, in_c_reg}) + 32'd3) >> 2) :
+                            {16'd0, out_c_reg};
                         PH_PW_BIAS:   phase_count_seed_for = {16'd0, out_c_reg};
                         PH_PW_MUL:    phase_count_seed_for = {16'd0, out_c_reg};
                         PH_PW_SHIFT:  phase_count_seed_for = {16'd0, out_c_reg};
@@ -1125,8 +1390,11 @@ module cnn_layer_runner #(
                 OP_DS_BLOCK: begin
                     case (phase)
                         PH_INPUT:     phase_count_factor_for = {16'd0, in_c_reg};
-                        PH_DW_WEIGHT: phase_count_factor_for = 32'd9;
-                        PH_PW_WEIGHT: phase_count_factor_for = {16'd0, in_c_reg};
+                        PH_DW_WEIGHT: phase_count_factor_for =
+                            flags_reg[FLAG_PACKED_WEIGHTS] ? 32'd1 : 32'd9;
+                        PH_PW_WEIGHT: phase_count_factor_for =
+                            flags_reg[FLAG_PACKED_WEIGHTS] ? 32'd1 :
+                            {16'd0, in_c_reg};
                         PH_DW_BIAS,
                         PH_DW_MUL,
                         PH_DW_SHIFT,
@@ -1314,62 +1582,20 @@ module cnn_layer_runner #(
         end
     endfunction
 
-    function [31:0] tiled_input_index_next_reg;
-        begin
-            if (!tiled_load_channel_wrap) begin
-                tiled_input_index_next_reg = tiled_input_index_reg + 32'd1;
-            end else if (!tiled_load_x_wrap) begin
-                tiled_input_index_next_reg = tiled_input_index_reg +
-                                             32'd1;
-            end else begin
-                tiled_input_index_next_reg = tiled_input_next_row_base_reg +
-                    tiled_input_tile_col_base_reg;
-            end
-        end
-    endfunction
-
-    function tiled_input_current_is_padding;
+    // Parameterized padding is evaluated only while filling the registered
+    // current/successor metadata bundles.  The FSM itself consumes the
+    // registered results.
+    function tiled_input_is_padding_at;
+        input [7:0] y;
+        input [7:0] x;
         integer src_y;
         integer src_x;
         begin
-            // The halo origins are captured in ST_TILED_ADDR_OFFSETS before
-            // any load request is issued.  Use those descriptor-local
-            // parameters here so the stride register does not feed the
-            // per-element request/index control cone.
-            src_y = tiled_input_halo_row_offset_reg + tiled_load_y;
-            src_x = tiled_input_halo_col_offset_reg + tiled_load_x;
-            tiled_input_current_is_padding =
+            src_y = tiled_input_halo_row_offset_reg + y;
+            src_x = tiled_input_halo_col_offset_reg + x;
+            tiled_input_is_padding_at =
                 (src_y < 0) || (src_x < 0) ||
                 (src_y >= in_h_reg) || (src_x >= in_w_reg);
-        end
-    endfunction
-
-    function tiled_input_next_is_padding;
-        integer src_y;
-        integer src_x;
-        begin
-            src_y = tiled_input_halo_row_offset_reg + tiled_load_y_next;
-            src_x = tiled_input_halo_col_offset_reg + tiled_load_x_next;
-            tiled_input_next_is_padding =
-                (src_y < 0) || (src_x < 0) ||
-                (src_y >= in_h_reg) || (src_x >= in_w_reg);
-        end
-    endfunction
-
-    // A feature-SRAM word can replace four scalar loads only when the four
-    // channels are within one pixel/tile row, fit in one 32-bit word, and fit
-    // inside one destination input-buffer channel tile.  All other cases
-    // retain the scalar path (including misaligned bases and tails).
-    function tiled_input_word_eligible;
-        reg [31:0] source_byte_addr;
-        begin
-            source_byte_addr = input_addr_reg + tiled_input_index_reg;
-            tiled_input_word_eligible =
-                flags_reg[FLAG_INPUT_FROM_SRAM] &&
-                !tiled_input_current_is_padding() &&
-                ((tiled_load_channel + 16'd4) <= in_c_reg) &&
-                (tiled_load_channel[3:0] <= 4'd12) &&
-                (source_byte_addr[1:0] == 2'b00);
         end
     endfunction
 
@@ -1545,63 +1771,326 @@ module cnn_layer_runner #(
         end
     endtask
 
-    task advance_tiled_load_position;
+    // Capture metadata for the current cursor.  This is the only place that
+    // evaluates the wide signed halo comparisons for the current bundle.
+    // The request FSM consumes the registered result and never recomputes it.
+    task capture_tiled_load_metadata;
+        input [7:0] y;
+        input [7:0] x;
+        input [15:0] channel;
+        input [31:0] input_index;
+        reg [31:0] source_byte_addr;
         begin
-            if ((tiled_load_channel + 16'd1) >= in_c_reg) begin
-                tiled_load_channel <= 16'd0;
-                if ((tiled_load_x + 8'd1) >= tile_input_w_reg) begin
-                    tiled_load_x <= 8'd0;
-                    tiled_load_y <= tiled_load_y + 8'd1;
-                    tiled_input_row_base_reg <= tiled_input_row_base_reg +
-                                                tiled_input_row_stride_reg;
-                    tiled_input_next_row_base_reg <=
-                        tiled_input_next_row_base_reg + tiled_input_row_stride_reg;
-                    tiled_input_col_base_reg <= tiled_input_tile_col_base_reg;
-                    tiled_input_index_reg <= tiled_input_next_row_base_reg +
-                                             tiled_input_tile_col_base_reg;
-                end else begin
-                    tiled_load_x <= tiled_load_x + 8'd1;
-                    tiled_input_col_base_reg <= tiled_input_col_base_reg +
-                                               in_c_reg;
-                    tiled_input_index_reg <= tiled_input_index_reg + 32'd1;
-                end
-            end else begin
-                tiled_load_channel <= tiled_load_channel + 16'd1;
-                tiled_input_index_reg <= tiled_input_index_reg + 32'd1;
-            end
+            source_byte_addr = input_addr_reg + input_index;
+            tiled_load_current_padding_reg <=
+                tiled_input_is_padding_at(y, x);
+            tiled_load_word_channel_ok_reg <=
+                tiled_channel_ge4_reg &&
+                (channel <= tiled_channel_word_limit_reg) &&
+                (channel[3:0] <= 4'd12);
+            tiled_load_word_source_aligned_reg <=
+                (source_byte_addr[1:0] == 2'b00);
+            tiled_load_word_lane_mask_reg <=
+                ((tiled_channel_ge4_reg &&
+                  (channel <= tiled_channel_word_limit_reg)) &&
+                 (channel[3:0] <= 4'd12)) ? 4'b1111 : 4'b0000;
+            tiled_load_current_pixel_end_reg <=
+                (channel >= tiled_channel_last_reg);
+            tiled_load_current_word_pixel_end_reg <=
+                !tiled_channel_ge4_reg ||
+                (channel >= tiled_channel_word_limit_reg);
         end
     endtask
 
-    task advance_tiled_load_position_vec4;
+    // Build a scalar successor from the current cursor.  Only the narrow
+    // cursor increments are performed here; padding and word eligibility are
+    // registered later from the successor bundle.
+    task prepare_tiled_load_successor_scalar;
+        reg [7:0] next_y;
+        reg [7:0] next_x;
+        reg [15:0] next_channel;
+        reg signed [31:0] next_index;
+        reg signed [31:0] next_row_base;
+        reg signed [31:0] next_row_next_base;
+        reg signed [31:0] next_col_base;
         begin
-            // A word always fits in the current 16-lane destination tile, but
-            // it may finish the logical input-channel row.  In that case it
-            // must take exactly the same pixel/row transition as four scalar
-            // loads; leaving the cursor at in_c would address the next word
-            // as a nonexistent channel of the current pixel.
-            if ((tiled_load_channel + 16'd4) >= in_c_reg) begin
-                tiled_load_channel <= 16'd0;
+            next_y = tiled_load_y;
+            next_x = tiled_load_x;
+            next_channel = tiled_load_channel;
+            next_index = tiled_input_index_reg;
+            next_row_base = tiled_input_row_base_reg;
+            next_row_next_base = tiled_input_next_row_base_reg;
+            next_col_base = tiled_input_col_base_reg;
+            if (tiled_load_channel >= tiled_channel_last_reg) begin
+                next_channel = 16'd0;
                 if ((tiled_load_x + 8'd1) >= tile_input_w_reg) begin
-                    tiled_load_x <= 8'd0;
-                    tiled_load_y <= tiled_load_y + 8'd1;
-                    tiled_input_row_base_reg <= tiled_input_row_base_reg +
-                                                tiled_input_row_stride_reg;
-                    tiled_input_next_row_base_reg <=
-                        tiled_input_next_row_base_reg + tiled_input_row_stride_reg;
-                    tiled_input_col_base_reg <= tiled_input_tile_col_base_reg;
-                    tiled_input_index_reg <= tiled_input_next_row_base_reg +
-                                             tiled_input_tile_col_base_reg;
+                    next_x = 8'd0;
+                    next_y = tiled_load_y + 8'd1;
+                    next_row_base = tiled_input_next_row_base_reg;
+                    next_row_next_base = tiled_input_next_row_base_reg +
+                                         tiled_input_row_stride_reg;
+                    next_col_base = tiled_input_tile_col_base_reg;
+                    next_index = tiled_input_next_row_base_reg +
+                                 tiled_input_tile_col_base_reg;
                 end else begin
-                    tiled_load_x <= tiled_load_x + 8'd1;
-                    tiled_input_col_base_reg <= tiled_input_col_base_reg +
-                                               in_c_reg;
-                    tiled_input_index_reg <= tiled_input_index_reg + 32'd4;
+                    next_x = tiled_load_x + 8'd1;
+                    next_col_base = tiled_input_col_base_reg + in_c_reg;
+                    next_index = tiled_input_index_reg + 32'sd1;
                 end
             end else begin
-                tiled_load_channel <= tiled_load_channel + 16'd4;
-                tiled_input_index_reg <= tiled_input_index_reg + 32'd4;
+                next_channel = tiled_load_channel + 16'd1;
+                next_index = tiled_input_index_reg + 32'sd1;
             end
-            tiled_load_idx <= tiled_load_idx + 32'd4;
+            tiled_load_next_y_reg <= next_y;
+            tiled_load_next_x_reg <= next_x;
+            tiled_load_next_channel_reg <= next_channel;
+            tiled_input_next_index_cursor_reg <= next_index;
+            tiled_input_next_row_base_cursor_reg <= next_row_base;
+            tiled_input_next_row_next_base_cursor_reg <= next_row_next_base;
+            tiled_input_next_col_base_cursor_reg <= next_col_base;
+        end
+    endtask
+
+    // Build a vector successor from the current cursor.  This is selected
+    // only for a fully eligible word, so a word can never cross a pixel/row
+    // or the logical channel tail.
+    task prepare_tiled_load_successor_vec4;
+        reg [7:0] next_y;
+        reg [7:0] next_x;
+        reg [15:0] next_channel;
+        reg signed [31:0] next_index;
+        reg signed [31:0] next_row_base;
+        reg signed [31:0] next_row_next_base;
+        reg signed [31:0] next_col_base;
+        begin
+            next_y = tiled_load_y;
+            next_x = tiled_load_x;
+            next_channel = tiled_load_channel;
+            next_index = tiled_input_index_reg;
+            next_row_base = tiled_input_row_base_reg;
+            next_row_next_base = tiled_input_next_row_base_reg;
+            next_col_base = tiled_input_col_base_reg;
+            if (!tiled_channel_ge4_reg ||
+                (tiled_load_channel >= tiled_channel_word_limit_reg)) begin
+                next_channel = 16'd0;
+                if ((tiled_load_x + 8'd1) >= tile_input_w_reg) begin
+                    next_x = 8'd0;
+                    next_y = tiled_load_y + 8'd1;
+                    next_row_base = tiled_input_next_row_base_reg;
+                    next_row_next_base = tiled_input_next_row_base_reg +
+                                         tiled_input_row_stride_reg;
+                    next_col_base = tiled_input_tile_col_base_reg;
+                    next_index = tiled_input_next_row_base_reg +
+                                 tiled_input_tile_col_base_reg;
+                end else begin
+                    next_x = tiled_load_x + 8'd1;
+                    next_col_base = tiled_input_col_base_reg + in_c_reg;
+                    next_index = tiled_input_index_reg + 32'sd4;
+                end
+            end else begin
+                next_channel = tiled_load_channel + 16'd4;
+                next_index = tiled_input_index_reg + 32'sd4;
+            end
+            tiled_load_next_y_reg <= next_y;
+            tiled_load_next_x_reg <= next_x;
+            tiled_load_next_channel_reg <= next_channel;
+            tiled_input_next_index_cursor_reg <= next_index;
+            tiled_input_next_row_base_cursor_reg <= next_row_base;
+            tiled_input_next_row_next_base_cursor_reg <= next_row_next_base;
+            tiled_input_next_col_base_cursor_reg <= next_col_base;
+        end
+    endtask
+
+    // This is the independent metadata stage.  Its inputs are the
+    // registered successor cursor, so the old current channel cannot feed a
+    // halo/eligibility compare in the request-state cycle.  At a pixel
+    // boundary the committed current cursor has just crossed into the new
+    // pixel, so refresh its padding from the registered current y/x here as
+    // well; the successor padding remains a separate next-pixel attribute.
+    task capture_tiled_load_next_metadata;
+        reg [31:0] source_byte_addr;
+        begin
+            source_byte_addr = input_addr_reg +
+                               tiled_input_next_index_cursor_reg;
+            tiled_load_current_padding_reg <=
+                tiled_input_is_padding_at(tiled_load_y, tiled_load_x);
+            tiled_load_next_padding_reg <=
+                tiled_input_is_padding_at(tiled_load_next_y_reg,
+                                          tiled_load_next_x_reg);
+            tiled_load_next_word_channel_ok_reg <=
+                tiled_channel_ge4_reg &&
+                (tiled_load_next_channel_reg <= tiled_channel_word_limit_reg) &&
+                (tiled_load_next_channel_reg[3:0] <= 4'd12);
+            tiled_load_next_word_source_aligned_reg <=
+                (source_byte_addr[1:0] == 2'b00);
+            tiled_load_next_word_lane_mask_reg <=
+                ((tiled_channel_ge4_reg &&
+                  (tiled_load_next_channel_reg <= tiled_channel_word_limit_reg)) &&
+                 (tiled_load_next_channel_reg[3:0] <= 4'd12)) ?
+                4'b1111 : 4'b0000;
+            tiled_load_next_pixel_end_reg <=
+                (tiled_load_next_channel_reg >= tiled_channel_last_reg);
+            tiled_load_next_word_pixel_end_reg <=
+                !tiled_channel_ge4_reg ||
+                (tiled_load_next_channel_reg >= tiled_channel_word_limit_reg);
+        end
+    endtask
+
+    // Commit one consumed item.  The current bundle becomes the previously
+    // prepared successor.  The following successor is advanced from that
+    // registered bundle; only c/x/y and address cursors are incremented in
+    // this task.  When a pixel boundary is crossed, the separate metadata
+    // state below refreshes the wide signed halo predicates.
+    task advance_tiled_load_position;
+        input item_ends_pixel;
+        reg [7:0] next2_y;
+        reg [7:0] next2_x;
+        reg [15:0] next2_channel;
+        reg signed [31:0] next2_index;
+        reg signed [31:0] next2_row_base;
+        reg signed [31:0] next2_row_next_base;
+        reg signed [31:0] next2_col_base;
+        reg [31:0] next2_source_byte_addr;
+        reg use_vec4;
+        begin
+`ifndef SYNTHESIS
+            // The successor padding is a pixel attribute.  Record the exact
+            // value that must be visible after this cursor commit so a
+            // channel-only step cannot accidentally rebuild it from the
+            // changing channel/x/y arithmetic.
+            if (item_ends_pixel) begin
+                sim_tiled_load_expect_current_padding_valid <= 1'b1;
+                sim_tiled_load_expect_current_padding <=
+                    tiled_load_next_padding_reg;
+            end else begin
+                sim_tiled_load_expect_next_padding_valid <= 1'b1;
+                sim_tiled_load_expect_next_padding <=
+                    tiled_load_next_padding_reg;
+            end
+`endif
+            tiled_load_y <= tiled_load_next_y_reg;
+            tiled_load_x <= tiled_load_next_x_reg;
+            tiled_load_channel <= tiled_load_next_channel_reg;
+            tiled_input_index_reg <= tiled_input_next_index_cursor_reg;
+            tiled_input_row_base_reg <= tiled_input_next_row_base_cursor_reg;
+            tiled_input_next_row_base_reg <=
+                tiled_input_next_row_next_base_cursor_reg;
+            tiled_input_col_base_reg <= tiled_input_next_col_base_cursor_reg;
+            // Padding is a pixel attribute.  Keep the current pixel's
+            // registered value through scalar/vector channel steps and only
+            // commit the previously prepared successor value at a pixel
+            // boundary.  The boundary lookahead metadata state then refreshes
+            // the new current pixel and its successor from registered y/x.
+            if (item_ends_pixel) begin
+                tiled_load_current_padding_reg <= tiled_load_next_padding_reg;
+            end
+            tiled_load_word_channel_ok_reg <=
+                tiled_load_next_word_channel_ok_reg;
+            tiled_load_word_source_aligned_reg <=
+                tiled_load_next_word_source_aligned_reg;
+            tiled_load_word_lane_mask_reg <=
+                tiled_load_next_word_lane_mask_reg;
+            tiled_load_current_pixel_end_reg <=
+                tiled_load_next_pixel_end_reg;
+            tiled_load_current_word_pixel_end_reg <=
+                tiled_load_next_word_pixel_end_reg;
+
+            // The next item is vectorized only if its registered bundle is
+            // non-padding and fully word-eligible.  In particular, the
+            // address alignment and the low-nibble lane bound are checked
+            // before selecting the four-byte cursor step.
+            use_vec4 = !tiled_load_next_padding_reg &&
+                       flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                       tiled_load_next_word_channel_ok_reg &&
+                       tiled_load_next_word_source_aligned_reg &&
+                       (tiled_load_next_word_lane_mask_reg == 4'b1111);
+            next2_y = tiled_load_next_y_reg;
+            next2_x = tiled_load_next_x_reg;
+            next2_channel = tiled_load_next_channel_reg;
+            next2_index = tiled_input_next_index_cursor_reg;
+            next2_row_base = tiled_input_next_row_base_cursor_reg;
+            next2_row_next_base = tiled_input_next_row_next_base_cursor_reg;
+            next2_col_base = tiled_input_next_col_base_cursor_reg;
+            if (use_vec4) begin
+                if (!tiled_channel_ge4_reg ||
+                    (tiled_load_next_channel_reg >= tiled_channel_word_limit_reg)) begin
+                    next2_channel = 16'd0;
+                    if ((tiled_load_next_x_reg + 8'd1) >= tile_input_w_reg) begin
+                        next2_x = 8'd0;
+                        next2_y = tiled_load_next_y_reg + 8'd1;
+                        next2_row_base =
+                            tiled_input_next_row_next_base_cursor_reg;
+                        next2_row_next_base =
+                            tiled_input_next_row_next_base_cursor_reg +
+                            tiled_input_row_stride_reg;
+                        next2_col_base = tiled_input_tile_col_base_reg;
+                        next2_index =
+                            tiled_input_next_row_next_base_cursor_reg +
+                            tiled_input_tile_col_base_reg;
+                    end else begin
+                        next2_x = tiled_load_next_x_reg + 8'd1;
+                        next2_col_base =
+                            tiled_input_next_col_base_cursor_reg + in_c_reg;
+                        next2_index =
+                            tiled_input_next_index_cursor_reg + 32'sd4;
+                    end
+                end else begin
+                    next2_channel = tiled_load_next_channel_reg + 16'd4;
+                    next2_index =
+                        tiled_input_next_index_cursor_reg + 32'sd4;
+                end
+            end else if (tiled_load_next_channel_reg >= tiled_channel_last_reg) begin
+                next2_channel = 16'd0;
+                if ((tiled_load_next_x_reg + 8'd1) >= tile_input_w_reg) begin
+                    next2_x = 8'd0;
+                    next2_y = tiled_load_next_y_reg + 8'd1;
+                    next2_row_base = tiled_input_next_row_next_base_cursor_reg;
+                    next2_row_next_base =
+                        tiled_input_next_row_next_base_cursor_reg +
+                        tiled_input_row_stride_reg;
+                    next2_col_base = tiled_input_tile_col_base_reg;
+                    next2_index = tiled_input_next_row_next_base_cursor_reg +
+                                  tiled_input_tile_col_base_reg;
+                end else begin
+                    next2_x = tiled_load_next_x_reg + 8'd1;
+                    next2_col_base =
+                        tiled_input_next_col_base_cursor_reg + in_c_reg;
+                    next2_index =
+                        tiled_input_next_index_cursor_reg + 32'sd1;
+                end
+            end else begin
+                next2_channel = tiled_load_next_channel_reg + 16'd1;
+                next2_index = tiled_input_next_index_cursor_reg + 32'sd1;
+            end
+            tiled_load_next_y_reg <= next2_y;
+            tiled_load_next_x_reg <= next2_x;
+            tiled_load_next_channel_reg <= next2_channel;
+            tiled_input_next_index_cursor_reg <= next2_index;
+            tiled_input_next_row_base_cursor_reg <= next2_row_base;
+            tiled_input_next_row_next_base_cursor_reg <= next2_row_next_base;
+            tiled_input_next_col_base_cursor_reg <= next2_col_base;
+            if (!item_ends_pixel) begin
+                next2_source_byte_addr = input_addr_reg + next2_index;
+                // Padding is invariant across channels within the pixel;
+                // leave next_padding frozen until the boundary metadata
+                // state evaluates the registered successor pixel.
+                tiled_load_next_word_channel_ok_reg <=
+                    tiled_channel_ge4_reg &&
+                    (next2_channel <= tiled_channel_word_limit_reg) &&
+                    (next2_channel[3:0] <= 4'd12);
+                tiled_load_next_word_source_aligned_reg <=
+                    (next2_source_byte_addr[1:0] == 2'b00);
+                tiled_load_next_word_lane_mask_reg <=
+                    ((tiled_channel_ge4_reg &&
+                      (next2_channel <= tiled_channel_word_limit_reg)) &&
+                     (next2_channel[3:0] <= 4'd12)) ?
+                    4'b1111 : 4'b0000;
+                tiled_load_next_pixel_end_reg <=
+                    (next2_channel >= tiled_channel_last_reg);
+                tiled_load_next_word_pixel_end_reg <=
+                    !tiled_channel_ge4_reg ||
+                    (next2_channel >= tiled_channel_word_limit_reg);
+            end
         end
     endtask
 
@@ -1630,6 +2119,36 @@ module cnn_layer_runner #(
             ds_cfg_target <= DS_CFG_PW_WEIGHT;
             ds_cfg_index <= cfg_linear_index[15:0];
             ds_cfg_data <= {{24{value[7]}}, value};
+        end
+    endtask
+
+    task store_ds_weight_word;
+        input [3:0] phase;
+        input [31:0] word_index;
+        input [31:0] data;
+        integer total_bytes;
+        integer remaining_bytes;
+        begin
+            total_bytes = (phase == PH_DW_WEIGHT) ?
+                          (in_c_reg * 9) : (in_c_reg * out_c_reg);
+            remaining_bytes = total_bytes - (word_index * 4);
+            ds_cfg_weight_word_wr_en <= 1'b1;
+            ds_cfg_weight_word_target <= (phase == PH_PW_WEIGHT);
+            ds_cfg_weight_word_index <= word_index[15:0];
+            ds_cfg_weight_word_data <= data;
+            // Tail bytes are explicitly disabled.  This is important for a
+            // packed DW channel's 9-tap boundary and for PW Cin/Cout tails:
+            // no padded byte may alias the next software allocation.
+            if (remaining_bytes >= 4)
+                ds_cfg_weight_word_be <= 4'b1111;
+            else if (remaining_bytes == 3)
+                ds_cfg_weight_word_be <= 4'b0111;
+            else if (remaining_bytes == 2)
+                ds_cfg_weight_word_be <= 4'b0011;
+            else if (remaining_bytes == 1)
+                ds_cfg_weight_word_be <= 4'b0001;
+            else
+                ds_cfg_weight_word_be <= 4'b0000;
         end
     endtask
 
@@ -1693,10 +2212,14 @@ module cnn_layer_runner #(
                     case (phase)
                         PH_INPUT:     store_ds_input(data[7:0]);
                         PH_DW_WEIGHT: begin
-                            ds_cfg_wr_en <= 1'b1;
-                            ds_cfg_target <= DS_CFG_DW_WEIGHT;
-                            ds_cfg_index <= idx[15:0];
-                            ds_cfg_data <= data;
+                            if (packed_weight_mode) begin
+                                store_ds_weight_word(phase, idx, data);
+                            end else begin
+                                ds_cfg_wr_en <= 1'b1;
+                                ds_cfg_target <= DS_CFG_DW_WEIGHT;
+                                ds_cfg_index <= idx[15:0];
+                                ds_cfg_data <= data;
+                            end
                         end
                         PH_DW_BIAS: begin
                             ds_cfg_wr_en <= 1'b1;
@@ -1716,7 +2239,12 @@ module cnn_layer_runner #(
                             ds_cfg_index <= idx[15:0];
                             ds_cfg_data <= data;
                         end
-                        PH_PW_WEIGHT: store_pw_weight(data[7:0]);
+                        PH_PW_WEIGHT: begin
+                            if (packed_weight_mode)
+                                store_ds_weight_word(phase, idx, data);
+                            else
+                                store_pw_weight(data[7:0]);
+                        end
                         PH_PW_BIAS: begin
                             ds_cfg_wr_en <= 1'b1;
                             ds_cfg_target <= DS_CFG_PW_BIAS;
@@ -1804,6 +2332,11 @@ module cnn_layer_runner #(
             ds_cfg_vec4_wr_en <= 1'b0;
             ds_cfg_vec4_index <= 16'd0;
             ds_cfg_vec4_data <= 32'd0;
+            ds_cfg_weight_word_wr_en <= 1'b0;
+            ds_cfg_weight_word_target <= 1'b0;
+            ds_cfg_weight_word_index <= 16'd0;
+            ds_cfg_weight_word_data <= 32'd0;
+            ds_cfg_weight_word_be <= 4'd0;
             gap_start <= 1'b0;
             fc_start <= 1'b0;
             tile_sched_start <= 1'b0;
@@ -1826,6 +2359,8 @@ module cnn_layer_runner #(
             output_count_reg <= 32'd0;
             sram_input_count_seed_reg <= 32'd0;
             sram_input_count_factor_reg <= 32'd0;
+            sram_output_count_seed_reg <= 32'd0;
+            sram_output_count_factor_reg <= 32'd0;
             sram_input_count_seed16_reg <= 16'd0;
             sram_input_count_factor16_reg <= 16'd0;
             sram_input_span_valid_reg <= 1'b0;
@@ -1840,6 +2375,7 @@ module cnn_layer_runner #(
             pw_load_cin <= 16'd0;
             store_idx <= 32'd0;
             store_count <= 32'd0;
+            tiled_store_area_reg <= 32'd0;
             store_write_word_eligible_reg <= 1'b0;
             store_issue_word_eligible_reg <= 1'b0;
             store_issue_addr_reg <= {OUT_BUFFER_ADDR_WIDTH{1'b0}};
@@ -1851,11 +2387,38 @@ module cnn_layer_runner #(
             tiled_load_y <= 8'd0;
             tiled_load_x <= 8'd0;
             tiled_load_channel <= 16'd0;
+            tiled_channel_last_reg <= 16'd0;
+            tiled_channel_word_limit_reg <= 16'd0;
+            tiled_channel_ge4_reg <= 1'b0;
             tiled_input_index_reg <= 32'sd0;
             tiled_input_row_base_reg <= 32'sd0;
+            tiled_input_tile_row_base_reg <= 32'sd0;
             tiled_input_next_row_base_reg <= 32'sd0;
             tiled_input_col_base_reg <= 32'sd0;
             tiled_input_tile_col_base_reg <= 32'sd0;
+            tiled_input_tile_row_step_reg <= 32'sd0;
+            tiled_input_tile_col_step_reg <= 32'sd0;
+            tiled_input_halo_step_reg <= 32'sd0;
+            tiled_load_current_padding_reg <= 1'b0;
+            tiled_load_next_padding_reg <= 1'b0;
+            tiled_load_next_y_reg <= 8'd0;
+            tiled_load_next_x_reg <= 8'd0;
+            tiled_load_next_channel_reg <= 16'd0;
+            tiled_input_next_index_cursor_reg <= 32'sd0;
+            tiled_input_next_row_base_cursor_reg <= 32'sd0;
+            tiled_input_next_row_next_base_cursor_reg <= 32'sd0;
+            tiled_input_next_col_base_cursor_reg <= 32'sd0;
+            tiled_load_next_word_channel_ok_reg <= 1'b0;
+            tiled_load_next_word_source_aligned_reg <= 1'b0;
+            tiled_load_next_word_lane_mask_reg <= 4'd0;
+            tiled_load_next_pixel_end_reg <= 1'b0;
+            tiled_load_next_word_pixel_end_reg <= 1'b0;
+            tiled_load_prime_reg <= 1'b0;
+            tiled_load_word_channel_ok_reg <= 1'b0;
+            tiled_load_word_source_aligned_reg <= 1'b0;
+            tiled_load_word_lane_mask_reg <= 4'd0;
+            tiled_load_current_pixel_end_reg <= 1'b0;
+            tiled_load_current_word_pixel_end_reg <= 1'b0;
             tiled_input_row_stride_reg <= 32'sd0;
             tiled_input_halo_row_offset_reg <= 32'sd0;
             tiled_input_halo_col_offset_reg <= 32'sd0;
@@ -1879,6 +2442,7 @@ module cnn_layer_runner #(
             op_is_gap_reg <= 1'b0;
             op_is_fc_reg <= 1'b0;
             op_is_valid_reg <= 1'b0;
+            ds1_retained_mode_reg <= 1'b0;
             op_is_tiled_reg <= 1'b0;
             op_last_phase_reg <= PH_INPUT;
             input_addr_reg <= 32'd0;
@@ -1908,6 +2472,41 @@ module cnn_layer_runner #(
             packed_word_valid <= 1'b0;
             packed_word_addr <= 32'd0;
             packed_word_data <= 32'd0;
+            packed_weight_data_reg <= 32'd0;
+            packed_weight_byte_reg <= 2'd0;
+`ifndef SYNTHESIS
+            sim_tiled_load_assert_errors <= 0;
+            sim_tiled_load_expect_next_padding_valid <= 1'b0;
+            sim_tiled_load_expect_next_padding <= 1'b0;
+            sim_tiled_load_expect_current_padding_valid <= 1'b0;
+            sim_tiled_load_expect_current_padding <= 1'b0;
+            sim_tiled_load_hold_valid <= 1'b0;
+            sim_tiled_load_hold_current_padding <= 1'b0;
+            sim_tiled_load_hold_next_padding <= 1'b0;
+            sim_tiled_load_hold_word_channel_ok <= 1'b0;
+            sim_tiled_load_hold_word_source_aligned <= 1'b0;
+            sim_tiled_load_hold_word_lane_mask <= 4'd0;
+            sim_tiled_load_hold_next_word_channel_ok <= 1'b0;
+            sim_tiled_load_hold_next_word_source_aligned <= 1'b0;
+            sim_tiled_load_hold_next_word_lane_mask <= 4'd0;
+            sim_tiled_load_hold_current_pixel_end <= 1'b0;
+            sim_tiled_load_hold_current_word_pixel_end <= 1'b0;
+            sim_tiled_load_hold_next_pixel_end <= 1'b0;
+            sim_tiled_load_hold_next_word_pixel_end <= 1'b0;
+            sim_tiled_load_hold_y <= 8'd0;
+            sim_tiled_load_hold_x <= 8'd0;
+            sim_tiled_load_hold_channel <= 16'd0;
+            sim_tiled_load_hold_next_y <= 8'd0;
+            sim_tiled_load_hold_next_x <= 8'd0;
+            sim_tiled_load_hold_next_channel <= 16'd0;
+            sim_tiled_load_hold_index <= 32'sd0;
+            sim_tiled_load_hold_next_index <= 32'sd0;
+            sim_tiled_load_hold_row_base <= 32'sd0;
+            sim_tiled_load_hold_next_row_base <= 32'sd0;
+            sim_tiled_load_hold_next_row_next_base <= 32'sd0;
+            sim_tiled_load_hold_col_base <= 32'sd0;
+            sim_tiled_load_hold_next_col_base <= 32'sd0;
+`endif
         end else begin
             done <= 1'b0;
             stem_start <= 1'b0;
@@ -1916,6 +2515,7 @@ module cnn_layer_runner #(
             aux_cfg_wr_en <= 1'b0;
             aux_cfg_vec4_wr_en <= 1'b0;
             ds_cfg_vec4_wr_en <= 1'b0;
+            ds_cfg_weight_word_wr_en <= 1'b0;
             gap_start <= 1'b0;
             fc_start <= 1'b0;
             sram_input_rd_en <= 1'b0;
@@ -1924,6 +2524,147 @@ module cnn_layer_runner #(
             sram_output_wr4_en <= 1'b0;
             tile_sched_start <= 1'b0;
             tile_sched_next <= 1'b0;
+
+`ifndef SYNTHESIS
+            // The task records expected post-commit values one edge before
+            // they become observable.  Check them here, before the next FSM
+            // action can modify the bundle again.
+            if (sim_tiled_load_expect_next_padding_valid) begin
+                if (tiled_load_next_padding_reg !==
+                    sim_tiled_load_expect_next_padding) begin
+                    sim_tiled_load_assert_errors <=
+                        sim_tiled_load_assert_errors + 1;
+                    $display("TILED_LOAD_ASSERT next_padding_changed_within_channel state=%0d expected=%b actual=%b",
+                             state, sim_tiled_load_expect_next_padding,
+                             tiled_load_next_padding_reg);
+                    $fatal(1);
+                end
+                sim_tiled_load_expect_next_padding_valid <= 1'b0;
+            end
+            if (sim_tiled_load_expect_current_padding_valid) begin
+                if (tiled_load_current_padding_reg !==
+                    sim_tiled_load_expect_current_padding) begin
+                    sim_tiled_load_assert_errors <=
+                        sim_tiled_load_assert_errors + 1;
+                    $display("TILED_LOAD_ASSERT current_padding_not_successor_on_pixel_wrap state=%0d expected=%b actual=%b",
+                             state, sim_tiled_load_expect_current_padding,
+                             tiled_load_current_padding_reg);
+                    $fatal(1);
+                end
+                sim_tiled_load_expect_current_padding_valid <= 1'b0;
+            end
+
+            // External request acceptance and both response waits are
+            // intentionally non-mutating.  Snapshot the whole registered
+            // cursor/metadata bundle and compare it on each stalled edge.
+            if (sim_tiled_load_hold_valid) begin
+                if ((tiled_load_current_padding_reg !==
+                     sim_tiled_load_hold_current_padding) ||
+                    (tiled_load_next_padding_reg !==
+                     sim_tiled_load_hold_next_padding) ||
+                    (tiled_load_word_channel_ok_reg !==
+                     sim_tiled_load_hold_word_channel_ok) ||
+                    (tiled_load_word_source_aligned_reg !==
+                     sim_tiled_load_hold_word_source_aligned) ||
+                    (tiled_load_word_lane_mask_reg !==
+                     sim_tiled_load_hold_word_lane_mask) ||
+                    (tiled_load_next_word_channel_ok_reg !==
+                     sim_tiled_load_hold_next_word_channel_ok) ||
+                    (tiled_load_next_word_source_aligned_reg !==
+                     sim_tiled_load_hold_next_word_source_aligned) ||
+                    (tiled_load_next_word_lane_mask_reg !==
+                     sim_tiled_load_hold_next_word_lane_mask) ||
+                    (tiled_load_current_pixel_end_reg !==
+                     sim_tiled_load_hold_current_pixel_end) ||
+                    (tiled_load_current_word_pixel_end_reg !==
+                     sim_tiled_load_hold_current_word_pixel_end) ||
+                    (tiled_load_next_pixel_end_reg !==
+                     sim_tiled_load_hold_next_pixel_end) ||
+                    (tiled_load_next_word_pixel_end_reg !==
+                     sim_tiled_load_hold_next_word_pixel_end) ||
+                    (tiled_load_y !== sim_tiled_load_hold_y) ||
+                    (tiled_load_x !== sim_tiled_load_hold_x) ||
+                    (tiled_load_channel !== sim_tiled_load_hold_channel) ||
+                    (tiled_load_next_y_reg !== sim_tiled_load_hold_next_y) ||
+                    (tiled_load_next_x_reg !== sim_tiled_load_hold_next_x) ||
+                    (tiled_load_next_channel_reg !==
+                     sim_tiled_load_hold_next_channel) ||
+                    (tiled_input_index_reg !== sim_tiled_load_hold_index) ||
+                    (tiled_input_next_index_cursor_reg !==
+                     sim_tiled_load_hold_next_index) ||
+                    (tiled_input_row_base_reg !==
+                     sim_tiled_load_hold_row_base) ||
+                    (tiled_input_next_row_base_reg !==
+                     sim_tiled_load_hold_next_row_base) ||
+                    (tiled_input_next_row_next_base_cursor_reg !==
+                     sim_tiled_load_hold_next_row_next_base) ||
+                    (tiled_input_col_base_reg !==
+                     sim_tiled_load_hold_col_base) ||
+                    (tiled_input_next_col_base_cursor_reg !==
+                     sim_tiled_load_hold_next_col_base)) begin
+                    sim_tiled_load_assert_errors <=
+                        sim_tiled_load_assert_errors + 1;
+                    $display("TILED_LOAD_ASSERT lookahead_changed_while_stalled state=%0d",
+                             state);
+                    $fatal(1);
+                end
+                sim_tiled_load_hold_valid <= 1'b0;
+            end
+
+            if ((state == ST_TILED_LOAD_MEM_REQ && mem_req_valid &&
+                 !mem_req_ready) ||
+                (state == ST_TILED_LOAD_RESP &&
+                 ((flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                   !sram_input_rd_valid) ||
+                  (!flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                   !mem_resp_valid))) ||
+                (state == ST_TILED_LOAD_WORD_RESP &&
+                 !sram_input_rd_word_valid)) begin
+                sim_tiled_load_hold_valid <= 1'b1;
+                sim_tiled_load_hold_current_padding <=
+                    tiled_load_current_padding_reg;
+                sim_tiled_load_hold_next_padding <=
+                    tiled_load_next_padding_reg;
+                sim_tiled_load_hold_word_channel_ok <=
+                    tiled_load_word_channel_ok_reg;
+                sim_tiled_load_hold_word_source_aligned <=
+                    tiled_load_word_source_aligned_reg;
+                sim_tiled_load_hold_word_lane_mask <=
+                    tiled_load_word_lane_mask_reg;
+                sim_tiled_load_hold_next_word_channel_ok <=
+                    tiled_load_next_word_channel_ok_reg;
+                sim_tiled_load_hold_next_word_source_aligned <=
+                    tiled_load_next_word_source_aligned_reg;
+                sim_tiled_load_hold_next_word_lane_mask <=
+                    tiled_load_next_word_lane_mask_reg;
+                sim_tiled_load_hold_current_pixel_end <=
+                    tiled_load_current_pixel_end_reg;
+                sim_tiled_load_hold_current_word_pixel_end <=
+                    tiled_load_current_word_pixel_end_reg;
+                sim_tiled_load_hold_next_pixel_end <=
+                    tiled_load_next_pixel_end_reg;
+                sim_tiled_load_hold_next_word_pixel_end <=
+                    tiled_load_next_word_pixel_end_reg;
+                sim_tiled_load_hold_y <= tiled_load_y;
+                sim_tiled_load_hold_x <= tiled_load_x;
+                sim_tiled_load_hold_channel <= tiled_load_channel;
+                sim_tiled_load_hold_next_y <= tiled_load_next_y_reg;
+                sim_tiled_load_hold_next_x <= tiled_load_next_x_reg;
+                sim_tiled_load_hold_next_channel <=
+                    tiled_load_next_channel_reg;
+                sim_tiled_load_hold_index <= tiled_input_index_reg;
+                sim_tiled_load_hold_next_index <=
+                    tiled_input_next_index_cursor_reg;
+                sim_tiled_load_hold_row_base <= tiled_input_row_base_reg;
+                sim_tiled_load_hold_next_row_base <=
+                    tiled_input_next_row_base_reg;
+                sim_tiled_load_hold_next_row_next_base <=
+                    tiled_input_next_row_next_base_cursor_reg;
+                sim_tiled_load_hold_col_base <= tiled_input_col_base_reg;
+                sim_tiled_load_hold_next_col_base <=
+                    tiled_input_next_col_base_cursor_reg;
+            end
+`endif
 
             case (state)
                 ST_IDLE: begin
@@ -1942,6 +2683,7 @@ module cnn_layer_runner #(
                                            (desc_word0 == OP_DS_BLOCK) ||
                                            (desc_word0 == OP_GAP) ||
                                            (desc_word0 == OP_FC);
+                        ds1_retained_mode_reg <= ds1_retained_desc_match;
                         op_is_tiled_reg <=
                             ((desc_word0 == OP_CONV3X3_STEM) ||
                              (desc_word0 == OP_DS_BLOCK)) &&
@@ -1986,6 +2728,31 @@ module cnn_layer_runner #(
                 ST_CALC_SPATIAL: begin
                     conv_out_pixels_reg <= conv_out_h * conv_out_w;
                     tiled_out_pixels_reg <= tiled_out_h * tiled_out_w;
+                    tiled_input_row_stride_reg <=
+                        $signed({16'd0, in_w_reg}) *
+                        $signed({16'd0, in_c_reg});
+                    state <= ST_CALC_TILED_STEPS;
+                end
+
+                ST_CALC_TILED_STEPS: begin
+                    // The tile scheduler advances by eight output positions
+                    // in each raster direction.  Stride is valid only as 1
+                    // or 2 for tiled DS (and 1 for tiled Stem), so shifts
+                    // express the increments without introducing another
+                    // multiplier into the tile setup cone.
+                    tiled_channel_last_reg <=
+                        (in_c_reg == 16'd0) ? 16'd0 : (in_c_reg - 16'd1);
+                    tiled_channel_word_limit_reg <=
+                        (in_c_reg >= 16'd4) ? (in_c_reg - 16'd4) : 16'd0;
+                    tiled_channel_ge4_reg <= (in_c_reg >= 16'd4);
+                    tiled_input_halo_step_reg <=
+                        $signed({24'd0, effective_stride}) <<< 3;
+                    tiled_input_tile_row_step_reg <=
+                        tiled_input_row_stride_reg <<<
+                        ((effective_stride == 8'd2) ? 4 : 3);
+                    tiled_input_tile_col_step_reg <=
+                        $signed({16'd0, in_c_reg}) <<<
+                        ((effective_stride == 8'd2) ? 4 : 3);
                     state <= ST_VALIDATE;
                 end
 
@@ -1994,6 +2761,18 @@ module cnn_layer_runner #(
                         state <= ST_DONE;
                     end else if (flags_reg[FLAG_PACKED_INPUT] &&
                                  !packed_input_config_supported) begin
+                        error <= 1'b1;
+                        state <= ST_ERROR;
+                    end else if (flags_reg[FLAG_PACKED_WEIGHTS] &&
+                                 !packed_weight_config_supported) begin
+                        error <= 1'b1;
+                        state <= ST_ERROR;
+                    end else if (flags_reg[FLAG_PACKED_WEIGHTS] &&
+                                 ((dw_weight_addr_reg[1:0] != 2'b00) ||
+                                  (pw_weight_addr_reg[1:0] != 2'b00))) begin
+                        // Packed descriptors name a word-addressed region;
+                        // reject an unaligned base instead of silently
+                        // changing the software layout at the bus boundary.
                         error <= 1'b1;
                         state <= ST_ERROR;
                     end else if (!valid_config()) begin
@@ -2013,39 +2792,40 @@ module cnn_layer_runner #(
                             phase_count_seed_for(op_type_reg, PH_INPUT);
                         sram_input_count_factor16_reg <=
                             phase_count_factor_for(op_type_reg, PH_INPUT);
+                        /* Stage the output-span operands here, then commit
+                         * their product in ST_VALIDATE_OUTPUT_COUNT.  This
+                         * keeps in_w/in_h -> area -> channel arithmetic out
+                         * of the span-validity/control enable cone and gives
+                         * both SRAM bounds checking and writeback the same
+                         * committed 32-bit count. */
                         if (op_is_tiled_reg) begin
-                            sram_output_count_reg <=
-                                {16'd0, tiled_out_pixels_reg} *
+                            sram_output_count_seed_reg <=
+                                {16'd0, tiled_out_pixels_reg};
+                            sram_output_count_factor_reg <=
                                 {16'd0, out_c_reg};
                         end else if (op_is_stem_reg) begin
-                            sram_output_count_reg <= unified_stem_mode ?
-                                32'd1024 * 32'd16 :
-                                ({18'd0, conv_out_pixels_reg} * 32'd16);
+                            if (unified_stem_mode) begin
+                                sram_output_count_seed_reg <= 32'd1024;
+                                sram_output_count_factor_reg <= 32'd16;
+                            end else begin
+                                sram_output_count_seed_reg <=
+                                    {18'd0, conv_out_pixels_reg};
+                                sram_output_count_factor_reg <= 32'd16;
+                            end
                         end else if (op_is_ds_reg) begin
-                            sram_output_count_reg <=
-                                {18'd0, conv_out_pixels_reg} *
+                            sram_output_count_seed_reg <=
+                                {18'd0, conv_out_pixels_reg};
+                            sram_output_count_factor_reg <=
                                 {16'd0, out_c_reg};
                         end else if (op_is_gap_reg) begin
-                            sram_output_count_reg <= 32'd256;
+                            sram_output_count_seed_reg <= 32'd256;
+                            sram_output_count_factor_reg <= 32'd1;
                         end else if (op_is_fc_reg) begin
-                            sram_output_count_reg <= 32'd10;
+                            sram_output_count_seed_reg <= 32'd10;
+                            sram_output_count_factor_reg <= 32'd1;
                         end else begin
-                            sram_output_count_reg <= 32'd0;
-                        end
-                        if (op_is_stem_reg) begin
-                            output_count_reg <= unified_stem_mode ?
-                                32'd1024 * 32'd16 :
-                                ({18'd0, conv_out_pixels_reg} * 32'd16);
-                        end else if (op_is_ds_reg) begin
-                            output_count_reg <=
-                                {18'd0, conv_out_pixels_reg} *
-                                {16'd0, out_c_reg};
-                        end else if (op_is_gap_reg) begin
-                            output_count_reg <= 32'd256;
-                        end else if (op_is_fc_reg) begin
-                            output_count_reg <= 32'd10;
-                        end else begin
-                            output_count_reg <= 32'd0;
+                            sram_output_count_seed_reg <= 32'd0;
+                            sram_output_count_factor_reg <= 32'd0;
                         end
                         state <= ST_VALIDATE_SPAN_COUNT;
                     end
@@ -2058,6 +2838,18 @@ module cnn_layer_runner #(
                     sram_input_count_reg <=
                         sram_input_count_seed16_reg *
                         sram_input_count_factor16_reg;
+                    state <= ST_VALIDATE_OUTPUT_COUNT;
+                end
+
+                ST_VALIDATE_OUTPUT_COUNT: begin
+                    /* One registered 32-bit product is shared by the SRAM
+                     * span checker and the normal output-store loop. */
+                    sram_output_count_reg <=
+                        sram_output_count_seed_reg *
+                        sram_output_count_factor_reg;
+                    output_count_reg <=
+                        sram_output_count_seed_reg *
+                        sram_output_count_factor_reg;
                     state <= ST_VALIDATE_SPAN_VALID;
                 end
 
@@ -2116,6 +2908,10 @@ module cnn_layer_runner #(
                         pw_load_cout <= 16'd0;
                         pw_load_cin <= 16'd0;
                     end
+                    // Keep the DS packed target aligned with the phase while
+                    // the canonical unpack queue reports readiness.
+                    ds_cfg_weight_word_target <=
+                        (phase_idx == PH_PW_WEIGHT);
                     state <= ST_LOAD_COUNT_CALC;
                 end
 
@@ -2131,7 +2927,8 @@ module cnn_layer_runner #(
                 ST_LOAD_COUNT_DECIDE: begin
                     if (phase_count == 32'd0) begin
                         if (phase_idx == op_last_phase_reg) begin
-                            state <= (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
+                            state <= ds1_retained_mode_reg ? ST_DS1_RETAINED_START :
+                                     (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
                         end else begin
                             phase_idx <= phase_idx + 4'd1;
                             state <= ST_LOAD_SETUP;
@@ -2180,6 +2977,19 @@ module cnn_layer_runner #(
                                 state <= ST_READ_RESP;
                             end
                         end
+                    end else if (packed_weight_mode) begin
+                        // Each packed weight request consumes one complete
+                        // external word.  Unlike packed input, load_idx is
+                        // already a word index, so no byte-lane cache or
+                        // scalar replay is involved.
+                        mem_req_valid <= 1'b1;
+                        mem_req_write <= 1'b0;
+                        mem_req_addr <= phase_base_addr + (load_idx << 2);
+                        mem_req_wdata <= 32'd0;
+                        if (mem_req_valid && mem_req_ready) begin
+                            mem_req_valid <= 1'b0;
+                            state <= ST_READ_RESP;
+                        end
                     end else begin
                         mem_req_valid <= 1'b1;
                         mem_req_write <= 1'b0;
@@ -2202,7 +3012,8 @@ module cnn_layer_runner #(
                             );
                             if ((load_idx + 32'd1) >= phase_count) begin
                                 if (phase_idx == op_last_phase_reg) begin
-                                    state <= (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
+                                    state <= ds1_retained_mode_reg ? ST_DS1_RETAINED_START :
+                                             (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
                                 end else begin
                                     phase_idx <= phase_idx + 4'd1;
                                     state <= ST_LOAD_SETUP;
@@ -2226,6 +3037,15 @@ module cnn_layer_runner #(
                         // Consume the outstanding request before changing
                         // phase; ST_LOAD_SETUP owns creation of the next one.
                         mem_req_valid <= 1'b0;
+                        if (packed_weight_mode) begin
+                            // The DS packed loader has a one-entry unpack
+                            // queue.  Hold the external response until that
+                            // queue is ready instead of advancing load_idx
+                            // and allowing the next response to overwrite it.
+                            packed_weight_data_reg <= mem_resp_rdata;
+                            packed_weight_byte_reg <= 2'd0;
+                            state <= ST_PACKED_WEIGHT_WAIT;
+                        end else begin
                         if (packed_input_mode) begin
                             packed_word_valid <= 1'b1;
                             packed_word_addr <= (phase_base_addr + load_idx) &
@@ -2239,7 +3059,8 @@ module cnn_layer_runner #(
                             mem_resp_rdata);
                         if ((load_idx + 32'd1) >= phase_count) begin
                             if (phase_idx == op_last_phase_reg) begin
-                                state <= (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
+                                state <= ds1_retained_mode_reg ? ST_DS1_RETAINED_START :
+                                         (tiled_spatial_mode ? ST_TILED_INIT : ST_ENGINE_START);
                             end else begin
                                 phase_idx <= phase_idx + 4'd1;
                                 state <= ST_LOAD_SETUP;
@@ -2247,7 +3068,7 @@ module cnn_layer_runner #(
                         end else begin
                             load_idx <= load_idx + 32'd1;
                             advance_compact_load_position(phase_idx);
-                            if (!packed_input_mode) begin
+                            if (!packed_input_mode && !packed_weight_mode) begin
                                 // Preserve the scalar lookahead path.  Packed
                                 // requests are issued only by ST_READ_REQ so
                                 // their word address cannot cross a phase.
@@ -2257,6 +3078,71 @@ module cnn_layer_runner #(
                                                 ((load_idx + 32'd1) << 2);
                                 mem_req_wdata <= 32'd0;
                             end
+                            state <= ST_READ_REQ;
+                        end
+                        end
+                    end
+                end
+
+                ST_PACKED_WEIGHT_WAIT: begin
+                    // cfg_weight_word_ready includes both the DS idle
+                    // condition and the PW canonical-store queue state.
+                    // The response data remains registered until accepted.
+                    if (phase_idx == PH_DW_WEIGHT) begin
+                        // DW's canonical store is the existing scalar
+                        // parameter array.  Retire the packed response into
+                        // that port one byte per cycle; this keeps the
+                        // 32-bit packed data off the wide DW write mux while
+                        // retaining one external request per four bytes.
+                        if (ds_cfg_ready) begin
+                            ds_cfg_wr_en <= 1'b1;
+                            ds_cfg_target <= DS_CFG_DW_WEIGHT;
+                            ds_cfg_index <= (load_idx * 32'd4) +
+                                            packed_weight_byte_reg;
+                            ds_cfg_data <= {
+                                {24{packed_weight_data_reg[
+                                    (packed_weight_byte_reg * 8) + 7]}},
+                                packed_weight_data_reg[
+                                    (packed_weight_byte_reg * 8) +: 8]
+                            };
+                            if (packed_weight_byte_reg == 2'd3) begin
+                                packed_weight_byte_reg <= 2'd0;
+                                if ((load_idx + 32'd1) >= phase_count) begin
+                                    if (phase_idx == op_last_phase_reg) begin
+                                        state <= ds1_retained_mode_reg ?
+                                                 ST_DS1_RETAINED_START :
+                                                 (tiled_spatial_mode ?
+                                                  ST_TILED_INIT :
+                                                  ST_ENGINE_START);
+                                    end else begin
+                                        phase_idx <= phase_idx + 4'd1;
+                                        state <= ST_LOAD_SETUP;
+                                    end
+                                end else begin
+                                    load_idx <= load_idx + 32'd1;
+                                    state <= ST_READ_REQ;
+                                end
+                            end else begin
+                                packed_weight_byte_reg <=
+                                    packed_weight_byte_reg + 2'd1;
+                            end
+                        end
+                    end else if (ds_cfg_weight_word_ready) begin
+                        store_ds_weight_word(
+                            phase_idx, load_idx, packed_weight_data_reg);
+                        if ((load_idx + 32'd1) >= phase_count) begin
+                            if (phase_idx == op_last_phase_reg) begin
+                                state <= ds1_retained_mode_reg ?
+                                         ST_DS1_RETAINED_START :
+                                         (tiled_spatial_mode ?
+                                          ST_TILED_INIT : ST_ENGINE_START);
+                            end else begin
+                                phase_idx <= phase_idx + 4'd1;
+                                state <= ST_LOAD_SETUP;
+                            end
+                        end else begin
+                            load_idx <= load_idx + 32'd1;
+                            advance_compact_load_position(phase_idx);
                             state <= ST_READ_REQ;
                         end
                     end
@@ -2317,6 +3203,45 @@ module cnn_layer_runner #(
                         (op_is_gap_reg && gap_done) ||
                         (op_is_fc_reg && fc_done)) begin
                         state <= ST_STORE_SETUP;
+                    end
+                end
+
+                ST_DS1_RETAINED_START: begin
+                    /* All DW/PW scalar phases have already crossed the
+                     * runner's normal parameter bus.  The optional adapter
+                     * now repacks those cached values and starts the retained
+                     * DS1 layer. */
+                    mem_req_valid <= 1'b0;
+                    mem_req_write <= 1'b0;
+                    if (ds1_ret_start_valid && ds1_ret_start_ready)
+                        state <= ST_DS1_RETAINED_WAIT;
+                end
+
+                ST_DS1_RETAINED_WAIT: begin
+                    /* The retained source side is the existing synchronous
+                     * feature-SRAM word port.  Its request is accepted every
+                     * cycle and the one-cycle response is returned directly
+                     * to the adapter. */
+                    mem_req_valid <= 1'b0;
+                    mem_req_write <= 1'b0;
+                    sram_input_rd_word_en <= ds1_ret_source_word_en;
+                    sram_input_rd_word_addr <= ds1_ret_source_word_addr;
+                    if (ds1_ret_output_word_en) begin
+                        sram_output_wr4_en <= 1'b1;
+                        sram_output_wr4_addr <=
+                            output_addr_reg + ds1_ret_output_word_addr;
+                        sram_output_wr4_data <= ds1_ret_output_word_data;
+                        sram_output_wr4_be <= ds1_ret_output_word_be;
+                    end
+                    if (ds1_ret_error) begin
+                        error <= 1'b1;
+                        busy <= 1'b0;
+                        done <= 1'b1;
+                        state <= ST_IDLE;
+                    end else if (ds1_ret_done) begin
+                        busy <= 1'b0;
+                        done <= 1'b1;
+                        state <= ST_IDLE;
                     end
                 end
 
@@ -2477,40 +3402,96 @@ module cnn_layer_runner #(
                 end
 
                 ST_TILED_ADDR_OFFSETS: begin
-                    tiled_input_halo_row_offset_reg <=
-                        ($signed({1'b0, tile_h_start_reg}) *
-                         $signed({1'b0, effective_stride})) - 32'sd1;
-                    tiled_input_halo_col_offset_reg <=
-                        ($signed({1'b0, tile_w_start_reg}) *
-                         $signed({1'b0, effective_stride})) - 32'sd1;
-                    tiled_input_row_stride_reg <=
-                        $signed({16'd0, in_w_reg}) * $signed({16'd0, in_c_reg});
+                    // The scheduler emits a row-major raster.  Initialize
+                    // the first tile at the -1 halo and advance only when a
+                    // complete eight-output tile row/column is crossed.
+                    // This preserves signed padding coordinates while
+                    // replacing origin_y*stride/origin_x*stride with
+                    // registered recurrence adds.
+                    if (tile_h_start_reg == 8'd0) begin
+                        tiled_input_halo_row_offset_reg <= -32'sd1;
+                    end else if (tile_w_start_reg == 8'd0) begin
+                        tiled_input_halo_row_offset_reg <=
+                            tiled_input_halo_row_offset_reg +
+                            tiled_input_halo_step_reg;
+                    end
+                    if (tile_w_start_reg == 8'd0) begin
+                        tiled_input_halo_col_offset_reg <= -32'sd1;
+                    end else begin
+                        tiled_input_halo_col_offset_reg <=
+                            tiled_input_halo_col_offset_reg +
+                            tiled_input_halo_step_reg;
+                    end
                     state <= ST_TILED_ADDR_BASES;
                 end
 
                 ST_TILED_ADDR_BASES: begin
-                    tiled_input_row_base_reg <= tiled_input_halo_row_offset_reg *
-                                                tiled_input_row_stride_reg;
-                    tiled_input_tile_col_base_reg <= tiled_input_halo_col_offset_reg *
-                                                     $signed({16'd0, in_c_reg});
+                    // row_base is advanced once per local input row while a
+                    // tile is loaded, so it is not a stable tile origin at
+                    // the next setup.  Advance the dedicated origin only at
+                    // a new tile row, then reload the mutable cursor for
+                    // every tile column in that row.
+                    if (tile_w_start_reg == 8'd0) begin
+                        if (tile_h_start_reg == 8'd0) begin
+                            tiled_input_tile_row_base_reg <=
+                                -tiled_input_row_stride_reg;
+                            tiled_input_row_base_reg <=
+                                -tiled_input_row_stride_reg;
+                        end else begin
+                            tiled_input_tile_row_base_reg <=
+                                tiled_input_tile_row_base_reg +
+                                tiled_input_tile_row_step_reg;
+                            tiled_input_row_base_reg <=
+                                tiled_input_tile_row_base_reg +
+                                tiled_input_tile_row_step_reg;
+                        end
+                    end else begin
+                        tiled_input_row_base_reg <=
+                            tiled_input_tile_row_base_reg;
+                    end
+                    if (tile_w_start_reg == 8'd0) begin
+                        tiled_input_tile_col_base_reg <=
+                            -$signed({16'd0, in_c_reg});
+                    end else begin
+                        tiled_input_tile_col_base_reg <=
+                            tiled_input_tile_col_base_reg +
+                            tiled_input_tile_col_step_reg;
+                    end
+                    state <= ST_TILED_ADDR_NEXT_BASE;
+                end
+
+                ST_TILED_ADDR_NEXT_BASE: begin
+                    tiled_input_next_row_base_reg <= tiled_input_row_base_reg +
+                                                     tiled_input_row_stride_reg;
                     state <= ST_TILED_ADDR_INDEX;
                 end
 
                 ST_TILED_ADDR_INDEX: begin
                     tiled_input_col_base_reg <= tiled_input_tile_col_base_reg;
-                    tiled_input_next_row_base_reg <= tiled_input_row_base_reg +
-                                                     tiled_input_row_stride_reg;
                     tiled_input_index_reg <= tiled_input_row_base_reg +
                                              tiled_input_tile_col_base_reg;
+                    capture_tiled_load_metadata(
+                        tiled_load_y,
+                        tiled_load_x,
+                        tiled_load_channel,
+                        tiled_input_row_base_reg +
+                        tiled_input_tile_col_base_reg
+                    );
                     if (tiled_load_count == 32'd0) begin
                         state <= ST_TILED_ENGINE_START;
                     end else begin
-                        state <= ST_TILED_LOAD_REQ;
+                        // Prime the successor cursor from the registered
+                        // current bundle.  The metadata stage below then
+                        // evaluates padding/eligibility from that successor
+                        // register, keeping the wide compare off the cursor
+                        // commit/request path.
+                        tiled_load_prime_reg <= 1'b1;
+                        state <= ST_TILED_LOAD_LOOKAHEAD;
                     end
                 end
 
                 ST_TILED_LOAD_REQ: begin
-                    if (tiled_input_current_is_padding()) begin
+                    if (tiled_load_current_padding_reg) begin
                         if (tiled_stem_mode) begin
                             store_stem_tiled_input(input_zero_point_reg[7:0]);
                         end else begin
@@ -2520,19 +3501,34 @@ module cnn_layer_runner #(
                             state <= ST_TILED_ENGINE_START;
                         end else begin
                             tiled_load_idx <= tiled_load_idx + 32'd1;
-                            advance_tiled_load_position();
+                            advance_tiled_load_position(
+                                tiled_load_current_pixel_end_reg
+                            );
                             // Look through the padding run boundary.  A real
                             // next element can be pre-armed immediately; a
                             // padded next element remains local to this state
                             // and must not create a memory transaction.
-                            if (!tiled_input_next_is_padding()) begin
+                            if (tiled_load_current_pixel_end_reg) begin
+                                state <= ST_TILED_LOAD_LOOKAHEAD;
+                            end else if (!tiled_load_next_padding_reg) begin
                                 if (flags_reg[FLAG_INPUT_FROM_SRAM]) begin
-                                    sram_input_rd_en <= 1'b1;
-                                    sram_input_rd_addr <= sram_addr_for_index(
-                                        input_addr_reg,
-                                        tiled_input_index_next_reg()
-                                    );
-                                    state <= ST_TILED_LOAD_RESP;
+                                    if (tiled_load_next_word_channel_ok_reg &&
+                                        tiled_load_next_word_source_aligned_reg &&
+                                        (tiled_load_next_word_lane_mask_reg == 4'b1111)) begin
+                                        sram_input_rd_word_en <= 1'b1;
+                                        sram_input_rd_word_addr <= sram_addr_for_index(
+                                            input_addr_reg,
+                                            tiled_input_next_index_cursor_reg
+                                        );
+                                        state <= ST_TILED_LOAD_WORD_RESP;
+                                    end else begin
+                                        sram_input_rd_en <= 1'b1;
+                                        sram_input_rd_addr <= sram_addr_for_index(
+                                            input_addr_reg,
+                                            tiled_input_next_index_cursor_reg
+                                        );
+                                        state <= ST_TILED_LOAD_RESP;
+                                    end
                                 end else begin
                                     state <= ST_TILED_LOAD_MEM_REQ;
                                 end
@@ -2541,7 +3537,9 @@ module cnn_layer_runner #(
                     end else if (flags_reg[FLAG_INPUT_FROM_SRAM]) begin
                         mem_req_valid <= 1'b0;
                         mem_req_write <= 1'b0;
-                        if (tiled_input_word_eligible()) begin
+                        if (tiled_load_word_channel_ok_reg &&
+                            tiled_load_word_source_aligned_reg &&
+                            (tiled_load_word_lane_mask_reg == 4'b1111)) begin
                             sram_input_rd_word_en <= 1'b1;
                             sram_input_rd_word_addr <= sram_addr_for_index(
                                 input_addr_reg, tiled_input_index_reg);
@@ -2592,14 +3590,27 @@ module cnn_layer_runner #(
                                 state <= ST_TILED_ENGINE_START;
                             end else begin
                                 tiled_load_idx <= tiled_load_idx + 32'd1;
-                                advance_tiled_load_position();
-                                if (tiled_input_next_is_padding()) begin
+                                advance_tiled_load_position(
+                                    tiled_load_current_pixel_end_reg
+                                );
+                                if (tiled_load_current_pixel_end_reg) begin
+                                    state <= ST_TILED_LOAD_LOOKAHEAD;
+                                end else if (tiled_load_next_padding_reg) begin
                                     state <= ST_TILED_LOAD_REQ;
+                                end else if (tiled_load_next_word_channel_ok_reg &&
+                                             tiled_load_next_word_source_aligned_reg &&
+                                             (tiled_load_next_word_lane_mask_reg == 4'b1111)) begin
+                                    sram_input_rd_word_en <= 1'b1;
+                                    sram_input_rd_word_addr <= sram_addr_for_index(
+                                        input_addr_reg,
+                                        tiled_input_next_index_cursor_reg
+                                    );
+                                    state <= ST_TILED_LOAD_WORD_RESP;
                                 end else begin
                                     sram_input_rd_en <= 1'b1;
                                     sram_input_rd_addr <= sram_addr_for_index(
                                         input_addr_reg,
-                                        tiled_input_index_next_reg()
+                                        tiled_input_next_index_cursor_reg
                                     );
                                     state <= ST_TILED_LOAD_RESP;
                                 end
@@ -2615,11 +3626,15 @@ module cnn_layer_runner #(
                             state <= ST_TILED_ENGINE_START;
                         end else begin
                             tiled_load_idx <= tiled_load_idx + 32'd1;
-                            advance_tiled_load_position();
-                            if (!tiled_input_next_is_padding()) begin
+                            advance_tiled_load_position(
+                                tiled_load_current_pixel_end_reg
+                            );
+                            if (tiled_load_current_pixel_end_reg) begin
+                                state <= ST_TILED_LOAD_LOOKAHEAD;
+                            end else if (!tiled_load_next_padding_reg) begin
                                 state <= ST_TILED_LOAD_MEM_REQ;
                             end else begin
-                                state <= ST_TILED_LOAD_REQ;
+                                    state <= ST_TILED_LOAD_REQ;
                             end
                         end
                     end
@@ -2632,13 +3647,80 @@ module cnn_layer_runner #(
                         end else begin
                             store_ds_tiled_input_vec4(sram_input_rd_word_data);
                         end
-                        advance_tiled_load_position_vec4();
                         if ((tiled_load_idx + 32'd4) >= tiled_load_count) begin
+                            // Do not advance the cursor beyond the tile tail;
+                            // no successor exists after the final vector.
                             state <= ST_TILED_ENGINE_START;
                         end else begin
-                            state <= ST_TILED_LOAD_REQ;
+                            tiled_load_idx <= tiled_load_idx + 32'd4;
+                            advance_tiled_load_position(
+                                tiled_load_current_word_pixel_end_reg
+                            );
+                            if (tiled_load_current_word_pixel_end_reg) begin
+                                state <= ST_TILED_LOAD_LOOKAHEAD;
+                            end else if (tiled_load_next_padding_reg) begin
+                                state <= ST_TILED_LOAD_REQ;
+                            end else if (tiled_load_next_word_channel_ok_reg &&
+                                         tiled_load_next_word_source_aligned_reg &&
+                                         (tiled_load_next_word_lane_mask_reg == 4'b1111)) begin
+                                sram_input_rd_word_en <= 1'b1;
+                                sram_input_rd_word_addr <= sram_addr_for_index(
+                                    input_addr_reg,
+                                    tiled_input_next_index_cursor_reg
+                                );
+                                state <= ST_TILED_LOAD_WORD_RESP;
+                            end else begin
+                                sram_input_rd_en <= 1'b1;
+                                sram_input_rd_addr <= sram_addr_for_index(
+                                    input_addr_reg,
+                                    tiled_input_next_index_cursor_reg
+                                );
+                                state <= ST_TILED_LOAD_RESP;
+                            end
                         end
                     end
+                end
+
+                ST_TILED_LOAD_LOOKAHEAD: begin
+                    if (tiled_load_prime_reg) begin
+                        tiled_load_prime_reg <= 1'b0;
+                        if (!tiled_load_current_padding_reg &&
+                            flags_reg[FLAG_INPUT_FROM_SRAM] &&
+                            tiled_load_word_channel_ok_reg &&
+                            tiled_load_word_source_aligned_reg &&
+                            (tiled_load_word_lane_mask_reg == 4'b1111)) begin
+                            if ((tiled_load_idx + 32'd4) >= tiled_load_count) begin
+                                // The first vector is also the tile tail;
+                                // leave the successor bundle invalid rather
+                                // than manufacturing a post-tile cursor.
+                                state <= ST_TILED_LOAD_REQ;
+                            end else begin
+                                prepare_tiled_load_successor_vec4();
+                                state <= ST_TILED_LOAD_METADATA;
+                            end
+                        end else begin
+                            if ((tiled_load_idx + 32'd1) >= tiled_load_count) begin
+                                // Likewise for a one-element tile or scalar
+                                // tail: no successor is needed after the
+                                // final legal cursor.
+                                state <= ST_TILED_LOAD_REQ;
+                            end else begin
+                                prepare_tiled_load_successor_scalar();
+                                state <= ST_TILED_LOAD_METADATA;
+                            end
+                        end
+                    end else begin
+                        // Pixel/word-boundary lookahead has a registered
+                        // successor cursor already.  Register only its wide
+                        // signed halo and word metadata here.
+                        capture_tiled_load_next_metadata();
+                        state <= ST_TILED_LOAD_REQ;
+                    end
+                end
+
+                ST_TILED_LOAD_METADATA: begin
+                    capture_tiled_load_next_metadata();
+                    state <= ST_TILED_LOAD_REQ;
                 end
 
                 ST_TILED_ENGINE_START: begin
@@ -2662,9 +3744,12 @@ module cnn_layer_runner #(
                 end
 
                 ST_TILED_STORE_SETUP: begin
-                    store_count <= {24'd0, tile_h_size_reg} *
-                                   {24'd0, tile_w_size_reg} *
-                                   {16'd0, out_c_reg};
+                    /* Commit the spatial partial product first.  The final
+                     * channel product is registered in BASE_FINISH below,
+                     * so the store-count path is never a three-operand DSP
+                     * cascade from tile_h/tile_w to the write-loop compare. */
+                    tiled_store_area_reg <= {24'd0, tile_h_size_reg} *
+                                            {24'd0, tile_w_size_reg};
                     store_idx <= 32'd0;
                     store_outbuf_addr <= {OUT_BUFFER_ADDR_WIDTH{1'b0}};
                     store_channel_pos <= 16'd0;
@@ -2707,6 +3792,8 @@ module cnn_layer_runner #(
                 end
 
                 ST_TILED_STORE_BASE_FINISH: begin
+                    store_count <= tiled_store_area_reg *
+                                   {16'd0, out_c_reg};
                     tiled_store_addr_row_base <= output_addr_reg +
                                                  (tiled_store_linear_index_reg << 2);
                     tiled_store_addr_col_base <= output_addr_reg +

@@ -72,6 +72,102 @@ if {[info exists ::env(VIVADO_IMPL_DIRECTIVE)] && [string length $::env(VIVADO_I
 } else {
     set impl_directive Explore
 }
+# Optional experiment controls.  The defaults deliberately reproduce the
+# historical flow (one shared directive, no synthesis retiming, no explicit
+# LUT remap, and the ordinary post-place phys_opt pass).  Experiments must set
+# these through the wrapper so the exact accepted command is captured below.
+set synth_global_retiming ""
+if {[info exists ::env(VIVADO_IMPL_SYNTH_GLOBAL_RETIMING)] &&
+    [string length $::env(VIVADO_IMPL_SYNTH_GLOBAL_RETIMING)] > 0} {
+    set synth_global_retiming [string tolower $::env(VIVADO_IMPL_SYNTH_GLOBAL_RETIMING)]
+    if {$synth_global_retiming ni {auto on off}} {
+        error "VIVADO_IMPL_SYNTH_GLOBAL_RETIMING must be auto, on, or off, got '$synth_global_retiming'"
+    }
+}
+set opt_remap_mode "none"
+if {[info exists ::env(VIVADO_IMPL_OPT_REMAP)] &&
+    [string length $::env(VIVADO_IMPL_OPT_REMAP)] > 0} {
+    set opt_remap_mode [string tolower $::env(VIVADO_IMPL_OPT_REMAP)]
+}
+if {$opt_remap_mode ni {none remap aggressive_remap resynth_remap explore_with_remap}} {
+    error "VIVADO_IMPL_OPT_REMAP must be none, remap, aggressive_remap, resynth_remap, or explore_with_remap, got '$opt_remap_mode'"
+}
+set opt_directive $impl_directive
+if {$opt_remap_mode ne "none"} {
+    # Specific opt_design optimization switches and -directive are mutually
+    # exclusive in Vivado.  ExploreWithRemap is the supported directive form;
+    # the other modes below exercise the explicit switches verbatim.
+    set opt_directive ""
+}
+if {[info exists ::env(VIVADO_IMPL_OPT_DIRECTIVE)] &&
+    [string length $::env(VIVADO_IMPL_OPT_DIRECTIVE)] > 0} {
+    if {$opt_remap_mode ne "none"} {
+        error "VIVADO_IMPL_OPT_DIRECTIVE cannot be combined with VIVADO_IMPL_OPT_REMAP"
+    }
+    set opt_directive $::env(VIVADO_IMPL_OPT_DIRECTIVE)
+}
+set place_directive $impl_directive
+if {[info exists ::env(VIVADO_IMPL_PLACE_DIRECTIVE)] &&
+    [string length $::env(VIVADO_IMPL_PLACE_DIRECTIVE)] > 0} {
+    set place_directive $::env(VIVADO_IMPL_PLACE_DIRECTIVE)
+}
+set phys_directive $impl_directive
+if {[info exists ::env(VIVADO_IMPL_PHYS_DIRECTIVE)] &&
+    [string length $::env(VIVADO_IMPL_PHYS_DIRECTIVE)] > 0} {
+    set phys_directive $::env(VIVADO_IMPL_PHYS_DIRECTIVE)
+}
+set route_directive $impl_directive
+if {[info exists ::env(VIVADO_IMPL_ROUTE_DIRECTIVE)] &&
+    [string length $::env(VIVADO_IMPL_ROUTE_DIRECTIVE)] > 0} {
+    set route_directive $::env(VIVADO_IMPL_ROUTE_DIRECTIVE)
+}
+set phys_opt_retime 0
+if {[info exists ::env(VIVADO_IMPL_PHYS_OPT_RETIME)] &&
+    [string length $::env(VIVADO_IMPL_PHYS_OPT_RETIME)] > 0} {
+    if {[string is true -strict $::env(VIVADO_IMPL_PHYS_OPT_RETIME)]} {
+        set phys_opt_retime 1
+    } elseif {![string is false -strict $::env(VIVADO_IMPL_PHYS_OPT_RETIME)]} {
+        error "VIVADO_IMPL_PHYS_OPT_RETIME must be a boolean, got '$::env(VIVADO_IMPL_PHYS_OPT_RETIME)'"
+    }
+}
+if {[info exists ::env(VIVADO_IMPL_SYNTH_MODE)] && [string length $::env(VIVADO_IMPL_SYNTH_MODE)] > 0} {
+    set synth_mode [string tolower $::env(VIVADO_IMPL_SYNTH_MODE)]
+} else {
+    set synth_mode out_of_context
+}
+if {$synth_mode ne "out_of_context" && $synth_mode ne "normal"} {
+    error "VIVADO_IMPL_SYNTH_MODE must be out_of_context or normal, got '$synth_mode'"
+}
+set require_no_legacy_ds 0
+if {[info exists ::env(VIVADO_IMPL_REQUIRE_NO_LEGACY_DS)] &&
+    [string is true -strict $::env(VIVADO_IMPL_REQUIRE_NO_LEGACY_DS)]} {
+    set require_no_legacy_ds 1
+}
+set require_group_shared64 0
+if {[info exists ::env(VIVADO_IMPL_REQUIRE_GROUP_SHARED64)] &&
+    [string is true -strict $::env(VIVADO_IMPL_REQUIRE_GROUP_SHARED64)]} {
+    set require_group_shared64 1
+}
+set actual_max_threads [get_param general.maxThreads]
+set settings_file [file join $out_dir "run_settings.txt"]
+set settings_fh [open $settings_file "w"]
+puts $settings_fh "general.maxThreads=$actual_max_threads"
+puts $settings_fh "clock_period_ns=$clock_period_ns"
+puts $settings_fh "implementation_directive=$impl_directive"
+puts $settings_fh "synth_global_retiming=$synth_global_retiming"
+puts $settings_fh "opt_remap_mode=$opt_remap_mode"
+puts $settings_fh "opt_directive=$opt_directive"
+puts $settings_fh "place_directive=$place_directive"
+puts $settings_fh "phys_directive=$phys_directive"
+puts $settings_fh "phys_opt_retime=$phys_opt_retime"
+puts $settings_fh "route_directive=$route_directive"
+puts $settings_fh "synthesis_mode=$synth_mode"
+puts $settings_fh "require_no_legacy_ds=$require_no_legacy_ds"
+puts $settings_fh "require_group_shared64=$require_group_shared64"
+puts $settings_fh "top=$top_name"
+puts $settings_fh "part=$part_name"
+close $settings_fh
+puts "CNN_TOP_IMPL_SETTINGS general.maxThreads=$actual_max_threads clock_period_ns=$clock_period_ns implementation_directive=$impl_directive synth_global_retiming=$synth_global_retiming opt_remap_mode=$opt_remap_mode place_directive=$place_directive phys_opt_retime=$phys_opt_retime route_directive=$route_directive synthesis_mode=$synth_mode"
 
 if {[info exists ::env(VIVADO_IMPL_RUN_ID)] && [string length $::env(VIVADO_IMPL_RUN_ID)] > 0} {
     set run_id $::env(VIVADO_IMPL_RUN_ID)
@@ -152,7 +248,8 @@ proc git_metadata {project_root} {
 }
 
 proc write_manifest {path project_root top_name part_name command_line final_status final_detail stage_pairs} {
-    global run_id source_metadata
+    global run_id source_metadata synth_mode synth_global_retiming opt_remap_mode
+    global opt_directive place_directive phys_directive phys_opt_retime route_directive
     set fh [open $path "w"]
     puts $fh "format: cnn-vivado-implementation-manifest-v2"
     puts $fh "run_id: $run_id"
@@ -171,7 +268,18 @@ proc write_manifest {path project_root top_name part_name command_line final_sta
     puts $fh "vivado_version: [version -short]"
     puts $fh "top: $top_name"
     puts $fh "part: $part_name"
-    puts $fh "closure_scope: post-route out-of-context core-clock check only; board IO/clock constraints are excluded"
+    puts $fh "synth_global_retiming: $synth_global_retiming"
+    puts $fh "opt_remap_mode: $opt_remap_mode"
+    puts $fh "opt_directive: $opt_directive"
+    puts $fh "place_directive: $place_directive"
+    puts $fh "phys_directive: $phys_directive"
+    puts $fh "phys_opt_retime: $phys_opt_retime"
+    puts $fh "route_directive: $route_directive"
+    if {$synth_mode eq "normal"} {
+        puts $fh "closure_scope: post-route full-top implementation core-clock check; board IO/clock constraints are excluded"
+    } else {
+        puts $fh "closure_scope: post-route out-of-context core-clock check only; board IO/clock constraints are excluded"
+    }
     puts $fh "command: $command_line"
     puts $fh "status: $final_status"
     puts $fh "detail: [string map [list "\n" " | " "\r" ""] $final_detail]"
@@ -285,6 +393,86 @@ proc no_unconstrained_paths {unconstrained_file} {
     return 0
 }
 
+proc legacy_ds_hierarchy_count {} {
+    # Preserve the instance-name proof instead of relying only on utilization:
+    # retained-only must not carry a hidden legacy DS cell after synthesis or
+    # implementation.  NAME filtering is supported for hierarchical cells in
+    # Vivado 2025.2 and remains meaningful with flatten_hierarchy none.
+    return [llength [get_cells -hierarchical -quiet -filter {NAME =~ "*u_ds_block_engine*"}]]
+}
+
+proc write_hierarchy_proof {path} {
+    set fh [open $path "w"]
+    puts $fh "retained_only_hierarchy_proof"
+    puts $fh "legacy_instance_pattern=*u_ds_block_engine*"
+    set cells [get_cells -hierarchical -quiet -filter {NAME =~ "*u_ds_block_engine*"}]
+    puts $fh "legacy_instance_count=[llength $cells]"
+    foreach cell [lsort $cells] { puts $fh $cell }
+    close $fh
+}
+
+# The group-published production build is a physical variant, not a runtime
+# mux over the old DS engine. Keep an explicit instance-level proof for that
+# variant so a successful route cannot be misattributed to an accidental
+# legacy or M1.1-A data plane. The exact NAME suffixes are stable with
+# -flatten_hierarchy none and avoid counting primitive descendants.
+proc write_production_hierarchy_proof {path} {
+    set entries [list \
+        group_top u_group_shared64_runner_adapter \
+        group_runner u_group_adapter \
+        group_sweep u_sweep \
+        shared64_arithmetic u_shared_ds \
+        legacy_ds u_ds_block_engine \
+        m11a_runner u_m11a_runner_adapter \
+        m11a_core u_m11a_core \
+        stem u_stem_engine \
+        gap u_gap_unit \
+        fc u_fc_unit]
+    set fh [open $path "w"]
+    puts $fh "production_group_shared64_hierarchy_proof"
+    puts $fh "flatten_hierarchy=none"
+    puts $fh "contract=DS1-DS6 route through one group-published shared64 arithmetic island; Stem/GAP/FC remain present"
+    set result {}
+    foreach {label suffix} $entries {
+        set cells [get_cells -hierarchical -quiet -filter [format {NAME =~ "*%s"} $suffix]]
+        # USE_SHARED_UNIFIED64 is an optional simulation/physical variant;
+        # accept its unified Stem name as the same complete Stem contract
+        # when selected, while the normal group production build uses
+        # u_stem_engine.
+        if {$label eq "stem" && [llength $cells] == 0} {
+            set suffix u_stem_unified64
+            set cells [get_cells -hierarchical -quiet -filter [format {NAME =~ "*%s"} $suffix]]
+        }
+        set count [llength $cells]
+        puts $fh "${label}_suffix=${suffix}"
+        puts $fh "${label}_count=${count}"
+        foreach cell [lsort $cells] { puts $fh "${label}_cell=$cell" }
+        dict set result $label $count
+    }
+    close $fh
+    return $result
+}
+
+proc production_hierarchy_is_valid {counts} {
+    foreach {label expected} {
+        group_top 1
+        group_runner 1
+        group_sweep 1
+        shared64_arithmetic 1
+        legacy_ds 0
+        m11a_runner 0
+        m11a_core 0
+        stem 1
+        gap 1
+        fc 1
+    } {
+        if {![dict exists $counts $label] || [dict get $counts $label] != $expected} {
+            return 0
+        }
+    }
+    return 1
+}
+
 set invocation "[info nameofexecutable] -mode batch -source scripts/vivado_cnn_top_impl.tcl -tclargs $top_name $part_name"
 set source_metadata [git_metadata $project_root]
 set stage_status(manifest_initialized) "PASSED"
@@ -292,6 +480,8 @@ set stage_status(implementation_directive) $impl_directive
 write_manifest $manifest_file $project_root $top_name $part_name $invocation "RUNNING" "Vivado flow started; this manifest belongs only to run $run_id." [array get stage_status]
 
 # Keep this list deliberately identical to scripts/vivado_cnn_top_synth.tcl.
+# The group-published files are part of the production generic and must be
+# read even though their generate branch is disabled in the default build.
 set rtl_files [list \
     "rtl/common/round_shift.v" \
     "rtl/common/saturate_int8.v" \
@@ -326,10 +516,66 @@ set rtl_files [list \
     "rtl/cnn/feature_sram_pingpong.v" \
     "rtl/cnn/status_counter.v" \
     "rtl/cnn/descriptor_fetch.v" \
+    "rtl/cnn/ds_group_feature_word_address_adapter.v" \
+    "rtl/cnn/ds_group_published_shared64_sweep.v" \
+    "rtl/cnn/ds_group_published_shared64_runner_adapter.v" \
+    "rtl/cnn/ds_group_shared64_output_skid.v" \
+    "rtl/cnn/ds_group_published_shared64_top_adapter.v" \
+    "rtl/cnn/ds1_group_fill_address_adapter.v" \
+    "rtl/cnn/ds1_pw_replay_controller.v" \
+    "rtl/cnn/ds_spatial_word_window_bank.v" \
+    "rtl/cnn/ds_word_window_fill_engine.v" \
+    "rtl/cnn/ds_word_window_pingpong_shell.v" \
+    "rtl/cnn/dw_direct_3x3_dsp.v" \
+    "rtl/cnn/dw_direct_3x3_dsp_prefetched.v" \
+    "rtl/cnn/dw_direct_3x3_dsp_quadlocal.v" \
+    "rtl/cnn/ds_word_window_dw_producer_island.v" \
+    "rtl/cnn/requant_activation_stream4_masked.v" \
+    "rtl/cnn/ds_dw_requant_stream4_write_adapter.v" \
+    "rtl/cnn/ds_dw_requant_stream4_write_adapter_local.v" \
+    "rtl/cnn/ds_pw_spatial_tile_bank_tagless.v" \
+    "rtl/cnn/ds_word_window_dw_tagless_stream4_pipeline.v" \
+    "rtl/cnn/ds_word_window_dw_tagless_stream4_4x8.v" \
+    "rtl/cnn/ds1_retained_session_wrapper.v" \
+    "rtl/cnn/ds1_retained_microgroup_bridge.v" \
+    "rtl/cnn/ds1_final_requant_write.v" \
+    "rtl/cnn/ds1_retained_full_layer_orchestrator.v" \
+    "rtl/cnn/ds1_retained_runner_adapter.v" \
+    "rtl/cnn/m11a_dsp48e1_wrappers.v" \
+    "rtl/cnn/m11a_runtime_cfg_store.v" \
+    "rtl/cnn/m11a_dw16_shared_line.v" \
+    "rtl/cnn/m11a_context_packer.v" \
+    "rtl/cnn/m11a_pw64_shared_core.v" \
+    "rtl/cnn/m11a_runtime_dw_pw_core.v" \
+    "rtl/cnn/m11a_runner_adapter.v" \
     "rtl/cnn/cnn_layer_runner.v" \
     "rtl/cnn/cnn_top_ctrl.v" \
     "rtl/cnn/cnn_top.v" \
 ]
+
+# Keep a concrete manifest beside the reports so a full-top result identifies
+# the exact RTL source set that Vivado consumed, including the M1.1-A branch.
+set source_manifest_file [file join $out_dir "source_manifest.txt"]
+set source_manifest_fh [open $source_manifest_file "w"]
+puts $source_manifest_fh "format: cnn-vivado-source-manifest-v1"
+puts $source_manifest_fh "top: $top_name"
+puts $source_manifest_fh "part: $part_name"
+puts $source_manifest_fh "clock_period_ns: $clock_period_ns"
+puts $source_manifest_fh "synthesis_mode: $synth_mode"
+puts $source_manifest_fh "generic: [expr {[info exists ::env(VIVADO_IMPL_SYNTH_GENERIC)] ? $::env(VIVADO_IMPL_SYNTH_GENERIC) : ""}]"
+puts $source_manifest_fh "constraint_file: $constraint_file"
+puts $source_manifest_fh "rtl_count: [llength $rtl_files]"
+foreach f $rtl_files {
+    set source_path [file normalize [file join $project_root $f]]
+    if {![file exists $source_path]} {
+        close $source_manifest_fh
+        set stage_status(source_manifest) "FAILED: missing $source_path"
+        fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_READ_RTL" $stage_status(source_manifest) [array get stage_status]
+    }
+    puts $source_manifest_fh "rtl: $f"
+}
+close $source_manifest_fh
+set stage_status(source_manifest) "PASSED: $source_manifest_file"
 
 foreach f $rtl_files {
     set read_stage "read_[file rootname [file tail $f]]"
@@ -348,10 +594,18 @@ if {[run_stage read_xdc [list read_xdc $constraint_file]]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_CONSTRAINT" $stage_status(read_xdc) [array get stage_status]
 }
 
-set synth_command [list synth_design -top $top_name -part $part_name -flatten_hierarchy none -mode out_of_context -directive RuntimeOptimized]
+if {$synth_mode eq "normal"} {
+    set synth_command [list synth_design -top $top_name -part $part_name -flatten_hierarchy none -directive RuntimeOptimized]
+} else {
+    set synth_command [list synth_design -top $top_name -part $part_name -flatten_hierarchy none -mode out_of_context -directive RuntimeOptimized]
+}
 if {[info exists ::env(VIVADO_IMPL_SYNTH_GENERIC)] && [string length $::env(VIVADO_IMPL_SYNTH_GENERIC)] > 0} {
     lappend synth_command -generic $::env(VIVADO_IMPL_SYNTH_GENERIC)
 }
+if {$synth_global_retiming ne ""} {
+    lappend synth_command -global_retiming $synth_global_retiming
+}
+set stage_status(synth_command) [join $synth_command " "]
 if {[run_stage synth_design $synth_command]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_SYNTHESIS" $stage_status(synth_design) [array get stage_status]
 }
@@ -360,6 +614,21 @@ if {[run_stage synth_design $synth_command]} {
 # device support package without timing data.
 run_stage report_clocks_synth [list report_clocks -file [file join $out_dir "clocks_synth.txt"]]
 run_stage report_utilization_synth [list report_utilization -file [file join $out_dir "utilization_synth.txt"]]
+run_stage hierarchy_proof_synth [list write_hierarchy_proof [file join $out_dir "hierarchy_synth.txt"]]
+set legacy_ds_synth_count [legacy_ds_hierarchy_count]
+set stage_status(legacy_ds_synth_hierarchy_count) $legacy_ds_synth_count
+if {$require_no_legacy_ds && $legacy_ds_synth_count != 0} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_LEGACY_DS_PRESENT" "retained-only synthesis still contains $legacy_ds_synth_count hierarchical cell(s) matching u_ds_block_engine" [array get stage_status]
+}
+set production_hierarchy_synth_file [file join $out_dir "production_hierarchy_synth.txt"]
+set production_hierarchy_synth_counts [write_production_hierarchy_proof $production_hierarchy_synth_file]
+set stage_status(production_hierarchy_synth_proof) $production_hierarchy_synth_file
+foreach {proof_label proof_count} $production_hierarchy_synth_counts {
+    set stage_status(production_hierarchy_synth_${proof_label}_count) $proof_count
+}
+if {$require_group_shared64 && ![production_hierarchy_is_valid $production_hierarchy_synth_counts]} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_ARCHITECTURE" "group-published shared64 synthesis hierarchy did not prove exactly one group top/runner/sweep/shared arithmetic island, zero legacy DS/M1.1-A cells, and complete Stem/GAP/FC instances; inspect $production_hierarchy_synth_file" [array get stage_status]
+}
 run_stage write_checkpoint_synth [list write_checkpoint -force [file join $out_dir "${top_name}_synth.dcp"]]
 
 # read_xdc is intentionally before synth_design.  On a timing-capable device,
@@ -415,10 +684,24 @@ if {$timing_property_known && ![string is true -strict $timing_property]} {
 }
 set stage_status(timing_device) "UNREPORTED: implementation commands will prove timing capability"
 
-if {[run_stage opt_design [list opt_design -directive $impl_directive]]} {
+set opt_command [list opt_design]
+switch -- $opt_remap_mode {
+    none {}
+    remap {lappend opt_command -remap}
+    aggressive_remap {lappend opt_command -aggressive_remap}
+    resynth_remap {lappend opt_command -resynth_remap}
+    explore_with_remap {lappend opt_command -directive ExploreWithRemap}
+}
+if {$opt_directive ne ""} {
+    lappend opt_command -directive $opt_directive
+}
+set stage_status(opt_command) [join $opt_command " "]
+if {[run_stage opt_design $opt_command]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation [classify_implementation_failure $stage_status(opt_design)] $stage_status(opt_design) [array get stage_status]
 }
-if {[run_stage place_design [list place_design -directive $impl_directive]]} {
+set place_command [list place_design -directive $place_directive]
+set stage_status(place_command) [join $place_command " "]
+if {[run_stage place_design $place_command]} {
     set failure_status [classify_implementation_failure $stage_status(place_design)]
     fail_flow $manifest_file $project_root $top_name $part_name $invocation $failure_status $stage_status(place_design) [array get stage_status]
 }
@@ -429,10 +712,18 @@ set stage_status(placed_cell_count) $located_cells
 if {$located_cells == 0} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_IMPLEMENTATION_STATUS" "place_design returned successfully but no cells have LOC assignments; placement cannot be proven." [array get stage_status]
 }
-if {[run_stage phys_opt_design [list phys_opt_design -directive $impl_directive]]} {
+if {$phys_opt_retime} {
+    set phys_command [list phys_opt_design -retime]
+} else {
+    set phys_command [list phys_opt_design -directive $phys_directive]
+}
+set stage_status(phys_opt_command) [join $phys_command " "]
+if {[run_stage phys_opt_design $phys_command]} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation [classify_implementation_failure $stage_status(phys_opt_design)] $stage_status(phys_opt_design) [array get stage_status]
 }
-if {[run_stage route_design [list route_design -directive $impl_directive]]} {
+set route_command [list route_design -directive $route_directive]
+set stage_status(route_command) [join $route_command " "]
+if {[run_stage route_design $route_command]} {
     set failure_status [classify_implementation_failure $stage_status(route_design)]
     fail_flow $manifest_file $project_root $top_name $part_name $invocation $failure_status $stage_status(route_design) [array get stage_status]
 }
@@ -453,8 +744,15 @@ set report_failures 0
 foreach {stage command} [list \
     report_timing_summary [list report_timing_summary -delay_type min_max -max_paths 20 -report_unconstrained -check_timing_verbose -file [file join $out_dir "timing_summary.txt"]] \
     report_timing [list report_timing -delay_type max -max_paths 20 -file [file join $out_dir "timing_maxpaths.txt"]] \
+    report_timing_min [list report_timing -delay_type min -max_paths 20 -file [file join $out_dir "timing_minpaths.txt"]] \
+    report_clocks_post_route [list report_clocks -file [file join $out_dir "clocks_post_route.txt"]] \
     report_utilization [list report_utilization -file [file join $out_dir "utilization_post_route.txt"]] \
+    report_utilization_hierarchical [list report_utilization -hierarchical -file [file join $out_dir "utilization_post_route_hierarchical.txt"]] \
+    hierarchy_proof [list write_hierarchy_proof [file join $out_dir "hierarchy_post_route.txt"]] \
     report_route_status [list report_route_status -file [file join $out_dir "route_status.txt"]] \
+    report_drc [list report_drc -file [file join $out_dir "drc_post_route.txt"]] \
+    report_methodology [list report_methodology -file [file join $out_dir "methodology_post_route.txt"]] \
+    report_congestion [list report_design_analysis -congestion -file [file join $out_dir "congestion_post_route.txt"]] \
     report_power [list report_power -file [file join $out_dir "power.txt"]] \
     write_checkpoint_impl [list write_checkpoint -force [file join $out_dir "${top_name}_impl.dcp"]] \
 ] {
@@ -465,6 +763,21 @@ foreach {stage command} [list \
 
 if {$report_failures} {
     fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_SIGNOFF_REPORT" "Route completed but at least one required post-route report/checkpoint failed; inspect manifest and retained reports." [array get stage_status]
+}
+
+set legacy_ds_post_route_count [legacy_ds_hierarchy_count]
+set stage_status(legacy_ds_post_route_hierarchy_count) $legacy_ds_post_route_count
+if {$require_no_legacy_ds && $legacy_ds_post_route_count != 0} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_LEGACY_DS_PRESENT" "retained-only post-route hierarchy contains $legacy_ds_post_route_count hierarchical cell(s) matching u_ds_block_engine" [array get stage_status]
+}
+set production_hierarchy_post_file [file join $out_dir "production_hierarchy_post_route.txt"]
+set production_hierarchy_post_counts [write_production_hierarchy_proof $production_hierarchy_post_file]
+set stage_status(production_hierarchy_post_route_proof) $production_hierarchy_post_file
+foreach {proof_label proof_count} $production_hierarchy_post_counts {
+    set stage_status(production_hierarchy_post_route_${proof_label}_count) $proof_count
+}
+if {$require_group_shared64 && ![production_hierarchy_is_valid $production_hierarchy_post_counts]} {
+    fail_flow $manifest_file $project_root $top_name $part_name $invocation "FAILED_ARCHITECTURE" "group-published shared64 post-route hierarchy did not preserve the required single arithmetic plane and complete Stem/GAP/FC instances; inspect $production_hierarchy_post_file" [array get stage_status]
 }
 
 set setup_negative_paths [get_timing_paths -quiet -setup -slack_lesser_than 0.0 -max_paths 1]

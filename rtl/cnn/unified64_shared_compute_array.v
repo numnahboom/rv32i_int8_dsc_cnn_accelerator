@@ -34,6 +34,10 @@ module unified64_shared_compute_array #(
     input wire [7:0] pixel_mask,
     input wire [15:0] cout_mask,
     input wire [10:0] pixel_base,
+    /* Optional producer metadata.  The arithmetic island carries this
+     * opaque tag with the completed block so downstream control does not
+     * have to reconstruct row/column geometry from the linear pixel index. */
+    input wire [8:0] spatial_tag,
     input wire [8:0] cout_base,
     input wire signed [511:0] bias_vec,
     input wire signed [511:0] multiplier_vec,
@@ -47,6 +51,8 @@ module unified64_shared_compute_array #(
     output wire [8:0] out_channel_base,
     output wire [3:0] out_lane_mask,
     output wire signed [31:0] out_data,
+    output wire [8:0] out_spatial_tag,
+    output wire [2:0] out_inner_pixel,
     output wire busy,
     output wire [31:0] metric_token_count,
     output wire [31:0] metric_masked_mac_count,
@@ -105,12 +111,32 @@ module unified64_shared_compute_array #(
     reg [7:0] bank_pixel_mask0, bank_pixel_mask1;
     reg [15:0] bank_cout_mask0, bank_cout_mask1;
     reg [10:0] bank_pixel_base0, bank_pixel_base1;
+    reg [8:0] bank_spatial_tag0, bank_spatial_tag1;
     reg [8:0] bank_cout_base0, bank_cout_base1;
     reg signed [511:0] bank_bias0, bank_bias1;
     reg signed [511:0] bank_multiplier0, bank_multiplier1;
     reg [95:0] bank_shift0, bank_shift1;
     reg signed [31:0] bank_zp0, bank_zp1, bank_min0, bank_min1;
     reg signed [31:0] bank_max0, bank_max1;
+
+    /* A new block reserves its physical bank immediately, but its wide
+     * sideband is committed one clock later from this registered bundle.  In
+     * particular, the 512-bit parameter writes no longer use the producer's
+     * valid/current-bank/address cone as their write-enable.  The pending
+     * entry is single-depth because reservation is only possible when the
+     * previous first-token stage has drained; a simultaneous commit and new
+     * reservation is handled by retaining the newly captured pending entry. */
+    reg meta_pending_valid, meta_pending_bank;
+    reg meta_pending_mode;
+    reg [7:0] meta_pending_pixel_mask;
+    reg [15:0] meta_pending_cout_mask;
+    reg [10:0] meta_pending_pixel_base;
+    reg [8:0] meta_pending_spatial_tag;
+    reg [8:0] meta_pending_cout_base;
+    reg signed [511:0] meta_pending_bias, meta_pending_multiplier;
+    reg [95:0] meta_pending_shift;
+    reg signed [31:0] meta_pending_zp, meta_pending_min, meta_pending_max;
+    reg bank_meta_valid0, bank_meta_valid1;
 
     wire signed [2047:0] cell_sum_pack;
     generate for (g=0; g<64; g=g+1) begin : gen_sum_pack
@@ -122,6 +148,7 @@ module unified64_shared_compute_array #(
     reg [7:0] drain_pixel_mask;
     reg [15:0] drain_cout_mask;
     reg [10:0] drain_pixel_base_reg;
+    reg [8:0] drain_spatial_tag_reg;
     reg [8:0] drain_cout_base_reg;
     reg signed [511:0] drain_bias, drain_multiplier;
     reg [95:0] drain_shift;
@@ -158,11 +185,18 @@ module unified64_shared_compute_array #(
     assign out_channel_base = rq_out_cout;
     assign out_lane_mask = rq_out_mask;
     assign out_data = rq_out_data;
+    /* All sixteen beats drained from one completed bank share the same
+     * spatial tag.  The inner pixel index comes from the existing row tag
+     * and is therefore already aligned with the requant output pipeline. */
+    assign out_spatial_tag = drain_spatial_tag_reg;
+    assign out_inner_pixel = rq_out_row[2:0];
     wire output_fire = rq_valid && ready_out;
 
+    wire drain_ready0 = bank_ready0 && bank_meta_valid0;
+    wire drain_ready1 = bank_ready1 && bank_meta_valid1;
     wire drain_start = !drain_active && !in_stage_valid && !mac_last_pending &&
                         !rq_stage_valid && !rq_busy &&
-                        (bank_ready0 || bank_ready1);
+                        (drain_ready0 || drain_ready1);
     wire stage_load = drain_active && (!rq_stage_valid || rq_ready);
     wire stage_fire = rq_stage_valid && rq_ready;
     wire drain_final_fire = output_fire &&
@@ -205,6 +239,12 @@ module unified64_shared_compute_array #(
     wire [6:0] issue_shift_offset =
         ({issue_group_index,3'd0} << 1) + {issue_group_index,3'd0};
     wire [4:0] issue_cout_mask_offset = {issue_group_index,2'd0};
+    wire reserve_fire = input_fire && !current_active;
+    /* These enables are sourced only by the registered pending bundle.  Keep
+     * them separate so Vivado can replicate the one-bit commit control near
+     * each bank rather than rebuilding the producer geometry cone. */
+    wire meta_commit0 = meta_pending_valid && !meta_pending_bank;
+    wire meta_commit1 = meta_pending_valid && meta_pending_bank;
     always @(posedge clk) begin
         if (!rst_n) begin
             bank_live0<=0; bank_live1<=0; bank_ready0<=0; bank_ready1<=0;
@@ -214,6 +254,10 @@ module unified64_shared_compute_array #(
             in_stage_mode<=0; in_stage_bank<=0;
             rq_stage_valid<=0;
             bank_psum0<=0; bank_psum1<=0;
+            bank_spatial_tag0<=0; bank_spatial_tag1<=0;
+            drain_spatial_tag_reg<=0;
+            meta_pending_valid<=0; meta_pending_bank<=0;
+            bank_meta_valid0<=0; bank_meta_valid1<=0;
             token_count_reg<=0; masked_mac_count_reg<=0; commit_count_reg<=0;
 `ifndef SYNTHESIS
             stem_token_count_reg<=0; ds_token_count_reg<=0;
@@ -254,40 +298,87 @@ module unified64_shared_compute_array #(
             end else begin
                 in_stage_valid<=1'b0; in_stage_first<=1'b0; in_stage_last<=1'b0;
             end
+            /* Commit the complete sideband bundle from a registered pending
+             * entry.  Reservation below deliberately comes afterwards: if a
+             * commit and a new reservation coincide, the new reservation
+             * replaces the pending entry for the following clock while the
+             * old entry is still written to its bank here. */
+            if (meta_commit0) begin
+                bank_mode0<=meta_pending_mode;
+                bank_pixel_mask0<=meta_pending_pixel_mask;
+                bank_cout_mask0<=meta_pending_cout_mask;
+                bank_pixel_base0<=meta_pending_pixel_base;
+                bank_spatial_tag0<=meta_pending_spatial_tag;
+                bank_cout_base0<=meta_pending_cout_base;
+                bank_bias0<=meta_pending_bias;
+                bank_multiplier0<=meta_pending_multiplier;
+                bank_shift0<=meta_pending_shift;
+                bank_zp0<=meta_pending_zp;
+                bank_min0<=meta_pending_min;
+                bank_max0<=meta_pending_max;
+                bank_meta_valid0<=1'b1;
+            end
+            if (meta_commit1) begin
+                bank_mode1<=meta_pending_mode;
+                bank_pixel_mask1<=meta_pending_pixel_mask;
+                bank_cout_mask1<=meta_pending_cout_mask;
+                bank_pixel_base1<=meta_pending_pixel_base;
+                bank_spatial_tag1<=meta_pending_spatial_tag;
+                bank_cout_base1<=meta_pending_cout_base;
+                bank_bias1<=meta_pending_bias;
+                bank_multiplier1<=meta_pending_multiplier;
+                bank_shift1<=meta_pending_shift;
+                bank_zp1<=meta_pending_zp;
+                bank_min1<=meta_pending_min;
+                bank_max1<=meta_pending_max;
+                bank_meta_valid1<=1'b1;
+            end
+            if (meta_pending_valid && !reserve_fire)
+                meta_pending_valid<=1'b0;
 
-            if (input_fire && !current_active) begin
+            if (reserve_fire) begin
                 current_bank<=alloc_bank_reg; current_active<=!last_k;
                 if (!alloc_bank_reg) begin
-                    bank_live0<=1; bank_ready0<=last_k; bank_mode0<=mode_stem;
-                    bank_pixel_mask0<=pixel_mask; bank_cout_mask0<=cout_mask;
-                    bank_pixel_base0<=pixel_base; bank_cout_base0<=cout_base;
-                    bank_bias0<=bias_vec; bank_multiplier0<=multiplier_vec;
-                    bank_shift0<=shift_vec; bank_zp0<=output_zero_point_int32;
-                    bank_min0<=activation_min_int32; bank_max0<=activation_max_int32;
+                    bank_live0<=1; bank_ready0<=last_k;
+                    bank_meta_valid0<=0;
+                    meta_pending_bank<=1'b0;
                 end else begin
-                    bank_live1<=1; bank_ready1<=last_k; bank_mode1<=mode_stem;
-                    bank_pixel_mask1<=pixel_mask; bank_cout_mask1<=cout_mask;
-                    bank_pixel_base1<=pixel_base; bank_cout_base1<=cout_base;
-                    bank_bias1<=bias_vec; bank_multiplier1<=multiplier_vec;
-                    bank_shift1<=shift_vec; bank_zp1<=output_zero_point_int32;
-                    bank_min1<=activation_min_int32; bank_max1<=activation_max_int32;
+                    bank_live1<=1; bank_ready1<=last_k;
+                    bank_meta_valid1<=0;
+                    meta_pending_bank<=1'b1;
                 end
+                meta_pending_valid<=1'b1;
+                meta_pending_mode<=mode_stem;
+                meta_pending_pixel_mask<=pixel_mask;
+                meta_pending_cout_mask<=cout_mask;
+                meta_pending_pixel_base<=pixel_base;
+                meta_pending_spatial_tag<=spatial_tag;
+                meta_pending_cout_base<=cout_base;
+                meta_pending_bias<=bias_vec;
+                meta_pending_multiplier<=multiplier_vec;
+                meta_pending_shift<=shift_vec;
+                meta_pending_zp<=output_zero_point_int32;
+                meta_pending_min<=activation_min_int32;
+                meta_pending_max<=activation_max_int32;
             end
             if (mac_last_pending) begin
                 if (in_stage_bank) begin
-                    bank_psum1<=cell_sum_pack; bank_ready1<=1; current_active<=0;
+                    bank_psum1<=cell_sum_pack; bank_ready1<=1;
+                    current_active<=0;
                     alloc_bank_reg<=0;
                 end else begin
-                    bank_psum0<=cell_sum_pack; bank_ready0<=1; current_active<=0;
+                    bank_psum0<=cell_sum_pack; bank_ready0<=1;
+                    current_active<=0;
                     alloc_bank_reg<=1;
                 end
             end
             if (drain_start) begin
-                drain_active<=1; drain_bank<=bank_ready0 ? 0 : 1; issue_idx<=0;
-                if (bank_ready0) begin
+                drain_active<=1; drain_bank<=drain_ready0 ? 0 : 1; issue_idx<=0;
+                if (drain_ready0) begin
                     drain_psum<=bank_psum0; drain_mode<=bank_mode0;
                     drain_pixel_mask<=bank_pixel_mask0; drain_cout_mask<=bank_cout_mask0;
                     drain_pixel_base_reg<=bank_pixel_base0; drain_cout_base_reg<=bank_cout_base0;
+                    drain_spatial_tag_reg<=bank_spatial_tag0;
                     drain_bias<=bank_bias0; drain_multiplier<=bank_multiplier0;
                     drain_shift<=bank_shift0; drain_zp<=bank_zp0;
                     drain_min<=bank_min0; drain_max<=bank_max0; bank_ready0<=0;
@@ -295,6 +386,7 @@ module unified64_shared_compute_array #(
                     drain_psum<=bank_psum1; drain_mode<=bank_mode1;
                     drain_pixel_mask<=bank_pixel_mask1; drain_cout_mask<=bank_cout_mask1;
                     drain_pixel_base_reg<=bank_pixel_base1; drain_cout_base_reg<=bank_cout_base1;
+                    drain_spatial_tag_reg<=bank_spatial_tag1;
                     drain_bias<=bank_bias1; drain_multiplier<=bank_multiplier1;
                     drain_shift<=bank_shift1; drain_zp<=bank_zp1;
                     drain_min<=bank_min1; drain_max<=bank_max1; bank_ready1<=0;
@@ -327,7 +419,11 @@ module unified64_shared_compute_array #(
             end else if (stage_fire) rq_stage_valid<=0;
 
             if (drain_final_fire) begin
-                if (drain_bank) bank_live1<=0; else bank_live0<=0;
+                if (drain_bank) begin
+                    bank_live1<=0; bank_meta_valid1<=0;
+                end else begin
+                    bank_live0<=0; bank_meta_valid0<=0;
+                end
                 alloc_bank_reg<=drain_bank;
                 commit_count_reg<=commit_count_reg+1'b1;
 `ifndef SYNTHESIS

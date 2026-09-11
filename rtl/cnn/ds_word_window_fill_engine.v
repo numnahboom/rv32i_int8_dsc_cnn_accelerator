@@ -38,6 +38,7 @@ module ds_word_window_fill_engine #(
     output wire [ADDR_WIDTH-1:0] mem_req_addr,
     input wire mem_resp_valid,
     input wire [31:0] mem_resp_data,
+    output wire mem_resp_ready,
     output wire wr_valid,
     input wire wr_ready,
     output wire [VECTOR_ADDR_WIDTH-1:0] wr_vector_addr,
@@ -50,12 +51,20 @@ module ds_word_window_fill_engine #(
     output reg [31:0] write_count,
     output reg [31:0] stale_response_count
 );
+    localparam [FIFO_PTR_WIDTH-1:0] FIFO_LAST_PTR = FIFO_PTR_WIDTH'(FIFO_DEPTH - 1);
+    localparam [FIFO_COUNT_WIDTH-1:0] FIFO_DEPTH_VALUE = FIFO_COUNT_WIDTH'(FIFO_DEPTH);
     reg active;
     reg selected_bank;
     reg [EPOCH_WIDTH-1:0] epoch_reg;
-    reg [ADDR_WIDTH-1:0] base_addr_reg;
     reg [WORD_COUNT_WIDTH-1:0] word_count_reg;
-    reg [WORD_COUNT_WIDTH-1:0] issue_index;
+    /* One-entry elastic request queue.  The queue is deliberately the only
+     * source of the outward request payload: once a request is visible, a
+     * source-side or descriptor-FIFO stall must not recompute its address or
+     * index from a moving counter. */
+    reg issue_q_valid;
+    reg [ADDR_WIDTH-1:0] issue_q_addr;
+    reg [WORD_COUNT_WIDTH-1:0] issue_q_index;
+    reg issued_all;
     reg [FIFO_PTR_WIDTH-1:0] desc_wr_ptr;
     reg [FIFO_PTR_WIDTH-1:0] desc_rd_ptr;
     reg [FIFO_COUNT_WIDTH-1:0] desc_count;
@@ -64,12 +73,13 @@ module ds_word_window_fill_engine #(
 
     wire response_available = (desc_count != 0);
     wire response_fire = mem_resp_valid && response_available && wr_ready;
-    wire issue_space = (desc_count < FIFO_DEPTH) || response_fire;
+    assign mem_resp_ready = response_available && wr_ready;
+    wire issue_space = (desc_count < FIFO_DEPTH_VALUE) || response_fire;
     wire issue_fire = mem_req_valid && mem_req_ready;
 
     assign start_ready = rst_n && !active && !done_valid && (desc_count == 0);
-    assign mem_req_valid = active && (issue_index < word_count_reg) && issue_space;
-    assign mem_req_addr = base_addr_reg + (issue_index << 2);
+    assign mem_req_valid = issue_q_valid && issue_space;
+    assign mem_req_addr = issue_q_addr;
     assign wr_valid = mem_resp_valid && response_available;
     assign wr_vector_addr = response_available ? desc_addr[desc_rd_ptr] : {VECTOR_ADDR_WIDTH{1'b0}};
     assign wr_quarter = response_available ? desc_quarter[desc_rd_ptr] : 2'd0;
@@ -79,7 +89,7 @@ module ds_word_window_fill_engine #(
     function [FIFO_PTR_WIDTH-1:0] ptr_next;
         input [FIFO_PTR_WIDTH-1:0] ptr;
         begin
-            if (ptr == FIFO_DEPTH-1) ptr_next = {FIFO_PTR_WIDTH{1'b0}};
+            if (ptr == FIFO_LAST_PTR) ptr_next = {FIFO_PTR_WIDTH{1'b0}};
             else ptr_next = ptr + 1'b1;
         end
     endfunction
@@ -90,9 +100,11 @@ module ds_word_window_fill_engine #(
             active <= 1'b0;
             selected_bank <= 1'b0;
             epoch_reg <= {EPOCH_WIDTH{1'b0}};
-            base_addr_reg <= {ADDR_WIDTH{1'b0}};
             word_count_reg <= {WORD_COUNT_WIDTH{1'b0}};
-            issue_index <= {WORD_COUNT_WIDTH{1'b0}};
+            issue_q_valid <= 1'b0;
+            issue_q_addr <= {ADDR_WIDTH{1'b0}};
+            issue_q_index <= {WORD_COUNT_WIDTH{1'b0}};
+            issued_all <= 1'b0;
             desc_wr_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             desc_rd_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             desc_count <= {FIFO_COUNT_WIDTH{1'b0}};
@@ -115,9 +127,11 @@ module ds_word_window_fill_engine #(
             if (start_valid && start_ready) begin
                 selected_bank <= start_bank[0];
                 epoch_reg <= start_epoch;
-                base_addr_reg <= {start_base_addr[ADDR_WIDTH-1:2],2'b00};
                 word_count_reg <= start_word_count;
-                issue_index <= 0;
+                issue_q_valid <= (start_word_count != 0);
+                issue_q_addr <= {start_base_addr[ADDR_WIDTH-1:2],2'b00};
+                issue_q_index <= {WORD_COUNT_WIDTH{1'b0}};
+                issued_all <= (start_word_count == 0);
                 active <= (start_word_count != 0);
                 busy <= (start_word_count != 0);
                 if (start_word_count == 0) begin
@@ -128,10 +142,19 @@ module ds_word_window_fill_engine #(
             end
 
             if (issue_fire) begin
-                desc_addr[desc_wr_ptr] <= issue_index >> 2;
-                desc_quarter[desc_wr_ptr] <= issue_index[1:0];
+                /* Record the index carried by the accepted queue entry, not
+                 * a counter that may already have advanced for a refill. */
+                desc_addr[desc_wr_ptr] <= VECTOR_ADDR_WIDTH'(issue_q_index >> 2);
+                desc_quarter[desc_wr_ptr] <= issue_q_index[1:0];
                 desc_wr_ptr <= ptr_next(desc_wr_ptr);
-                issue_index <= issue_index + 1'b1;
+                if (issue_q_index == (word_count_reg - 1'b1)) begin
+                    issue_q_valid <= 1'b0;
+                    issued_all <= 1'b1;
+                end else begin
+                    issue_q_valid <= 1'b1;
+                    issue_q_addr <= issue_q_addr + 4;
+                    issue_q_index <= issue_q_index + 1'b1;
+                end
                 issue_count <= issue_count + 1'b1;
             end
 
@@ -152,7 +175,7 @@ module ds_word_window_fill_engine #(
             /* Completion is deliberately one cycle after the last response.
              * This keeps the done descriptor behind every accepted write and
              * makes the bank state transition an explicit fence. */
-            if (active && (issue_index >= word_count_reg) &&
+            if (active && !issue_q_valid && issued_all &&
                 (desc_count == 0)) begin
                 active <= 1'b0;
                 busy <= 1'b0;

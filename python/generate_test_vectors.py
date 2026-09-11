@@ -16,6 +16,7 @@ FLAG_INPUT_FROM_SRAM = 1 << 1
 FLAG_OUTPUT_TO_SRAM = 1 << 2
 FLAG_SRAM_SWAP_ON_DONE = 1 << 4
 FLAG_TILED_DS_BLOCK = 1 << 5
+FLAG_PACKED_WEIGHTS = 1 << 7
 
 
 def hex_width(value: int, bits: int) -> str:
@@ -2247,6 +2248,9 @@ def generate_cnn_top_tiled_dsblock_cases(out_dir: Path) -> Path:
         # in_h, in_w, cin, cout, stride
         (12, 10, 8, 8, 1),
         (17, 17, 8, 16, 2),
+        # Exercise an input-channel tail while keeping the unified output
+        # lanes full: C=7 is not a four-byte word multiple.
+        (9, 11, 7, 8, 1),
     ]
     cases: list[tuple[int, list[tuple[int, int]], list[tuple[int, int]]]] = []
 
@@ -3050,7 +3054,9 @@ def generate_cnn_top_e2e_sram_cases(out_dir: Path) -> Path:
     return path
 
 
-def generate_cnn_top_fullnet_sram_cases(out_dir: Path) -> Path:
+def generate_cnn_top_fullnet_sram_cases(
+    out_dir: Path, packed_weights: bool = True
+) -> Path:
     rng = random.Random(990077)
     desc_base = 0x00000
     next_addr = 0x01000
@@ -3074,6 +3080,23 @@ def generate_cnn_top_fullnet_sram_cases(out_dir: Path) -> Path:
     def add_linear(base: int, values: list[int]) -> None:
         for i, value in enumerate(values):
             entries.append((base + i * 4, value))
+
+    def add_packed_linear(base: int, values: list[int]) -> None:
+        """Emit four consecutive INT8 values per real external word."""
+        for i in range(0, len(values), 4):
+            word = 0
+            for lane, value in enumerate(values[i : i + 4]):
+                word |= (value & 0xFF) << (lane * 8)
+            entries.append((base + (i // 4) * 4, word))
+
+    def weight_words(byte_count: int) -> int:
+        return (byte_count + 3) // 4 if packed_weights else byte_count
+
+    def add_weight_linear(base: int, values: list[int]) -> None:
+        if packed_weights:
+            add_packed_linear(base, values)
+        else:
+            add_linear(base, values)
 
     def flat_to_feature(flat: list[list[int]], h: int, w: int, channels: int) -> list[list[list[int]]]:
         return [
@@ -3147,11 +3170,11 @@ def generate_cnn_top_fullnet_sram_cases(out_dir: Path) -> Path:
     ]
 
     for in_h, in_w, in_c, out_c, stride in ds_specs:
-        dw_weight_addr = alloc_words(in_c * 9)
+        dw_weight_addr = alloc_words(weight_words(in_c * 9))
         dw_bias_addr = alloc_words(in_c)
         dw_mul_addr = alloc_words(in_c)
         dw_shift_addr = alloc_words(in_c)
-        pw_weight_addr = alloc_words(out_c * in_c)
+        pw_weight_addr = alloc_words(weight_words(out_c * in_c))
         pw_bias_addr = alloc_words(out_c)
         pw_mul_addr = alloc_words(out_c)
         pw_shift_addr = alloc_words(out_c)
@@ -3206,14 +3229,16 @@ def generate_cnn_top_fullnet_sram_cases(out_dir: Path) -> Path:
         desc[15] = dw_output_zero_point
         desc[16] = pw_output_zero_point
         desc[17] = ((relu_max & 0xFF) << 24) | ((relu_min & 0xFF) << 16) | ((relu_max & 0xFF) << 8) | (relu_min & 0xFF)
-        desc[18] = FLAG_TILED_DS_BLOCK | FLAG_INPUT_FROM_SRAM | FLAG_OUTPUT_TO_SRAM | FLAG_SRAM_SWAP_ON_DONE
+        desc[18] = (FLAG_TILED_DS_BLOCK | FLAG_INPUT_FROM_SRAM |
+                    FLAG_OUTPUT_TO_SRAM | FLAG_SRAM_SWAP_ON_DONE |
+                    (FLAG_PACKED_WEIGHTS if packed_weights else 0))
         add_desc(layer_idx, desc)
 
-        add_linear(dw_weight_addr, [dw_weight[c][k] for c in range(in_c) for k in range(9)])
+        add_weight_linear(dw_weight_addr, [dw_weight[c][k] for c in range(in_c) for k in range(9)])
         add_linear(dw_bias_addr, dw_bias)
         add_linear(dw_mul_addr, dw_multiplier)
         add_linear(dw_shift_addr, dw_shift)
-        add_linear(pw_weight_addr, [pw_weight[co][ci] for co in range(out_c) for ci in range(in_c)])
+        add_weight_linear(pw_weight_addr, [pw_weight[co][ci] for co in range(out_c) for ci in range(in_c)])
         add_linear(pw_bias_addr, pw_bias)
         add_linear(pw_mul_addr, pw_multiplier)
         add_linear(pw_shift_addr, pw_shift)

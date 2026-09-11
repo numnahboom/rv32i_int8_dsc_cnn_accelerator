@@ -13,7 +13,7 @@ module tb_edgembconv_hwacandidate_d4_vstream_v3_mb16_controller;
  reg [7:0] input_vec[0:INB-1], expected_vec[0:OUTB-1];
  reg [7:0] exp_w[0:511],proj_w[0:1023],dw_w[0:287],exp_shift[0:31],proj_shift[0:31],dw_shift[0:31];
  reg [31:0] exp_bias[0:31],exp_mul[0:31],proj_bias[0:31],proj_mul[0:31],dw_bias[0:31],dw_mul[0:31];
- integer i,j,errors,checked,start_cycle,end_cycle;
+ integer i,j,errors,checked,start_cycle,end_cycle,tb_cycle_count;
  reg sink_hold_valid; reg [31:0] sink_hold_addr,sink_hold_data; reg [15:0] sink_hold_index; reg [3:0] sink_hold_epoch;
  edgembconv_hwacandidate_d4_vstream_v3_mb16_controller dut(
   .clk(clk),.rst_n(rst_n),.cfg_valid(cfg_valid),.cfg_ready(cfg_ready),.cfg_kind(cfg_kind),
@@ -62,9 +62,13 @@ module tb_edgembconv_hwacandidate_d4_vstream_v3_mb16_controller;
 `ifdef V3_NO_BACKPRESSURE
   scratch_read_ready<=1'b1; sink_ready<=1'b1;
 `else
-  scratch_read_ready<=((cycle_count*17+3)%7)!=1;
-  sink_ready<=((cycle_count*13+5)%17)!=4;
+  /* Drive randomized service independently of the child cycle counter.  The
+   * child is allowed to finish before the wrapper's final packed word drains;
+   * tying ready to cycle_count would freeze ready low in that legal state. */
+  scratch_read_ready<=((tb_cycle_count*17+3)%7)!=1;
+  sink_ready<=((tb_cycle_count*13+5)%17)!=4;
 `endif
+  tb_cycle_count=tb_cycle_count+1;
  end
  always @(posedge clk) if(rst_n&&sink_valid&&sink_ready) begin
   if(sink_index!==checked[15:0] || sink_addr!==(checked*4) || sink_epoch!==4'ha || sink_byte_enable!==4'hf)
@@ -89,10 +93,9 @@ module tb_edgembconv_hwacandidate_d4_vstream_v3_mb16_controller;
     sink_hold_index=sink_index; sink_hold_epoch=sink_epoch;
   end
  end
- initial begin #10000000; $display("V3_TIMEOUT cycle=%0d state=%0d words=%0d",cycle_count,dut.u_arithmetic.state,checked);$fatal; end
  initial begin
   clk=0;rst_n=0;cfg_valid=0;cfg_kind=0;cfg_addr=0;cfg_data=0;start_valid=0;start_epoch=0;
-  done_ready=1;sink_ready=1;scratch_read_ready=1;errors=0;checked=0;sink_hold_valid=0;
+  done_ready=1; sink_ready=1;scratch_read_ready=1;errors=0;checked=0;tb_cycle_count=0;sink_hold_valid=0;
   repeat(5) @(posedge clk);rst_n=1;load_all();
   @(negedge clk);while(!start_ready) @(negedge clk);start_epoch=4'ha;start_valid=1;
   @(posedge clk);@(negedge clk);start_valid=0;start_cycle=cycle_count;
@@ -101,6 +104,13 @@ module tb_edgembconv_hwacandidate_d4_vstream_v3_mb16_controller;
   end_cycle=cycle_count;
   if(checked!=OUTB/4) begin $display("V3_WORD_OUTPUT_COUNT %0d",checked);errors=errors+1;end
   if(done_epoch!==4'ha||active_epoch!==4'ha||protocol_errors!=0) errors=errors+1;
+  /* Keep the semantic work ledgers explicit so a faster candidate cannot
+   * pass by dropping PW/DW/RQ work or final writes. */
+  if(pw_mac_count!=32'd786432) begin $display("V3_PW_LEDGER %0d",pw_mac_count);errors=errors+1;end
+  if(dw_mac_count!=32'd73728) begin $display("V3_DW_LEDGER %0d",dw_mac_count);errors=errors+1;end
+  if(dut.u_arithmetic.rq_accept_count!=32'd12288) begin $display("V3_RQ_LEDGER %0d",dut.u_arithmetic.rq_accept_count);errors=errors+1;end
+  if(dut.u_arithmetic.dw_req_count!=dut.u_arithmetic.dw_resp_count || dut.u_arithmetic.dw_req_count!=32'd4418) begin $display("V3_DW_READ_LEDGER %0d/%0d",dut.u_arithmetic.dw_req_count,dut.u_arithmetic.dw_resp_count);errors=errors+1;end
+  if(dut.u_arithmetic.final_commit_count!=32'd8192 || word_sink_fire_count!=32'd2048 || byte_commit_count!=32'd8192) begin $display("V3_SINK_LEDGER final=%0d words=%0d bytes=%0d",dut.u_arithmetic.final_commit_count,word_sink_fire_count,byte_commit_count);errors=errors+1;end
   $display("D4_V3_MB16 words=%0d bytes=%0d cycles=%0d pw_mac=%0d dw_mac=%0d rq_accept=%0d dw_cfg=%0d dw_start=%0d dw_req=%0d dw_resp=%0d final=%0d sink_stall=%0d sink_errors=%0d child_overlap=%0d errors=%0d",checked,byte_commit_count,end_cycle-start_cycle,pw_mac_count,dw_mac_count,dut.u_arithmetic.rq_accept_count,dut.u_arithmetic.dw_config_count,dut.u_arithmetic.dw_start_count,dut.u_arithmetic.dw_req_count,dut.u_arithmetic.dw_resp_count,dut.u_arithmetic.final_commit_count,sink_stall_count,sink_protocol_errors,overlap_cycles,errors);
   if(errors==0) $display("PASS edgembconv_hwacandidate_d4_vstream_v3_mb16_controller exact=8192 aligned_word_sink=2048"); else $fatal;
   $finish;

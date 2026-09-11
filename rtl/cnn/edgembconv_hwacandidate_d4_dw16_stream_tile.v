@@ -108,6 +108,8 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
     reg [5:0] shift_mem [0:15];
 
     reg active;
+    /* Capture a start descriptor before opening the active request state. */
+    reg start_prep_pending;
     reg req_pending;
     reg product_valid;
     reg product_last;
@@ -136,85 +138,267 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
     reg q_product_valid;
     reg signed [31:0] final_sum_reg [0:15];
 
-    integer tap_row_i, tap_col_i;
-    integer output_x_i, output_y_i;
-    integer input_x_i, input_y_i;
-    integer request_addr_i;
+    /* Registered source cursor.  The old request generator reconstructed an
+     * absolute (output, tap) coordinate on every cycle.  Besides duplicating
+     * arithmetic in the v6 adapter, that made tile_x/tile_y feed the BRAM
+     * enable cone.  Keep the current tap's signed row/column and linear
+     * address in narrow registers instead.  The look-ahead register is the
+     * following tap, so the normal response/request crossover remains II=1. */
+    reg signed [8:0] cursor_x_q, cursor_y_q;
+    reg signed [17:0] cursor_linear_q;
+    reg [10:0] cursor_addr_q, cursor_lookahead_addr_q;
+    reg cursor_valid_q, cursor_lookahead_valid_q;
+    reg signed [8:0] cursor_next_x_comb, cursor_next_y_comb;
+    reg signed [17:0] cursor_next_linear_comb;
+    reg cursor_next_valid_comb;
+    reg [10:0] cursor_next_addr_comb;
+    reg signed [8:0] cursor_after_next_x_comb,
+                     cursor_after_next_y_comb;
+    reg signed [17:0] cursor_after_next_linear_comb;
+    reg cursor_after_next_valid_comb;
+    reg [10:0] cursor_after_next_addr_comb;
+    reg signed [8:0] output_cursor_x_comb, output_cursor_y_comb;
+    reg signed [17:0] output_cursor_linear_comb;
+    reg output_cursor_valid_comb;
+    reg signed [8:0] output_lookahead_x_comb,
+                     output_lookahead_y_comb;
+    reg signed [17:0] output_lookahead_linear_comb;
+    reg output_lookahead_valid_comb;
+    reg [10:0] output_cursor_addr_comb, output_lookahead_addr_comb;
+    reg signed [8:0] tile_base_x_q, tile_base_y_q;
+    reg signed [8:0] base_x_q, base_y_q;
+    reg signed [8:0] start_cursor_x_comb, start_cursor_y_comb;
+    reg signed [17:0] start_cursor_linear_comb;
+    reg start_cursor_valid_comb;
+    reg [10:0] start_cursor_addr_comb;
+    reg signed [8:0] start_lookahead_x_comb, start_lookahead_y_comb;
+    reg signed [17:0] start_lookahead_linear_comb;
+    reg start_lookahead_valid_comb;
+    reg [10:0] start_lookahead_addr_comb;
+
     integer pixel_idx_i;
     integer tile_pixels_i;
     integer i;
+    integer start_base_x_i, start_base_y_i;
+    integer start_cursor_x_i, start_cursor_y_i, start_cursor_linear_i;
+    integer start_lookahead_x_i, start_lookahead_y_i,
+            start_lookahead_linear_i;
+    integer prep_cursor_x_i, prep_cursor_y_i, prep_cursor_linear_i;
+    integer prep_lookahead_x_i, prep_lookahead_y_i,
+            prep_lookahead_linear_i;
+    reg signed [8:0] prep_cursor_x_comb, prep_cursor_y_comb;
+    reg signed [17:0] prep_cursor_linear_comb;
+    reg prep_cursor_valid_comb;
+    reg [10:0] prep_cursor_addr_comb;
+    reg signed [8:0] prep_lookahead_x_comb, prep_lookahead_y_comb;
+    reg signed [17:0] prep_lookahead_linear_comb;
+    reg prep_lookahead_valid_comb;
+    reg [10:0] prep_lookahead_addr_comb;
 
     wire start_fire = start_valid && start_ready;
     wire cfg_fire = cfg_valid && cfg_ready;
     wire response_fire = src_resp_valid && src_resp_ready;
 
-    /* Tap coordinates are intentionally explicit case logic: this keeps the
-     * synthesis cone small and avoids a variable divide/modulo implementation
-     * in the request address path. */
+    /* Pixel bookkeeping remains as a sideband/output concern.  It is no
+     * longer used to form the physical source address or request valid. */
     always @* begin
-        case (tap_idx)
-            4'd0: begin tap_row_i = 0; tap_col_i = 0; end
-            4'd1: begin tap_row_i = 0; tap_col_i = 1; end
-            4'd2: begin tap_row_i = 0; tap_col_i = 2; end
-            4'd3: begin tap_row_i = 1; tap_col_i = 0; end
-            4'd4: begin tap_row_i = 1; tap_col_i = 1; end
-            4'd5: begin tap_row_i = 1; tap_col_i = 2; end
-            4'd6: begin tap_row_i = 2; tap_col_i = 0; end
-            4'd7: begin tap_row_i = 2; tap_col_i = 1; end
-            4'd8: begin tap_row_i = 2; tap_col_i = 2; end
-            default: begin tap_row_i = 0; tap_col_i = 0; end
-        endcase
-        output_x_i = tile_x + pixel_x;
-        output_y_i = tile_y + pixel_y;
-        input_x_i = (output_x_i * stride) + tap_col_i - 1;
-        input_y_i = (output_y_i * stride) + tap_row_i - 1;
-        request_addr_i = (input_y_i * in_w) + input_x_i;
         pixel_idx_i = (pixel_y * tile_w) + pixel_x;
         tile_pixels_i = tile_w * tile_h;
     end
 
-    wire tap_in_bounds = (input_x_i >= 0) && (input_x_i < in_w) &&
-                         (input_y_i >= 0) && (input_y_i < in_h);
     wire current_last_tap = (tap_idx == 4'd8);
     wire halo_fire = active && !out_valid && !drain_pending &&
-                     !req_pending && !tap_in_bounds;
+                     !req_pending && !cursor_valid_q;
     wire next_after_response = response_fire && !current_last_tap;
     /* A response and the next request may cross at the same clock edge.  The
-     * request address then uses the following tap, while the product stage
-     * still uses the current tap. */
+     * registered look-ahead address then uses the following tap, while the
+     * product stage still uses the current tap. */
     integer request_tap_i;
-    integer request_row_i, request_col_i, request_x_i, request_y_i;
-    integer request_output_x_i, request_output_y_i;
     always @* begin
         request_tap_i = tap_idx;
         if (next_after_response)
             request_tap_i = tap_idx + 1;
-        case (request_tap_i)
-            0: begin request_row_i = 0; request_col_i = 0; end
-            1: begin request_row_i = 0; request_col_i = 1; end
-            2: begin request_row_i = 0; request_col_i = 2; end
-            3: begin request_row_i = 1; request_col_i = 0; end
-            4: begin request_row_i = 1; request_col_i = 1; end
-            5: begin request_row_i = 1; request_col_i = 2; end
-            6: begin request_row_i = 2; request_col_i = 0; end
-            7: begin request_row_i = 2; request_col_i = 1; end
-            8: begin request_row_i = 2; request_col_i = 2; end
-            default: begin request_row_i = 0; request_col_i = 0; end
-        endcase
-        request_output_x_i = tile_x + pixel_x;
-        request_output_y_i = tile_y + pixel_y;
-        request_x_i = request_output_x_i * stride + request_col_i - 1;
-        request_y_i = request_output_y_i * stride + request_row_i - 1;
     end
-    wire request_tap_in_bounds = (request_x_i >= 0) &&
-                                  (request_x_i < in_w) &&
-                                  (request_y_i >= 0) &&
-                                  (request_y_i < in_h);
+
+    /* Narrow tap cursor.  Only the row/column step and an 18-bit linear
+     * address increment are active in the steady-state request path.  The
+     * resulting valid/address pair is registered at each tap boundary; the
+     * adapter therefore sees a flop-to-flop request descriptor. */
+    always @* begin
+        cursor_next_x_comb = cursor_x_q;
+        cursor_next_y_comb = cursor_y_q;
+        cursor_next_linear_comb = cursor_linear_q;
+        case (tap_idx)
+            4'd0, 4'd1, 4'd3, 4'd4, 4'd6, 4'd7: begin
+                cursor_next_x_comb = cursor_x_q + 9'sd1;
+                cursor_next_linear_comb = cursor_linear_q + 18'sd1;
+            end
+            4'd2, 4'd5: begin
+                cursor_next_x_comb = cursor_x_q - 9'sd2;
+                cursor_next_y_comb = cursor_y_q + 9'sd1;
+                cursor_next_linear_comb = cursor_linear_q +
+                    $signed({10'd0,in_w}) - 18'sd2;
+            end
+            default: begin
+                /* Tap 8 is the final tap.  The next pixel is initialized on
+                 * output acceptance below, after the final vector drains. */
+                cursor_next_x_comb = cursor_x_q;
+                cursor_next_y_comb = cursor_y_q;
+                cursor_next_linear_comb = cursor_linear_q;
+            end
+        endcase
+        cursor_next_valid_comb = (tap_idx < 4'd8) &&
+            (cursor_next_x_comb >= 0) &&
+            (cursor_next_x_comb < $signed({1'b0,in_w})) &&
+            (cursor_next_y_comb >= 0) &&
+            (cursor_next_y_comb < $signed({1'b0,in_h}));
+        cursor_next_addr_comb = cursor_next_valid_comb ?
+                                cursor_next_linear_comb[10:0] : 11'd0;
+
+        cursor_after_next_x_comb = cursor_next_x_comb;
+        cursor_after_next_y_comb = cursor_next_y_comb;
+        cursor_after_next_linear_comb = cursor_next_linear_comb;
+        case (tap_idx)
+            4'd0, 4'd2, 4'd3, 4'd5, 4'd6: begin
+                cursor_after_next_x_comb = cursor_next_x_comb + 9'sd1;
+                cursor_after_next_linear_comb = cursor_next_linear_comb +
+                                                18'sd1;
+            end
+            4'd1, 4'd4: begin
+                cursor_after_next_x_comb = cursor_next_x_comb - 9'sd2;
+                cursor_after_next_y_comb = cursor_next_y_comb + 9'sd1;
+                cursor_after_next_linear_comb = cursor_next_linear_comb +
+                    $signed({10'd0,in_w}) - 18'sd2;
+            end
+            default: begin
+                cursor_after_next_x_comb = cursor_next_x_comb;
+                cursor_after_next_y_comb = cursor_next_y_comb;
+                cursor_after_next_linear_comb = cursor_next_linear_comb;
+            end
+        endcase
+        cursor_after_next_valid_comb = (tap_idx < 4'd7) &&
+            (cursor_after_next_x_comb >= 0) &&
+            (cursor_after_next_x_comb < $signed({1'b0,in_w})) &&
+            (cursor_after_next_y_comb >= 0) &&
+            (cursor_after_next_y_comb < $signed({1'b0,in_h}));
+        cursor_after_next_addr_comb = cursor_after_next_valid_comb ?
+                                      cursor_after_next_linear_comb[10:0] :
+                                      11'd0;
+    end
+
+    /* Start and post-output initialization are intentionally outside the
+     * steady-state cursor path.  They establish the first tap and its
+     * registered look-ahead from the transaction descriptor. */
+    always @* begin
+        start_base_x_i = start_tile_x * start_stride;
+        start_base_y_i = start_tile_y * start_stride;
+        start_cursor_x_i = start_base_x_i - 1;
+        start_cursor_y_i = start_base_y_i - 1;
+        start_cursor_linear_i = (start_cursor_y_i * start_in_w) +
+                                start_cursor_x_i;
+        start_lookahead_x_i = start_cursor_x_i + 1;
+        start_lookahead_y_i = start_cursor_y_i;
+        start_lookahead_linear_i = start_cursor_linear_i + 1;
+        start_cursor_x_comb = start_cursor_x_i[8:0];
+        start_cursor_y_comb = start_cursor_y_i[8:0];
+        start_cursor_linear_comb = start_cursor_linear_i[17:0];
+        start_cursor_valid_comb = (start_cursor_x_i >= 0) &&
+            (start_cursor_x_i < start_in_w) &&
+            (start_cursor_y_i >= 0) && (start_cursor_y_i < start_in_h);
+        start_cursor_addr_comb = start_cursor_valid_comb ?
+                                 start_cursor_linear_i[10:0] : 11'd0;
+        start_lookahead_x_comb = start_lookahead_x_i[8:0];
+        start_lookahead_y_comb = start_lookahead_y_i[8:0];
+        start_lookahead_linear_comb = start_lookahead_linear_i[17:0];
+        start_lookahead_valid_comb = (start_lookahead_x_i >= 0) &&
+            (start_lookahead_x_i < start_in_w) &&
+            (start_lookahead_y_i >= 0) &&
+            (start_lookahead_y_i < start_in_h);
+        start_lookahead_addr_comb = start_lookahead_valid_comb ?
+                                    start_lookahead_linear_i[10:0] : 11'd0;
+
+        output_cursor_x_comb = cursor_x_q;
+        output_cursor_y_comb = cursor_y_q;
+        output_cursor_linear_comb = cursor_linear_q;
+        if (pixel_x == (tile_w - 1'b1)) begin
+            output_cursor_x_comb = tile_base_x_q - 9'sd1;
+            output_cursor_y_comb = cursor_y_q +
+                                   $signed({7'd0,stride}) - 9'sd2;
+            if (stride == 2'd1)
+                output_cursor_linear_comb = cursor_linear_q -
+                    $signed({10'd0,in_w}) +
+                    (tile_base_x_q - 9'sd1 - cursor_x_q);
+            else
+                output_cursor_linear_comb = cursor_linear_q +
+                    (tile_base_x_q - 9'sd1 - cursor_x_q);
+        end else begin
+            output_cursor_x_comb = cursor_x_q +
+                                   $signed({7'd0,stride}) - 9'sd2;
+            output_cursor_y_comb = cursor_y_q - 9'sd2;
+            if (stride == 2'd1)
+                output_cursor_linear_comb = cursor_linear_q -
+                    ($signed({10'd0,in_w}) <<< 1) - 18'sd1;
+            else
+                output_cursor_linear_comb = cursor_linear_q -
+                    ($signed({10'd0,in_w}) <<< 1);
+        end
+        output_cursor_valid_comb =
+            (output_cursor_x_comb >= 0) &&
+            (output_cursor_x_comb < $signed({1'b0,in_w})) &&
+            (output_cursor_y_comb >= 0) &&
+            (output_cursor_y_comb < $signed({1'b0,in_h}));
+        output_cursor_addr_comb = output_cursor_valid_comb ?
+                                  output_cursor_linear_comb[10:0] : 11'd0;
+        output_lookahead_x_comb = output_cursor_x_comb + 9'sd1;
+        output_lookahead_y_comb = output_cursor_y_comb;
+        output_lookahead_linear_comb = output_cursor_linear_comb + 18'sd1;
+        output_lookahead_valid_comb =
+            (output_lookahead_x_comb >= 0) &&
+            (output_lookahead_x_comb < $signed({1'b0,in_w})) &&
+            (output_lookahead_y_comb >= 0) &&
+            (output_lookahead_y_comb < $signed({1'b0,in_h}));
+        output_lookahead_addr_comb = output_lookahead_valid_comb ?
+                                     output_lookahead_linear_comb[10:0] :
+                                     11'd0;
+    end
+
+    /* This cone starts exclusively from descriptor registers captured by
+     * start_fire.  The prep cycle writes the initial tap and look-ahead
+     * cursor, so live scheduler start inputs cannot reach a source request. */
+    always @* begin
+        prep_cursor_x_i = tile_base_x_q - 1;
+        prep_cursor_y_i = tile_base_y_q - 1;
+        prep_cursor_linear_i = (prep_cursor_y_i * in_w) + prep_cursor_x_i;
+        prep_lookahead_x_i = prep_cursor_x_i + 1;
+        prep_lookahead_y_i = prep_cursor_y_i;
+        prep_lookahead_linear_i = prep_cursor_linear_i + 1;
+        prep_cursor_x_comb = prep_cursor_x_i[8:0];
+        prep_cursor_y_comb = prep_cursor_y_i[8:0];
+        prep_cursor_linear_comb = prep_cursor_linear_i[17:0];
+        prep_cursor_valid_comb = (prep_cursor_x_i >= 0) &&
+            (prep_cursor_x_i < in_w) && (prep_cursor_y_i >= 0) &&
+            (prep_cursor_y_i < in_h);
+        prep_cursor_addr_comb = prep_cursor_valid_comb ?
+                                prep_cursor_linear_i[10:0] : 11'd0;
+        prep_lookahead_x_comb = prep_lookahead_x_i[8:0];
+        prep_lookahead_y_comb = prep_lookahead_y_i[8:0];
+        prep_lookahead_linear_comb = prep_lookahead_linear_i[17:0];
+        prep_lookahead_valid_comb = (prep_lookahead_x_i >= 0) &&
+            (prep_lookahead_x_i < in_w) && (prep_lookahead_y_i >= 0) &&
+            (prep_lookahead_y_i < in_h);
+        prep_lookahead_addr_comb = prep_lookahead_valid_comb ?
+                                   prep_lookahead_linear_i[10:0] : 11'd0;
+    end
+
     wire request_is_allowed = active && !out_valid && !drain_pending &&
-                              request_tap_in_bounds;
-    assign src_req_valid = request_is_allowed && (!req_pending || next_after_response);
+                              (next_after_response ?
+                               cursor_lookahead_valid_q : cursor_valid_q);
+    assign src_req_valid = request_is_allowed &&
+                           (!req_pending || next_after_response);
     assign src_req_addr = request_is_allowed
-                        ? (request_y_i * in_w + request_x_i) : 32'd0;
+                        ? (next_after_response ?
+                           {21'd0,cursor_lookahead_addr_q} :
+                           {21'd0,cursor_addr_q}) : 32'd0;
     assign src_req_pixel_idx = pixel_idx_i[7:0];
     assign src_req_tap_idx = request_tap_i[3:0];
     assign src_req_first_tap = (request_tap_i == 0);
@@ -366,13 +550,16 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
         end
     end
 
-    assign cfg_ready = rst_n && !active && !out_valid && !done_valid;
-    assign start_ready = rst_n && !active && !out_valid && !done_valid;
-    assign busy = active || out_valid || done_valid;
+    assign cfg_ready = rst_n && !active && !start_prep_pending &&
+                       !out_valid && !done_valid;
+    assign start_ready = rst_n && !active && !start_prep_pending &&
+                         !out_valid && !done_valid;
+    assign busy = active || start_prep_pending || out_valid || done_valid;
 
     always @(posedge clk) begin
         if (!rst_n) begin
             active <= 1'b0;
+            start_prep_pending <= 1'b0;
             req_pending <= 1'b0;
             product_valid <= 1'b0;
             product_last <= 1'b0;
@@ -411,6 +598,17 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
             source_stall_count <= 32'd0;
             output_stall_count <= 32'd0;
             protocol_errors <= 32'd0;
+            cursor_x_q <= 9'sd0;
+            cursor_y_q <= 9'sd0;
+            cursor_linear_q <= 18'sd0;
+            cursor_addr_q <= 11'd0;
+            cursor_lookahead_addr_q <= 11'd0;
+            cursor_valid_q <= 1'b0;
+            cursor_lookahead_valid_q <= 1'b0;
+            tile_base_x_q <= 9'sd0;
+            tile_base_y_q <= 9'sd0;
+            base_x_q <= 9'sd0;
+            base_y_q <= 9'sd0;
             for (i = 0; i < 16; i = i + 1) begin
                 product_reg[i] <= 16'sd0;
                 acc[i] <= 32'sd0;
@@ -464,7 +662,8 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                     start_tile_w == 0 || start_tile_h == 0 ||
                     start_tile_w > MAX_TILE_W || start_tile_h > MAX_TILE_H)
                     protocol_errors <= protocol_errors + 1'b1;
-                active <= 1'b1;
+                active <= 1'b0;
+                start_prep_pending <= 1'b1;
                 req_pending <= 1'b0;
                 product_valid <= 1'b0;
                 product_last <= 1'b0;
@@ -487,6 +686,10 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                 activation_max <= start_activation_max;
                 epoch <= start_epoch;
                 transaction_metadata <= start_metadata;
+                tile_base_x_q <= start_base_x_i[8:0];
+                tile_base_y_q <= start_base_y_i[8:0];
+                base_x_q <= start_base_x_i[8:0];
+                base_y_q <= start_base_y_i[8:0];
                 cycle_count <= 32'd0;
                 tap_count <= 32'd0;
                 source_word_count <= 32'd0;
@@ -494,6 +697,18 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                 output_stall_count <= 32'd0;
                 for (i = 0; i < 16; i = i + 1)
                     acc[i] <= 32'sd0;
+            end
+
+            if (start_prep_pending) begin
+                cursor_x_q <= prep_cursor_x_comb;
+                cursor_y_q <= prep_cursor_y_comb;
+                cursor_linear_q <= prep_cursor_linear_comb;
+                cursor_addr_q <= prep_cursor_addr_comb;
+                cursor_valid_q <= prep_cursor_valid_comb;
+                cursor_lookahead_addr_q <= prep_lookahead_addr_comb;
+                cursor_lookahead_valid_q <= prep_lookahead_valid_comb;
+                active <= 1'b1;
+                start_prep_pending <= 1'b0;
             end
 
             if (request_fire)
@@ -511,9 +726,16 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                 for (i = 0; i < 16; i = i + 1)
                     product_reg[i] <= tap_product[i];
                 product_last <= current_last_tap;
-                if (!current_last_tap)
+                if (!current_last_tap) begin
                     tap_idx <= tap_idx + 1'b1;
-                else
+                    cursor_x_q <= cursor_next_x_comb;
+                    cursor_y_q <= cursor_next_y_comb;
+                    cursor_linear_q <= cursor_next_linear_comb;
+                    cursor_addr_q <= cursor_next_addr_comb;
+                    cursor_valid_q <= cursor_next_valid_comb;
+                    cursor_lookahead_addr_q <= cursor_after_next_addr_comb;
+                    cursor_lookahead_valid_q <= cursor_after_next_valid_comb;
+                end else
                     drain_pending <= 1'b1;
             end
 
@@ -566,6 +788,13 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                     done_epoch <= epoch;
                     tap_idx <= 4'd0;
                     drain_pending <= 1'b0;
+                    cursor_x_q <= 9'sd0;
+                    cursor_y_q <= 9'sd0;
+                    cursor_linear_q <= 18'sd0;
+                    cursor_addr_q <= 11'd0;
+                    cursor_lookahead_addr_q <= 11'd0;
+                    cursor_valid_q <= 1'b0;
+                    cursor_lookahead_valid_q <= 1'b0;
                 end else begin
                     if (pixel_x == tile_w - 1) begin
                         pixel_x <= 8'd0;
@@ -576,6 +805,20 @@ module edgembconv_hwacandidate_d4_dw16_stream_tile #(
                     tap_idx <= 4'd0;
                     drain_pending <= 1'b0;
                     req_pending <= 1'b0;
+                    if (pixel_x == tile_w - 1'b1) begin
+                        base_x_q <= tile_base_x_q;
+                        base_y_q <= base_y_q + $signed({7'd0,stride});
+                    end else begin
+                        base_x_q <= base_x_q + $signed({7'd0,stride});
+                        base_y_q <= base_y_q;
+                    end
+                    cursor_x_q <= output_cursor_x_comb;
+                    cursor_y_q <= output_cursor_y_comb;
+                    cursor_linear_q <= output_cursor_linear_comb;
+                    cursor_addr_q <= output_cursor_addr_comb;
+                    cursor_valid_q <= output_cursor_valid_comb;
+                    cursor_lookahead_addr_q <= output_lookahead_addr_comb;
+                    cursor_lookahead_valid_q <= output_lookahead_valid_comb;
                     for (i = 0; i < 16; i = i + 1)
                         acc[i] <= 32'sd0;
                 end

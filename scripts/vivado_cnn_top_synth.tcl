@@ -91,6 +91,11 @@ set rtl_files [list \
     "rtl/cnn/feature_sram_pingpong.v" \
     "rtl/cnn/status_counter.v" \
     "rtl/cnn/descriptor_fetch.v" \
+    "rtl/cnn/ds_group_feature_word_address_adapter.v" \
+    "rtl/cnn/ds_group_published_shared64_sweep.v" \
+    "rtl/cnn/ds_group_published_shared64_runner_adapter.v" \
+    "rtl/cnn/ds_group_shared64_output_skid.v" \
+    "rtl/cnn/ds_group_published_shared64_top_adapter.v" \
     "rtl/cnn/cnn_layer_runner.v" \
     "rtl/cnn/cnn_top_ctrl.v" \
     "rtl/cnn/cnn_top.v" \

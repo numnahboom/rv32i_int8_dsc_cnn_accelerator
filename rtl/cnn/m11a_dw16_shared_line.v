@@ -6,11 +6,12 @@
  *
  * The engine is deliberately layer-agnostic: DS1 is one 16-channel group and
  * DS2 is two sequential 16-channel groups.  For every output group it loads
- * three source rows into a fixed 3-line 128-bit store, then consumes the nine
- * taps in raster order.  A halo tap never emits a memory request and is
- * supplied with the descriptor's zero-point value.  Row bases and the row
- * increment are registered once at start; the request address thereafter is
- * only an incrementing cursor.
+ * three source rows into fixed 3-line 128-bit stores, once for each valid
+ * 16-channel input group, then consumes every output column from those
+ * banks.  A halo tap never emits a memory request and is supplied with the
+ * descriptor's zero-point value.  Row bases and the row increment are
+ * registered once at start; each load request thereafter is only an
+ * incrementing cursor.
  */
 module m11a_dw16_shared_line (
     input  wire         clk,
@@ -69,6 +70,7 @@ module m11a_dw16_shared_line (
     localparam [3:0] ST_DONE       = 4'd7;
     localparam [3:0] ST_RQ_WAIT    = 4'd8;
     localparam [3:0] ST_RQ_FIRE    = 4'd9;
+    localparam [3:0] ST_TAP_DRAIN  = 4'd10;
 
     reg [3:0] state;
     reg [1:0] layer_r;
@@ -81,15 +83,18 @@ module m11a_dw16_shared_line (
     reg [5:0] out_h_r, out_w_r;
     reg [1:0] group_count_r;
 
-    /* Four 36-bit-equivalent RAM-shaped slices per logical line can be
-     * inferred from these three 128-bit arrays by Vivado.  The active design
-     * never allocates a layer-sized feature frame. */
-    (* ram_style = "block" *) reg [127:0] line0_mem [0:31];
-    (* ram_style = "block" *) reg [127:0] line1_mem [0:31];
-    (* ram_style = "block" *) reg [127:0] line2_mem [0:31];
+    /* Each 16-channel group owns an independent three-line bank.  The six
+     * fixed 128-bit arrays are small row caches, not a layer-sized frame. */
+    (* ram_style = "block" *) reg [127:0] line0_g0_mem [0:31];
+    (* ram_style = "block" *) reg [127:0] line1_g0_mem [0:31];
+    (* ram_style = "block" *) reg [127:0] line2_g0_mem [0:31];
+    (* ram_style = "block" *) reg [127:0] line0_g1_mem [0:31];
+    (* ram_style = "block" *) reg [127:0] line1_g1_mem [0:31];
+    (* ram_style = "block" *) reg [127:0] line2_g1_mem [0:31];
     reg line0_valid, line1_valid, line2_valid;
 
     reg [1:0] load_slot;
+    reg [1:0] load_group;
     reg [5:0] load_x;
     reg [31:0] load_addr;
     reg [31:0] center_row_addr;
@@ -150,6 +155,13 @@ module m11a_dw16_shared_line (
     reg [127:0] tap_word;
     reg signed [7:0] tap_act [0:15];
     reg signed [7:0] tap_wgt [0:15];
+    /* Register the selected activation/weight operands before they fan into
+     * the sixteen fixed DSP columns.  The source-side tap/column decode and
+     * distributed-memory read were otherwise routed directly to DSP A/B. */
+    reg signed [7:0] tap_act_r [0:15];
+    reg signed [7:0] tap_wgt_r [0:15];
+    reg tap_mac_valid;
+    reg tap_mac_clear;
     integer li;
 
     /* The nine tap positions are decoded explicitly.  This keeps the live
@@ -189,9 +201,30 @@ module m11a_dw16_shared_line (
         tap_word = 128'd0;
         if (tap_spatial_valid && tap_line_valid) begin
             case (tap_line)
-                2'd0: if (line0_valid) tap_word = line0_mem[tap_x_addr[4:0]];
-                2'd1: if (line1_valid) tap_word = line1_mem[tap_x_addr[4:0]];
-                default: if (line2_valid) tap_word = line2_mem[tap_x_addr[4:0]];
+                2'd0: begin
+                    if (line0_valid) begin
+                        if (group_r == 2'd0)
+                            tap_word = line0_g0_mem[tap_x_addr[4:0]];
+                        else
+                            tap_word = line0_g1_mem[tap_x_addr[4:0]];
+                    end
+                end
+                2'd1: begin
+                    if (line1_valid) begin
+                        if (group_r == 2'd0)
+                            tap_word = line1_g0_mem[tap_x_addr[4:0]];
+                        else
+                            tap_word = line1_g1_mem[tap_x_addr[4:0]];
+                    end
+                end
+                default: begin
+                    if (line2_valid) begin
+                        if (group_r == 2'd0)
+                            tap_word = line2_g0_mem[tap_x_addr[4:0]];
+                        else
+                            tap_word = line2_g1_mem[tap_x_addr[4:0]];
+                    end
+                end
             endcase
         end else begin
             tap_word = {16{input_zp_r}};
@@ -209,9 +242,9 @@ module m11a_dw16_shared_line (
     generate
         for (gd = 0; gd < 16; gd = gd + 1) begin : GEN_DW16_MAC
             m11a_dsp48e1_int8_accum u_dsp48e1 (
-                .clk(clk), .rst_p(!rst_n), .ce(state == ST_TAP),
-                .clear_acc((state == ST_TAP) && (tap_idx == 4'd0)),
-                .a_in(tap_act[gd]), .b_in(tap_wgt[gd]),
+                .clk(clk), .rst_p(!rst_n), .ce(tap_mac_valid),
+                .clear_acc(tap_mac_clear),
+                .a_in(tap_act_r[gd]), .b_in(tap_wgt_r[gd]),
                 .p_out(dw_accum_dsp[gd])
             );
         end
@@ -259,9 +292,15 @@ module m11a_dw16_shared_line (
             input_zp_r <= 0; dw_zp_r <= 0; dw_min_r <= 0; dw_max_r <= 127;
             out_h_r <= 0; out_w_r <= 0; group_count_r <= 0;
             line0_valid <= 0; line1_valid <= 0; line2_valid <= 0;
-            load_slot <= 0; load_x <= 0; load_addr <= 0; center_row_addr <= 0;
+            load_slot <= 0; load_group <= 0; load_x <= 0; load_addr <= 0; center_row_addr <= 0;
             center_row <= 0; out_row <= 0; out_col <= 0; group_r <= 0;
             tap_idx <= 0;
+            tap_mac_valid <= 1'b0;
+            tap_mac_clear <= 1'b0;
+            for (i = 0; i < 16; i = i + 1) begin
+                tap_act_r[i] <= 8'sd0;
+                tap_wgt_r[i] <= 8'sd0;
+            end
             dw_data_r0 <= 0; dw_data_r1 <= 0; dw_data_r2 <= 0; dw_data_r3 <= 0;
             dw_valid_r <= 0; done_r <= 0; error_r <= 0;
             rq_group <= 0;
@@ -292,6 +331,13 @@ module m11a_dw16_shared_line (
                 out_row <= 0;
                 out_col <= 0;
                 group_r <= 0;
+                load_group <= 0;
+                load_slot <= 0;
+                load_x <= 0;
+                line0_valid <= 1'b0;
+                line1_valid <= 1'b0;
+                line2_valid <= 1'b0;
+                tap_idx <= 0;
                 pixel_r <= 0;
                 context_ordinal_r <= 0;
                 context_pixel_r <= 0;
@@ -305,6 +351,8 @@ module m11a_dw16_shared_line (
                 dw_data_r2 <= 32'd0;
                 dw_data_r3 <= 32'd0;
                 rq_group <= 2'd0;
+                tap_mac_valid <= 1'b0;
+                tap_mac_clear <= 1'b0;
                 done_r <= 0;
                 error_r <= 0;
                 state <= ST_LOAD_PREP;
@@ -319,8 +367,18 @@ module m11a_dw16_shared_line (
                     else if (load_slot == 1) line1_valid <= 1'b0;
                     else line2_valid <= 1'b0;
                     if (load_slot == 2) begin
-                        tap_idx <= 0;
-                        state <= ST_TAP;
+                        if ((load_group == 0) && (group_count_r == 2)) begin
+                            /* DS2 loads both channel banks before the first
+                             * output column.  The line-valid bits are shared
+                             * because both banks have the same spatial halo. */
+                            load_group <= 1;
+                            load_slot <= 0;
+                            state <= ST_LOAD_PREP;
+                        end else begin
+                            tap_idx <= 0;
+                            group_r <= 0;
+                            state <= ST_TAP;
+                        end
                     end else begin
                         load_slot <= load_slot + 1'b1;
                     end
@@ -330,11 +388,11 @@ module m11a_dw16_shared_line (
                     else line2_valid <= 1'b1;
                     load_x <= 0;
                     if (load_slot == 0)
-                        load_addr <= center_row_addr - row_stride_r + ((group_r == 1) ? 32'd16 : 32'd0);
+                        load_addr <= center_row_addr - row_stride_r + ((load_group == 1) ? 32'd16 : 32'd0);
                     else if (load_slot == 1)
-                        load_addr <= center_row_addr + ((group_r == 1) ? 32'd16 : 32'd0);
+                        load_addr <= center_row_addr + ((load_group == 1) ? 32'd16 : 32'd0);
                     else
-                        load_addr <= center_row_addr + row_stride_r + ((group_r == 1) ? 32'd16 : 32'd0);
+                        load_addr <= center_row_addr + row_stride_r + ((load_group == 1) ? 32'd16 : 32'd0);
                     state <= ST_LOAD_REQ;
                 end
             end else if (state == ST_LOAD_REQ) begin
@@ -342,14 +400,28 @@ module m11a_dw16_shared_line (
                     state <= ST_LOAD_WAIT;
             end else if (state == ST_LOAD_WAIT) begin
                 if (mem_resp_valid) begin
-                    if (load_slot == 0) line0_mem[load_x[4:0]] <= mem_resp_data;
-                    else if (load_slot == 1) line1_mem[load_x[4:0]] <= mem_resp_data;
-                    else line2_mem[load_x[4:0]] <= mem_resp_data;
+                    if (load_slot == 0) begin
+                        if (load_group == 0) line0_g0_mem[load_x[4:0]] <= mem_resp_data;
+                        else line0_g1_mem[load_x[4:0]] <= mem_resp_data;
+                    end else if (load_slot == 1) begin
+                        if (load_group == 0) line1_g0_mem[load_x[4:0]] <= mem_resp_data;
+                        else line1_g1_mem[load_x[4:0]] <= mem_resp_data;
+                    end else begin
+                        if (load_group == 0) line2_g0_mem[load_x[4:0]] <= mem_resp_data;
+                        else line2_g1_mem[load_x[4:0]] <= mem_resp_data;
+                    end
                     input_count_r <= input_count_r + 1'b1;
                     if (load_x == in_w_r - 1'b1) begin
                         if (load_slot == 2) begin
-                            tap_idx <= 0;
-                            state <= ST_TAP;
+                            if ((load_group == 0) && (group_count_r == 2)) begin
+                                load_group <= 1;
+                                load_slot <= 0;
+                                state <= ST_LOAD_PREP;
+                            end else begin
+                                tap_idx <= 0;
+                                group_r <= 0;
+                                state <= ST_TAP;
+                            end
                         end else begin
                             load_slot <= load_slot + 1'b1;
                             state <= ST_LOAD_PREP;
@@ -366,6 +438,12 @@ module m11a_dw16_shared_line (
                     end
                 end
             end else if (state == ST_TAP) begin
+                for (i = 0; i < 16; i = i + 1) begin
+                    tap_act_r[i] <= tap_act[i];
+                    tap_wgt_r[i] <= tap_wgt[i];
+                end
+                tap_mac_valid <= 1'b1;
+                tap_mac_clear <= (tap_idx == 4'd0);
                 dw_mac_count_r <= dw_mac_count_r + 32'd16;
                 if ((!tap_spatial_valid || !tap_line_valid) && group_r == 0)
                     pad_count_r <= pad_count_r + 1'b1;
@@ -375,10 +453,17 @@ module m11a_dw16_shared_line (
                     dw_data_r1 <= 32'd0;
                     dw_data_r2 <= 32'd0;
                     dw_data_r3 <= 32'd0;
-                    state <= ST_RQ;
+                    state <= ST_TAP_DRAIN;
                 end else begin
                     tap_idx <= tap_idx + 1'b1;
                 end
+            end else if (state == ST_TAP_DRAIN) begin
+                /* tap_mac_valid is still high at this edge, so the registered
+                 * tap 8 operands commit into the DSP PREGs.  RQ samples those
+                 * completed accumulators on the following edge. */
+                tap_mac_valid <= 1'b0;
+                tap_mac_clear <= 1'b0;
+                state <= ST_RQ;
             end else if (state == ST_RQ) begin
                 /* Capture the dynamic channel/bias selection at a real
                  * register boundary before starting the four-lane RQ DSP
@@ -431,6 +516,7 @@ module m11a_dw16_shared_line (
                                 center_row <= center_row + ((stride_r == 2) ? 2 : 1);
                                 center_row_addr <= center_row_addr + row_step_r;
                                 group_r <= 0;
+                                load_group <= 0;
                                 load_slot <= 0;
                                 state <= ST_LOAD_PREP;
                             end
@@ -442,23 +528,28 @@ module m11a_dw16_shared_line (
                                 context_ordinal_r <= context_ordinal_r + 1'b1;
                             end else begin
                                 context_pixel_r <= context_pixel_r + 1'b1;
+                                end
+                                group_r <= 0;
+                                tap_idx <= 0;
+                                /* Both channel banks remain resident for the
+                                 * entire output row.  Only the next row
+                                 * invalidates this cache and starts a reload. */
+                                state <= ST_TAP;
                             end
-                            group_r <= 0;
+                        end else begin
+                            group_r <= group_r + 1'b1;
                             tap_idx <= 0;
-                            /* DS2 reuses the one three-line store for the
-                             * second 16-channel group.  Once group 1 has
-                             * been emitted, group 0 must be reloaded before
-                             * the next output column; otherwise the next
-                             * group-0 vector consumes group-1 activations. */
-                            load_slot <= 0;
-                            state <= (group_count_r == 2) ? ST_LOAD_PREP : ST_TAP;
+                            state <= ST_TAP;
                         end
-                    end else begin
-                        group_r <= group_r + 1'b1;
-                        load_slot <= 0;
-                        state <= ST_LOAD_PREP;
-                    end
                 end
+            end
+
+            /* Keep the layer endpoint reusable.  The runtime top holds the
+             * completion fence for one cycle, then may launch the next C0
+             * descriptor (DS1 followed by DS2) without resetting the core. */
+            if (state == ST_DONE) begin
+                done_r <= 1'b0;
+                state <= ST_IDLE;
             end
         end
     end

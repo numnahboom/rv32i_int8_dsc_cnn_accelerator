@@ -14,6 +14,8 @@ module tb_m11a_runtime_dw_pw_core;
     integer output_words_expected;
     integer expected_dw_mac, expected_dw_vec, expected_pw_tokens;
     integer expected_pw_mac, expected_out_words;
+    integer expected_input_reads;
+    integer expected_center_row, expected_valid_rows;
     integer fd, sink_fd, rc, ly, kd, idx, address, mask, dataw;
     integer sink_layer, sink_word, sink_addr, sink_data, sink_mask;
     integer sink_owner, sink_epoch, sink_context, sink_req_cycle, sink_resp_cycle;
@@ -32,6 +34,16 @@ module tb_m11a_runtime_dw_pw_core;
     integer expected_nonzero;
     integer first_mismatch_index;
     integer dw_trace_count;
+    integer pw_token_cycle;
+    integer pw_token_last_cycle;
+    integer pw_token_fire_count;
+    integer pw_token_max_gap;
+    integer pw_token_gap_gt1;
+    integer pw_token_run_len;
+    integer pw_token_max_run;
+    integer pw_token_seen;
+    integer pw_row_capture_count;
+    integer pw_row_token_overlap_count;
 
     string fixture_dir;
 
@@ -187,6 +199,16 @@ module tb_m11a_runtime_dw_pw_core;
             stall_seen <= 0;
             first_mismatch_index <= -1;
             dw_trace_count <= 0;
+            pw_token_cycle <= 0;
+            pw_token_last_cycle <= 0;
+            pw_token_fire_count <= 0;
+            pw_token_max_gap <= 0;
+            pw_token_gap_gt1 <= 0;
+            pw_token_run_len <= 0;
+            pw_token_max_run <= 0;
+            pw_token_seen <= 0;
+            pw_row_capture_count <= 0;
+            pw_row_token_overlap_count <= 0;
             stalled_valid <= 1'b0;
             stalled_last <= 0;
             stalled_addr <= 0;
@@ -195,6 +217,32 @@ module tb_m11a_runtime_dw_pw_core;
             stalled_context <= 0;
             stalled_owner <= 0;
         end else begin
+            pw_token_cycle <= pw_token_cycle + 1;
+            if (dut.pw64.row_capture) begin
+                pw_row_capture_count <= pw_row_capture_count + 1;
+                if (dut.pw64.token_fire)
+                    pw_row_token_overlap_count <= pw_row_token_overlap_count + 1;
+            end
+            if (dut.pw64.token_fire) begin
+                pw_token_fire_count <= pw_token_fire_count + 1;
+                if (pw_token_seen) begin
+                    if ((pw_token_cycle - pw_token_last_cycle) > pw_token_max_gap)
+                        pw_token_max_gap <= pw_token_cycle - pw_token_last_cycle;
+                    if ((pw_token_cycle - pw_token_last_cycle) > 1) begin
+                        pw_token_gap_gt1 <= pw_token_gap_gt1 + 1;
+                        pw_token_run_len <= 1;
+                    end else begin
+                        pw_token_run_len <= pw_token_run_len + 1;
+                        if ((pw_token_run_len + 1) > pw_token_max_run)
+                            pw_token_max_run <= pw_token_run_len + 1;
+                    end
+                end else begin
+                    pw_token_run_len <= 1;
+                    pw_token_max_run <= 1;
+                end
+                pw_token_last_cycle <= pw_token_cycle;
+                pw_token_seen <= 1;
+            end
             if (dut.dw_valid && dut.dw_ready && dw_trace_count < 4) begin
                 $display("M11A_DW_TRACE pixel=%0d group=%0d data=%032h", dut.dw_pixel, dut.dw_group, dut.dw_data);
                 dw_trace_count <= dw_trace_count + 1;
@@ -271,6 +319,19 @@ module tb_m11a_runtime_dw_pw_core;
         expected_pw_tokens = 8192;
         expected_pw_mac = 524288;
         expected_out_words = output_words_expected;
+        /* The line cache must load each valid spatial row once per input
+         * group for every output row.  For the fixed 32x32 fixtures this is
+         * 3008 beats for both DS1 and DS2 (DS2 has half as many output rows
+         * but two independently loaded channel banks). */
+        expected_input_reads = 0;
+        for (i = 0; i < ((layer_sel == 1) ? 32 : 16); i = i + 1) begin
+            expected_center_row = (layer_sel == 1) ? i : (i << 1);
+            expected_valid_rows = 1;
+            if (expected_center_row > 0) expected_valid_rows = expected_valid_rows + 1;
+            if (expected_center_row + 1 < 32) expected_valid_rows = expected_valid_rows + 1;
+            expected_input_reads = expected_input_reads +
+                                   expected_valid_rows * 32 * ((layer_sel == 1) ? 1 : 2);
+        end
         for (i = 0; i < 872; i = i + 1) cfg_mem[i] = 0;
         for (i = 0; i < 65536; i = i + 1) input_mem[i] = 0;
         for (i = 0; i < 32768; i = i + 1) expected_mem[i] = 0;
@@ -355,19 +416,24 @@ module tb_m11a_runtime_dw_pw_core;
             @(posedge clk);
             cycles = cycles + 1;
         end
-        $display("M11A_LAYER%0d_%s cycles=%0d cfg=%0d out=%0d dw_vec=%0d dw_mac=%0d pw_tokens=%0d pw_mac=%0d input_reads=%0d pad=%0d input_nz=%0d expected_nz=%0d mismatches=%0d protocol_errors=%0d stalls=%0d error=%b ec=%h",
+        $display("M11A_LAYER%0d_%s cycles=%0d cfg=%0d out=%0d dw_vec=%0d dw_mac=%0d pw_tokens=%0d pw_mac=%0d input_reads=%0d expected_input_reads=%0d pad=%0d input_nz=%0d expected_nz=%0d mismatches=%0d protocol_errors=%0d stalls=%0d pw_fire=%0d pw_rows=%0d pw_overlap=%0d pw_max_gap=%0d pw_gap_gt1=%0d pw_max_run=%0d error=%b ec=%h",
                  layer_sel,
                  (done && !error && mismatches == 0 && protocol_errors == 0 &&
                   out_seen == expected_out_words && dw_vector_count == expected_dw_vec &&
                   dw_mac_count == expected_dw_mac && pw_token_count == expected_pw_tokens &&
-                  pw_mac_count == expected_pw_mac && out_word_count == expected_out_words) ? "NONZERO_FIXTURE_PASS" : "NONZERO_FIXTURE_FAIL",
+                  pw_mac_count == expected_pw_mac && out_word_count == expected_out_words &&
+                  input_read_count == expected_input_reads) ? "NONZERO_FIXTURE_PASS" : "NONZERO_FIXTURE_FAIL",
                  cycles, cfg_count, out_seen, dw_vector_count, dw_mac_count,
-                 pw_token_count, pw_mac_count, input_read_count, padding_tap_count,
-                 input_nonzero, expected_nonzero, mismatches, protocol_errors, stall_seen, error, error_code);
+                 pw_token_count, pw_mac_count, input_read_count, expected_input_reads, padding_tap_count,
+                 input_nonzero, expected_nonzero, mismatches, protocol_errors, stall_seen,
+                 pw_token_fire_count, pw_row_capture_count, pw_row_token_overlap_count,
+                 pw_token_max_gap, pw_token_gap_gt1, pw_token_max_run,
+                 error, error_code);
         if (!done || error || mismatches != 0 || protocol_errors != 0 ||
             out_seen != expected_out_words || dw_vector_count != expected_dw_vec ||
             dw_mac_count != expected_dw_mac || pw_token_count != expected_pw_tokens ||
-            pw_mac_count != expected_pw_mac || out_word_count != expected_out_words)
+            pw_mac_count != expected_pw_mac || out_word_count != expected_out_words ||
+            input_read_count != expected_input_reads)
             $fatal(1, "M11.1-A exact unit check failed");
         $finish;
     end

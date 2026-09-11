@@ -18,6 +18,10 @@
 #define MODEL_FLAG_SRAM_SWAP_ON_DONE  (1u << 4)
 #define MODEL_FLAG_TILED_DS_BLOCK     (1u << 5)
 #define MODEL_FLAG_TILED_STEM         MODEL_FLAG_TILED_DS_BLOCK
+/* When set on a DS descriptor, weight addresses name little-endian packed
+ * INT8 words (four consecutive bytes).  Quantization arrays stay 32-bit
+ * word-addressed; the legacy scalar layout remains the default. */
+#define MODEL_FLAG_PACKED_WEIGHTS     (1u << 7)
 
 #define MODEL_SRAM_BASE 0u
 #define MODEL_RELU_MIN  0

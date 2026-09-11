@@ -21,7 +21,34 @@ module tb_ds_group_ready_real_producer;
 
     reg fsv=0; wire fsr; reg fsb=0; reg [3:0] fse=1; reg [23:0] fba=24'h100000;
     reg [15:0] fwc=WORDS; wire fdv; reg fdr=1; wire fdb; wire [3:0] fde;
+    /* m* is the external source port.  DS1_ADDRESS_ADAPTER optionally
+     * interposes the global pixel-major/halo translator under test. */
     wire mrv; reg mrr=1; wire [23:0] mra; reg mspv=0; reg [31:0] msd=0;
+    wire producer_mrv, producer_mrr; wire [23:0] producer_mra;
+    wire producer_mspv; wire [31:0] producer_msd;
+`ifdef DS1_ADDRESS_ADAPTER
+    reg adapter_context_valid=0;
+    wire adapter_context_ready;
+    wire adapter_context_complete = fdv && fdr;
+    wire adapter_error;
+    ds1_group_fill_address_adapter #(.ADDR_WIDTH(24), .FIFO_DEPTH(8)) u_ds1_adapter (
+        .clk(clk), .rst_n(rst_n), .context_valid(adapter_context_valid),
+        .context_ready(adapter_context_ready), .context_linear_base(fba),
+        .context_input_base(fba), .context_global_y(6'd1), .context_global_x(6'd1),
+        .context_input_zero_point(8'd0), .context_complete(adapter_context_complete),
+        .producer_req_valid(producer_mrv), .producer_req_ready(producer_mrr),
+        .producer_req_addr(producer_mra), .producer_resp_valid(producer_mspv),
+        .producer_resp_data(producer_msd), .mem_req_valid(mrv), .mem_req_ready(mrr),
+        .mem_req_addr(mra), .mem_resp_valid(mspv), .mem_resp_data(msd),
+        .error(adapter_error)
+    );
+`else
+    assign mrv = producer_mrv;
+    assign mra = producer_mra;
+    assign producer_mrr = mrr;
+    assign producer_mspv = mspv;
+    assign producer_msd = msd;
+`endif
     reg cv=0; wire cr; reg [3:0] cti=0; reg signed [127:0] cwv=0;
     reg signed [511:0] cbv=0, cmv=0; reg [95:0] csv=0;
     reg djv=0; wire djr; reg dsb=0; reg [3:0] dse=1; reg [23:0] dba=24'h100000;
@@ -46,9 +73,9 @@ module tb_ds_group_ready_real_producer;
         .fill_start_valid(fsv), .fill_start_ready(fsr), .fill_start_bank(fsb),
         .fill_start_epoch(fse), .fill_start_base_addr(fba),
         .fill_start_word_count(fwc), .fill_done_valid(fdv), .fill_done_ready(fdr),
-        .fill_done_bank(fdb), .fill_done_epoch(fde), .mem_req_valid(mrv),
-        .mem_req_ready(mrr), .mem_req_addr(mra), .mem_resp_valid(mspv),
-        .mem_resp_data(msd), .cfg_valid(cv), .cfg_ready(cr), .cfg_tap_idx(cti),
+        .fill_done_bank(fdb), .fill_done_epoch(fde), .mem_req_valid(producer_mrv),
+        .mem_req_ready(producer_mrr), .mem_req_addr(producer_mra), .mem_resp_valid(producer_mspv),
+        .mem_resp_data(producer_msd), .cfg_valid(cv), .cfg_ready(cr), .cfg_tap_idx(cti),
         .cfg_weight_vec(cwv), .cfg_bias_vec(cbv), .cfg_multiplier_vec(cmv),
         .cfg_shift_vec(csv), .dw_job_valid(djv), .dw_job_ready(djr),
         .dw_source_bank(dsb), .dw_source_epoch(dse), .dw_source_base_addr(dba),
@@ -128,7 +155,13 @@ module tb_ds_group_ready_real_producer;
     end endtask
 
     initial begin
-        repeat(5) @(posedge clk); rst_n=1; load_pw_weights(); load_cfg(); fill();
+        repeat(5) @(posedge clk); rst_n=1;
+`ifdef DS1_ADDRESS_ADAPTER
+        @(negedge clk); adapter_context_valid=1;
+        while(!adapter_context_ready) @(posedge clk);
+        @(posedge clk); @(negedge clk); adapter_context_valid=0;
+`endif
+        load_pw_weights(); load_cfg(); fill();
         @(negedge clk); start_valid=1; while(!start_ready) @(posedge clk);
         @(posedge clk); @(negedge clk); start_valid=0;
         @(negedge clk); djv=1; while(!djr) @(posedge clk);
@@ -136,6 +169,9 @@ module tb_ds_group_ready_real_producer;
         while(!done) @(posedge clk);
         if (error || outputs!=1 || producer_beats!=32 || half_writes!=4 || descriptors!=2 ||
             tokens!=16 || output_groups!=1 || ddv) errors=errors+1;
+`ifdef DS1_ADDRESS_ADAPTER
+        if (adapter_error) errors=errors+1;
+`endif
         if(errors==0)
             $display("PASS real_producer cin=16 pixels=8 cout=8 cycles=%0d first_output=%0d halves=%0d descriptors=%0d tokens=%0d outputs=%0d",total_cycles,first_output_cycle,half_writes,descriptors,tokens,outputs);
         else begin
@@ -144,6 +180,26 @@ module tb_ds_group_ready_real_producer;
         end
         $finish;
     end
-    initial begin repeat(800000) @(posedge clk); $fatal(1,"WATCHDOG"); end
+    initial begin
+        repeat(800000) @(posedge clk);
+        $display("REAL_PRODUCER_WATCHDOG fsv=%b fsr=%b fdv=%b mrv=%b mrr=%b mspv=%b djv=%b djr=%b ddv=%b done=%b pipe_state=%0d input_done=%b commit_done=%b final_out=%b token_active=%b waiting_out=%b cache=%0d producer_state=%0d fill_busy=%b asm_state=%0d asm_done=%b half_valid=%b half_pipe=%b bank_writes=%b bank_drain=%b",
+            fsv, fsr, fdv, mrv, mrr, mspv, djv, djr, ddv, done,
+            dut.u_group_ready.state, dut.u_group_ready.input_done_reg,
+            dut.u_group_ready.commit_done_reg, dut.u_group_ready.final_output_done,
+            dut.u_group_ready.token_active, dut.u_group_ready.waiting_output,
+            dut.u_group_ready.cache_count, dut.u_real_producer.u_4x8.state,
+            dut.u_real_producer.u_4x8.u_producer.u_window_shell.fill_busy,
+            dut.u_group_ready.u_assembler.state, dut.u_group_ready.asm_done,
+            dut.u_group_ready.asm_half_valid, dut.u_group_ready.half_pipe_valid,
+            dut.u_group_ready.s0_all_writes, dut.u_group_ready.s0_all_drained);
+`ifdef DS1_ADDRESS_ADAPTER
+        $display("ADAPTER_WATCHDOG fsv=%b fsr=%b fdv=%b mrv=%b mrr=%b mspv=%b producer_req=%b producer_ready=%b producer_resp=%b fifo=%0d active=%b ctx_ready=%b fill_busy=%b pipe_state=%0d",
+            fsv, fsr, fdv, mrv, mrr, mspv, producer_mrv, producer_mrr,
+            producer_mspv, u_ds1_adapter.fifo_count, u_ds1_adapter.context_active,
+            adapter_context_ready, dut.u_real_producer.u_4x8.u_producer.u_window_shell.fill_busy,
+            dut.u_group_ready.state);
+`endif
+        $fatal(1,"WATCHDOG");
+    end
 endmodule
 `default_nettype wire

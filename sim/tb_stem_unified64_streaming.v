@@ -293,11 +293,22 @@ module tb_stem_unified64_streaming;
             mem_req_ready <= 0;
         end else begin
             req_ready_phase = req_ready_phase + 1;
+`ifdef STEM_NO_BACKPRESSURE
+            // Deterministic no-BP mode for the focused production Stem
+            // check.  Keep the same one-outstanding response contract while
+            // removing request bubbles and response delay.
+            mem_req_ready <= 1'b1;
+`else
             mem_req_ready <= ((req_ready_phase % 7) != 0);
+`endif
             if (mem_req_valid && mem_req_ready) begin
                 mem_pending <= 1;
                 mem_word_addr <= (mem_req_addr - source_base_addr) >> 2;
+`ifdef STEM_NO_BACKPRESSURE
+                mem_delay <= 0;
+`else
                 mem_delay <= req_ready_phase % 3;
+`endif
             end else if (mem_pending && mem_delay != 0) begin
                 mem_delay <= mem_delay - 1;
             end else if (mem_pending && mem_resp_ready) begin
@@ -322,8 +333,12 @@ module tb_stem_unified64_streaming;
             output_ready_phase <= 0;
         end else begin
             output_ready_phase <= output_ready_phase + 1;
+`ifdef STEM_NO_BACKPRESSURE
+            out_wr_ready <= 1'b1;
+`else
             out_wr_ready <= ((output_ready_phase % 11) != 0) &&
                             ((output_ready_phase % 17) != 0);
+`endif
         end
     end
 

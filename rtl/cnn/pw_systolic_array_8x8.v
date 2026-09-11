@@ -48,16 +48,120 @@ module pw_systolic_array_8x8 (
 );
     localparam integer MAX_K = 128;
 
+    reg                 streaming;
+    reg                 upper_active;
+    reg                 replay_valid;
+    reg [7:0]           input_count;
+    reg [7:0]           total_k_count;
+    reg [7:0]           replay_idx;
+    reg                 replay_prefetch_valid;
+    reg signed [127:0]  replay_operand_reg;
+`ifdef SYNTHESIS
+    /* XPM BRAM is read-first on port B; retain the fence token for the
+     * one-token prefetch/write collision so the logical replay remains
+     * write-first for that boundary case. */
+    reg                 replay_prefetch_bypass_valid;
+`endif
+    wire input_fire = valid_in && ready_in;
+
+`ifndef SYNTHESIS
+    /* In a four-state simulation an unconnected tagged port is Z.  Treat that
+     * as legacy mode; production instantiations connect these ports. */
+    wire token_mode = (k_count !== 8'd0) &&
+                      ((first_k === 1'b0) || (first_k === 1'b1)) &&
+                      ((last_k === 1'b0) || (last_k === 1'b1));
+`else
+    wire token_mode = (k_count != 8'd0);
+`endif
+    wire token_first = token_mode ? first_k : clear_acc;
+    wire token_last  = token_mode ? last_k  : k_last;
+
     /* Hold exactly the accepted lower-half token stream.  The write happens
      * while the lower PE fabric consumes the same token.  A registered read
      * feeds the upper replay and avoids a RAM-address-to-DSP combinational
      * path. */
-    (* ram_style = "block" *) reg signed [63:0] act_mem [0:MAX_K-1];
-    (* ram_style = "block" *) reg signed [63:0] wgt_mem [0:MAX_K-1];
+    /* Keep the accepted token as one 128-bit x 128 replay bank.  The former
+     * pair of independent 64-bit memories was treated as LUTRAM by Vivado
+     * even with ram_style="block".  The synthesis implementation below uses
+     * XPM explicitly so this bank is realized by BRAM primitives.  Its output
+     * is a registered read, exactly matching the one-cycle replay operand
+     * boundary that the old array-reference implementation provided:
+     *
+     *   replay_mem[k][63:0]   = act_vec[k]
+     *   replay_mem[k][127:64] = wgt_vec[k]
+     *
+     * The physical upper replay consumes only replay_mem[k][127:96], the
+     * former wgt_mem[k][63:32].  The lower half consumes the live input token.
+     */
+    wire signed [127:0] replay_mem_dout;
+    /* Read one token ahead of the PE issue.  The final lower token can start
+     * the read of replay entry zero on the same edge that commits it; this
+     * leaves room for a local operand register without adding a replay cycle.
+     * During replay, replay_idx names the token consumed on the current PE
+     * edge, hence the BRAM address is two entries ahead (one in dout and one
+     * in replay_operand_reg). */
+    wire replay_prefetch_issue = input_fire && token_last;
+    wire replay_stream_issue = upper_active &&
+                               (!replay_valid ?
+                                (replay_prefetch_valid &&
+                                 (total_k_count > 8'd1)) :
+                                (({1'b0, replay_idx} + 9'd2) <
+                                 {1'b0, total_k_count}));
+    wire replay_read_issue = replay_prefetch_issue || replay_stream_issue;
+    wire [7:0] replay_read_index = replay_prefetch_issue ? 8'd0 :
+                                    (!replay_valid ? 8'd1 :
+                                     (replay_idx + 8'd2));
 
-    reg                 streaming;
-    reg                 upper_active;
-    reg                 replay_valid;
+`ifdef SYNTHESIS
+    xpm_memory_sdpram #(
+        .ADDR_WIDTH_A(7), .ADDR_WIDTH_B(7),
+        .AUTO_SLEEP_TIME(0), .BYTE_WRITE_WIDTH_A(8),
+        .CASCADE_HEIGHT(0), .CLOCKING_MODE("common_clock"),
+        .ECC_MODE("no_ecc"), .MEMORY_INIT_FILE("none"),
+        .MEMORY_INIT_PARAM("0"), .MEMORY_OPTIMIZATION("true"),
+        .MEMORY_PRIMITIVE("block"), .MEMORY_SIZE(16384),
+        .MESSAGE_CONTROL(0), .READ_DATA_WIDTH_B(128),
+        .READ_LATENCY_B(1), .READ_RESET_VALUE_B("0"),
+        .RST_MODE_A("SYNC"), .RST_MODE_B("SYNC"),
+        .SIM_ASSERT_CHK(0), .USE_EMBEDDED_CONSTRAINT(0),
+        .USE_MEM_INIT(0), .WAKEUP_TIME("disable_sleep"),
+        /* Simple-dual-port block RAM only permits read-first on port B.
+         * The one-token prefetch/write collision is handled explicitly by
+         * replay_operand_reg below, preserving the logical write-first
+         * behavior without asking XPM for an illegal primitive mode. */
+        .WRITE_DATA_WIDTH_A(128), .WRITE_MODE_B("read_first")
+    ) u_replay_mem (
+        .clka(clk), .clkb(clk),
+        .ena(input_fire), .wea({16{input_fire}}),
+        .addra(input_count[6:0]), .dina({wgt_vec, act_vec}),
+        .addrb(replay_read_index[6:0]), .enb(replay_read_issue),
+        .doutb(replay_mem_dout), .regceb(1'b1), .rstb(!rst_n),
+        .sleep(1'b0), .injectdbiterra(1'b0), .injectsbiterra(1'b0),
+        .dbiterrb(), .sbiterrb()
+    );
+`else
+    (* ram_style = "block" *) reg signed [127:0] replay_mem [0:MAX_K-1];
+    reg signed [127:0] replay_mem_dout_reg;
+    assign replay_mem_dout = replay_mem_dout_reg;
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            replay_mem_dout_reg <= 128'sd0;
+        end else begin
+            if (input_fire)
+                replay_mem[input_count] <= {wgt_vec, act_vec};
+            if (replay_read_issue) begin
+                /* Explicitly model XPM write-first behavior for the one-token
+                 * reduction whose prefetch read and final write share entry 0. */
+                if (replay_prefetch_issue &&
+                    (replay_read_index == input_count))
+                    replay_mem_dout_reg <= {wgt_vec, act_vec};
+                else
+                    replay_mem_dout_reg <= replay_mem[replay_read_index];
+            end
+        end
+    end
+`endif
+
     reg                 lower_valid;
     reg [7:0]           pe_issue_row;
     reg                 capture_lower_pending;
@@ -66,9 +170,6 @@ module pw_systolic_array_8x8 (
      * local copies when this island is composed with scratch/control logic;
      * a single global CE net otherwise becomes a routing-only critical path. */
     (* max_fanout = 64 *) reg capture_output_pending;
-    reg [7:0]           input_count;
-    reg [7:0]           total_k_count;
-    reg [7:0]           replay_idx;
     reg signed [63:0]   act_lower_reg;
     reg signed [31:0]   wgt_lower_reg;
     reg                 lower_clear_reg;
@@ -93,19 +194,15 @@ module pw_systolic_array_8x8 (
     integer sim_output_count;
 `endif
 
-`ifndef SYNTHESIS
-    /* In a four-state simulation an unconnected tagged port is Z.  Treat that
-     * as legacy mode; production instantiations connect these ports. */
-    wire token_mode = (k_count !== 8'd0) &&
-                      ((first_k === 1'b0) || (first_k === 1'b1)) &&
-                      ((last_k === 1'b0) || (last_k === 1'b1));
-`else
-    wire token_mode = (k_count != 8'd0);
-`endif
-    wire token_first = token_mode ? first_k : clear_acc;
-    wire token_last  = token_mode ? last_k  : k_last;
-    wire input_fire  = valid_in && ready_in;
     wire upper_pe_fire = upper_active && replay_valid;
+    /* The replay bank output is captured in a local operand register before
+     * each PE issue.  This keeps BRAM fanout and the long row operand route out
+     * of the DSP input timing path; during the lower stream the live operand
+     * registers remain unchanged. */
+    wire signed [63:0] pe_act_operand = upper_pe_fire ?
+                                         replay_operand_reg[63:0] : exec_act_reg;
+    wire signed [31:0] pe_wgt_operand = upper_pe_fire ?
+                                         replay_operand_reg[127:96] : exec_wgt_reg;
     /* The issue bit is registered alongside the selected operand.  Splitting
      * it by row limits the valid/clock-enable fanout to four PEs per bit;
      * lower_valid and the phase state therefore do not form a global PE data
@@ -130,8 +227,8 @@ module pw_systolic_array_8x8 (
                     .rst_n(rst_n),
                     .valid_in(pe_issue_row[r]),
                     .clear_acc(exec_clear_reg),
-                    .act_in(exec_act_reg[(r*8) +: 8]),
-                    .wgt_in(exec_wgt_reg[(c*8) +: 8]),
+                    .act_in(pe_act_operand[(r*8) +: 8]),
+                    .wgt_in(pe_wgt_operand[(c*8) +: 8]),
                     .valid_out(pe_valid[r][c]),
                     .act_out(unused_act[r][c]),
                     .wgt_out(unused_wgt[r][c]),
@@ -156,6 +253,11 @@ module pw_systolic_array_8x8 (
             input_count <= 8'd0;
             total_k_count <= 8'd0;
             replay_idx <= 8'd0;
+            replay_prefetch_valid <= 1'b0;
+            replay_operand_reg <= 128'sd0;
+`ifdef SYNTHESIS
+            replay_prefetch_bypass_valid <= 1'b0;
+`endif
             act_lower_reg <= 64'sd0;
             wgt_lower_reg <= 32'sd0;
             lower_clear_reg <= 1'b0;
@@ -282,9 +384,19 @@ module pw_systolic_array_8x8 (
              * groups, and only token_last closes the complete reduction. */
             lower_valid <= input_fire;
             pe_issue_row <= 8'd0;
+            /* Capture the already-returned BRAM word one cycle before the PE
+             * issue edge.  This register removes the wide BRAM-to-PE fanout
+             * path while retaining one token per replay cycle. */
+            if (upper_active) begin
+`ifdef SYNTHESIS
+                if (!(replay_prefetch_bypass_valid && replay_prefetch_valid &&
+                      (total_k_count == 8'd1)))
+                    replay_operand_reg <= replay_mem_dout;
+`else
+                replay_operand_reg <= replay_mem_dout;
+`endif
+            end
             if (input_fire) begin
-                act_mem[input_count] <= act_vec;
-                wgt_mem[input_count] <= wgt_vec;
                 act_lower_reg <= act_vec;
                 wgt_lower_reg <= wgt_vec[31:0];
                 lower_clear_reg <= token_first && (input_count == 8'd0);
@@ -293,10 +405,15 @@ module pw_systolic_array_8x8 (
                 exec_clear_reg <= token_first && (input_count == 8'd0);
                 pe_issue_row <= 8'hff;
                 if (token_last) begin
+`ifdef SYNTHESIS
+                    replay_prefetch_bypass_valid <= 1'b1;
+                    replay_operand_reg <= {wgt_vec, act_vec};
+`endif
                     total_k_count <= input_count + 8'd1;
                     streaming <= 1'b0;
                     upper_active <= 1'b1;
                     replay_valid <= 1'b0;
+                    replay_prefetch_valid <= 1'b1;
                     replay_idx <= 8'd0;
                     capture_lower_pending <= 1'b1;
                 end else begin
@@ -309,11 +426,10 @@ module pw_systolic_array_8x8 (
              * output channels; later replay tokens, including tokens crossing
              * every group boundary, retain the upper psum. */
             if (upper_active && !replay_valid) begin
-                exec_act_reg <= act_mem[replay_idx];
-                exec_wgt_reg <= wgt_mem[replay_idx][63:32];
                 exec_clear_reg <= (replay_idx == 8'd0);
                 pe_issue_row <= 8'hff;
                 replay_valid <= 1'b1;
+                replay_prefetch_valid <= 1'b0;
             end else if (upper_pe_fire) begin
                 if (({1'b0, replay_idx} + 9'd1) >= {1'b0, total_k_count}) begin
                     upper_active <= 1'b0;
@@ -322,8 +438,6 @@ module pw_systolic_array_8x8 (
                     capture_output_pending <= 1'b1;
                 end else begin
                     replay_idx <= replay_idx + 8'd1;
-                    exec_act_reg <= act_mem[replay_idx + 8'd1];
-                    exec_wgt_reg <= wgt_mem[replay_idx + 8'd1][63:32];
                     exec_clear_reg <= 1'b0;
                     pe_issue_row <= 8'hff;
                 end

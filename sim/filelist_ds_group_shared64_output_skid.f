@@ -1,0 +1,2 @@
+rtl/cnn/ds_group_shared64_output_skid.v
+sim/tb_ds_group_shared64_output_skid.v

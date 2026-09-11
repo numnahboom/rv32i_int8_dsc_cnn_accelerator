@@ -6,12 +6,12 @@ The run covers DS1/DS2 with no backpressure and randomized memory/output backpre
 
 ## Latest first mismatches and ledgers
 
-| Case | First mismatch (word/address) | Expected -> actual | Cycles | Outputs | DW vectors/MAC | PW tokens/MAC | Stalls | error |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| layer1_no_bp | none | | 96061 | 8192 | 1024/147456 | 8192/524288 | 0 | 0 |
-| layer1_random | none | | 100615 | 8192 | 1024/147456 | 8192/524288 | 7984 | 0 |
-| layer2_no_bp | none | | 199133 | 4096 | 512/73728 | 8192/524288 | 0 | 0 |
-| layer2_random | none | | 246909 | 4096 | 512/73728 | 8192/524288 | 4079 | 0 |
+| Case | First mismatch (word/address) | Expected -> actual | Cycles | Outputs | DW vectors/MAC | PW tokens/MAC | PW rows/overlap | PW max gap/run | Stalls | error |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| layer1_no_bp | none | | 93261 | 8192 | 1024/147456 | 8192/524288 | 8192/7808 | 390/32 | 0 | 0 |
+| layer1_random | none | | 98683 | 8192 | 1024/147456 | 8192/524288 | 8192/7808 | 456/32 | 8156 | 0 |
+| layer2_no_bp | none | | 61088 | 4096 | 512/73728 | 8192/524288 | 8192/7968 | 798/64 | 0 | 0 |
+| layer2_random | none | | 64261 | 4096 | 512/73728 | 8192/524288 | 8192/7968 | 798/64 | 4046 | 0 |
 
 All four DS1/DS2 cases passed with non-zero fixture data, including randomized memory/output backpressure.
 

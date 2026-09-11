@@ -79,6 +79,9 @@ module pw_direct_8x8_dsp (
 `ifndef SYNTHESIS
     integer sim_next_k_idx;
     integer sim_protocol_errors;
+    /* Simulation-only semantic ledger: each accepted K token contains the
+     * eight activation by eight output-channel products. */
+    integer sim_mac_count;
 `endif
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -95,6 +98,7 @@ module pw_direct_8x8_dsp (
 `ifndef SYNTHESIS
             sim_next_k_idx <= 0;
             sim_protocol_errors <= 0;
+            sim_mac_count <= 0;
 `endif
         end else begin
             if (valid_out && ready_out)
@@ -119,6 +123,9 @@ module pw_direct_8x8_dsp (
              * BRAM/configuration routing from the multiply-accumulate path. */
             pipe_valid <= fire;
             if (fire) begin
+`ifndef SYNTHESIS
+                sim_mac_count <= sim_mac_count + 64;
+`endif
                 act_pipe <= act_vec;
                 wgt_pipe <= wgt_vec;
                 pipe_first <= first_k;

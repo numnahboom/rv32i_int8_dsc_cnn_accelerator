@@ -1,0 +1,4 @@
+rtl/common/requant_activation_core.v
+rtl/cnn/requant_activation_unit.v
+rtl/cnn/ds_dw_requant_stream4_write_adapter_local.v
+sim/tb_ds_dw_requant_stream4_write_adapter_local_decoupled.v

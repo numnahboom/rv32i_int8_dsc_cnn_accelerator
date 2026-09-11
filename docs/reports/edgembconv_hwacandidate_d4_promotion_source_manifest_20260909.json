@@ -1,0 +1,136 @@
+{
+  "schema": "edgedscnet-c10-d4-promotion-source-manifest-v1",
+  "variant_id": "D4",
+  "manifest_date": "2026-09-09",
+  "git": {
+    "branch": "refactor/streaming-dsblock-bram",
+    "head": "7825305ccc878cc26a548088fe13ec92f8ad42f6",
+    "working_tree_clean": false,
+    "note": "This manifest freezes the D4 software/network evidence by content hash. It does not attribute unrelated dirty-worktree state or freeze an RTL candidate."
+  },
+  "status": "software_network_frozen_rtl_unpromoted",
+  "ledger": {
+    "parameter_count": 204090,
+    "semantic_macs": 11645440,
+    "ops_definition": "2 * semantic_macs",
+    "ops": 23290880,
+    "dense3x3_macs": 442368,
+    "pw1x1_macs": 10223616,
+    "dw3x3_macs": 976896
+  },
+  "quality": {
+    "dataset": "CIFAR-10 official test split",
+    "samples": 10000,
+    "fp32_top1": 0.9163,
+    "int8_top1": 0.9146,
+    "int8_correct": 9146,
+    "qat_to_exported_integer_argmax_agreement": 0.9834,
+    "int32_accumulator_overflow": false
+  },
+  "quantization_contract": {
+    "weights": "signed INT8, per-output-channel symmetric",
+    "activations": "signed INT8",
+    "accumulators_and_biases": "signed INT32",
+    "requant_rounding": "nearest-away-from-zero",
+    "output": "signed INT8 saturation",
+    "authoritative_detail": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_deploy/edgembconv_hwacandidate_d4_deploy_manifest.json"
+  },
+  "files": [
+    {
+      "role": "network_graph_and_ledger",
+      "path": "build/edgembconv_hwacandidate/profile_D4.json",
+      "bytes": 37616,
+      "sha256": "6143b2d3c79e3452a687f6a20892d817c0a6388088a5933af282e3b2a89993b9"
+    },
+    {
+      "role": "fp32_checkpoint",
+      "path": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_fp32.pt",
+      "bytes": 1398611,
+      "sha256": "16138e2437b7c46461e634d7517e2c260a831499ca5216632ee18a3f4bf386e7"
+    },
+    {
+      "role": "qat_checkpoint",
+      "path": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_qat.pt",
+      "bytes": 1303509,
+      "sha256": "7864cc7b56f3d051ecf2e20cfb5b177eb4dc171ac0d869c30fab2ce5c8fba87b"
+    },
+    {
+      "role": "official_test10k_result",
+      "path": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_test10k.json",
+      "bytes": 3959,
+      "sha256": "cf77922830488c3893ce9554508d66b542f563d77c1dfe8485f5fbb96ffc3493"
+    },
+    {
+      "role": "exported_int8_parameters",
+      "path": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_deploy/edgembconv_hwacandidate_d4_int8.npz",
+      "bytes": 254299,
+      "sha256": "5804204e0ba2bd23e8e40dcfc656007838935d28692279401ae058822775dbe7"
+    },
+    {
+      "role": "deployment_graph_quantization_and_name_mapping",
+      "path": "build/edgembconv_hwacandidate_d4/edgembconv_hwacandidate_d4_deploy/edgembconv_hwacandidate_d4_deploy_manifest.json",
+      "bytes": 13809,
+      "sha256": "36ddce98e8e6da6ff69054993492f7c9de569624dbc15209c3e0c48e4e38d06c"
+    },
+    {
+      "role": "model_definition",
+      "path": "python/edgembconv_hwacandidate_d4_model.py",
+      "bytes": 9179,
+      "sha256": "4ca2b84c43a79bfe7cae41147f556e913874874ec1bdd7a95dfc7a90ad2b236b"
+    },
+    {
+      "role": "fp32_training_entrypoint",
+      "path": "python/train_edgembconv_hwacandidate_d4.py",
+      "bytes": 8142,
+      "sha256": "b2d80cb05021d465ec2aae33f0c5995e0388a1eefc3fa4ea5f962cc3a9348530"
+    },
+    {
+      "role": "qat_training_entrypoint",
+      "path": "python/qat_edgembconv_hwacandidate_d4.py",
+      "bytes": 8048,
+      "sha256": "baf56a8a81cce5287ae8a5d864e81992b3519b7e3b5fb3b85b9ff015b7e6c30f"
+    },
+    {
+      "role": "integer_export_and_test10k_entrypoint",
+      "path": "python/export_eval_edgembconv_hwacandidate_d4.py",
+      "bytes": 23443,
+      "sha256": "abdae242cd10b6d88f5a3cbcbf1ac05c7d7cc1c83c8a0cf16d563667b0dbdb2e"
+    },
+    {
+      "role": "profile_entrypoint",
+      "path": "python/profile_edgembconv_hwacandidate.py",
+      "bytes": 34409,
+      "sha256": "25b0ed96325d209276b0e632aae5cb695dede1d1755be2b08a147a6ef76ed6d4"
+    },
+    {
+      "role": "cycle_model_entrypoint_unmeasured_projection_only",
+      "path": "python/cycle_model_edgembconv_hwacandidate_d4.py",
+      "bytes": 50776,
+      "sha256": "32a41cc0fa63c6aca781b552071227f4817f2b4dab6c41a9c2aeb34c97497ebb"
+    },
+    {
+      "role": "cycle_schedule_unmeasured_projection_only",
+      "path": "build/edgembconv_hwacandidate_d4_cycle_model/edgembconv_hwacandidate_d4_cycle_schedule.json",
+      "bytes": 94146,
+      "sha256": "95061df27fdd2926be1d4b80c406ed6203c785b2560ac706832c2d404f89caf6"
+    }
+  ],
+  "excluded_from_d4_freeze": [
+    {
+      "path": "sw/model/model_quant.h",
+      "reason": "Current content implements the C0 EdgeDSCNet ABI, not the D4 deployment graph."
+    },
+    {
+      "path_glob": "build/edgembconv_hwacandidate_d4/**/*.log",
+      "reason": "Derived logs are not authoritative sources."
+    },
+    {
+      "path_glob": "**/*.{wdb,dcp}",
+      "reason": "Simulation databases and checkpoints require their own run-scoped source manifest and must not stand in for source provenance."
+    }
+  ],
+  "rtl_evidence_policy": {
+    "frozen_here": false,
+    "requirement": "Every D4 RTL block, full-network simulation, and Vivado run must emit a run-scoped manifest containing exact RTL, testbench, vector, filelist, constraint, tool, device, clock, command, and SHA256 provenance."
+  }
+}

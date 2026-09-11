@@ -88,6 +88,9 @@ module m11a_pw64_shared_core (
     reg current_active;
     reg current_bank;
     reg current_last_tile;
+    /* One outstanding synchronous row read is tracked separately from the
+     * operand register.  A new token may replace the request metadata on the
+     * same edge that the previous row response is captured. */
     reg pending;
     reg pending_first, pending_last_k, pending_last_tile, pending_last_layer;
     reg [63:0] pending_activation;
@@ -96,10 +99,28 @@ module m11a_pw64_shared_core (
     reg [1:0] pending_context;
     reg pending_owner;
     reg [31:0] pending_epoch, pending_context_ordinal;
+    reg pending_bank;
+    /* BRAM output -> operand register -> DSP input.  The activation and all
+     * token boundaries advance with the weight row so the 64 MAC columns can
+     * still consume one complete token on every cycle after startup. */
+    reg operand_valid;
+    reg operand_first, operand_last_k, operand_last_tile, operand_last_layer;
+    reg [63:0] operand_activation;
+    reg [63:0] operand_weight;
+    reg [2:0] operand_tile;
+    reg [1:0] operand_context;
+    reg operand_owner;
+    reg [31:0] operand_epoch, operand_context_ordinal;
+    reg operand_bank;
     reg final_token_done;
     /* The last K product becomes visible after the DSP PREG edge. */
     reg dsp_drain;
     reg dsp_drain_bank;
+    reg [1:0] dsp_drain_context;
+    reg dsp_drain_owner;
+    reg [31:0] dsp_drain_epoch, dsp_drain_context_ordinal;
+    reg [2:0] dsp_drain_tile;
+    reg dsp_drain_last_tile, dsp_drain_last_layer;
 
     reg signed [31:0] result_bank0 [0:63];
     reg signed [31:0] result_bank1 [0:63];
@@ -124,6 +145,7 @@ module m11a_pw64_shared_core (
     integer rq_chan;
     integer rq_idx;
     wire rq_bank = drain_bank;
+    wire output_fire = out_valid && out_ready;
     wire [3:0] rq_word_sel = (output_fire && (drain_word != 4'd15)) ?
                               (drain_word + 1'b1) : drain_word;
     wire rq_in_valid;
@@ -132,18 +154,21 @@ module m11a_pw64_shared_core (
     wire [31:0] rq_out_data;
 
     wire token_fire = token_valid && token_ready;
-    wire process_fire = pending && pw_row_valid;
-    wire output_fire = out_valid && out_ready;
+    wire row_capture = pending && pw_row_valid;
     wire bank0_free = (bank_state[0] == BANK_FREE);
     wire bank1_free = (bank_state[1] == BANK_FREE);
     wire free_any = bank0_free || bank1_free;
     wire alloc_bank = bank0_free ? 1'b0 : 1'b1;
+    wire row_slot_free = !pending || pw_row_valid;
     wire drain_start = !drain_active &&
                        ((bank_state[0] == BANK_READY) || (bank_state[1] == BANK_READY));
 
     assign start_ready = rst_n && state == ST_IDLE;
-    assign token_ready = rst_n && state == ST_RUN && !pending &&
-                         (current_active || free_any);
+    /* A synchronous row response may be captured while the next request is
+     * accepted.  The first token of a tile still needs a genuinely free
+     * result bank; continuation tokens belong to the currently active bank. */
+    assign token_ready = rst_n && state == ST_RUN && row_slot_free &&
+                         (token_first_k ? free_any : current_active);
     assign pw_row_rd_en = token_fire;
     assign pw_row_rd_addr = token_weight_row;
     /* The RQ4 pipeline is the valid/data boundary.  It only accepts a new
@@ -208,15 +233,15 @@ module m11a_pw64_shared_core (
     );
 
     wire signed [47:0] mac_sum_next [0:63];
-    wire mac_en = process_fire;
-    wire mac_clear = pending_first;
+    wire mac_en = operand_valid;
+    wire mac_clear = operand_first;
     genvar gp;
     generate
         for (gp = 0; gp < 64; gp = gp + 1) begin : GEN_PW64_MAC
             m11a_pw_mac_cell u_mac (
                 .clk(clk), .rst_n(rst_n), .en(mac_en), .clear_acc(mac_clear),
-                .act_in(pending_activation[(gp/8)*8 +: 8]),
-                .weight_in(pw_row_rd_data[(gp%8)*8 +: 8]),
+                .act_in(operand_activation[(gp/8)*8 +: 8]),
+                .weight_in(operand_weight[(gp%8)*8 +: 8]),
                 .sum_next(mac_sum_next[gp])
             );
         end
@@ -237,8 +262,20 @@ module m11a_pw64_shared_core (
             pending_last_layer <= 0;
             pending_tile <= 0; pending_row <= 0; pending_context <= 0;
             pending_owner <= 0; pending_epoch <= 0; pending_context_ordinal <= 0;
+            pending_bank <= 1'b0;
+            operand_valid <= 1'b0;
+            operand_first <= 1'b0; operand_last_k <= 1'b0;
+            operand_last_tile <= 1'b0; operand_last_layer <= 1'b0;
+            operand_activation <= 64'd0; operand_weight <= 64'd0;
+            operand_tile <= 3'd0; operand_context <= 2'd0;
+            operand_owner <= 1'b0; operand_epoch <= 32'd0;
+            operand_context_ordinal <= 32'd0; operand_bank <= 1'b0;
             dsp_drain <= 1'b0;
             dsp_drain_bank <= 1'b0;
+            dsp_drain_context <= 2'd0; dsp_drain_owner <= 1'b0;
+            dsp_drain_epoch <= 32'd0; dsp_drain_context_ordinal <= 32'd0;
+            dsp_drain_tile <= 3'd0;
+            dsp_drain_last_tile <= 1'b0; dsp_drain_last_layer <= 1'b0;
             final_token_done <= 0; drain_active <= 0; drain_bank <= 0;
             drain_word <= 0; drain_addr_r <= 0; done_r <= 0; error_r <= 0;
             token_count_r <= 0; mac_count_r <= 0; out_count_r <= 0;
@@ -269,8 +306,20 @@ module m11a_pw64_shared_core (
                 bank_state[1] <= BANK_FREE;
                 current_active <= 0;
                 pending <= 0;
+                pending_bank <= 1'b0;
+                operand_valid <= 1'b0;
+                operand_first <= 1'b0; operand_last_k <= 1'b0;
+                operand_last_tile <= 1'b0; operand_last_layer <= 1'b0;
+                operand_activation <= 64'd0; operand_weight <= 64'd0;
+                operand_tile <= 3'd0; operand_context <= 2'd0;
+                operand_owner <= 1'b0; operand_epoch <= 32'd0;
+                operand_context_ordinal <= 32'd0; operand_bank <= 1'b0;
                 dsp_drain <= 1'b0;
                 dsp_drain_bank <= 1'b0;
+                dsp_drain_context <= 2'd0; dsp_drain_owner <= 1'b0;
+                dsp_drain_epoch <= 32'd0; dsp_drain_context_ordinal <= 32'd0;
+                dsp_drain_tile <= 3'd0;
+                dsp_drain_last_tile <= 1'b0; dsp_drain_last_layer <= 1'b0;
                 drain_active <= 0;
                 final_token_done <= 0;
                 done_r <= 0;
@@ -280,6 +329,71 @@ module m11a_pw64_shared_core (
                 out_count_r <= 0;
             end
 
+            /* Capture the synchronous BRAM response into a dedicated operand
+             * register.  This edge is also allowed to accept the next token;
+             * the request metadata below is intentionally written after the
+             * capture so the old pending token remains aligned to this row. */
+            operand_valid <= row_capture;
+            if (row_capture) begin
+                pending <= 1'b0;
+                operand_first <= pending_first;
+                operand_last_k <= pending_last_k;
+                operand_last_tile <= pending_last_tile;
+                operand_last_layer <= pending_last_layer;
+                operand_activation <= pending_activation;
+                operand_weight <= pw_row_rd_data;
+                operand_tile <= pending_tile;
+                operand_context <= pending_context;
+                operand_owner <= pending_owner;
+                operand_epoch <= pending_epoch;
+                operand_context_ordinal <= pending_context_ordinal;
+                operand_bank <= pending_bank;
+            end
+
+            /* The DSP consumes the operand register one edge after capture.
+             * Save final-token metadata alongside the PREG result; pending may
+             * already describe the next row by the time this result commits. */
+            if (operand_valid) begin
+                mac_count_r <= mac_count_r + 32'd64;
+                if (operand_last_k) begin
+                    dsp_drain <= 1'b1;
+                    dsp_drain_bank <= operand_bank;
+                    dsp_drain_context <= operand_context;
+                    dsp_drain_owner <= operand_owner;
+                    dsp_drain_epoch <= operand_epoch;
+                    dsp_drain_context_ordinal <= operand_context_ordinal;
+                    dsp_drain_tile <= operand_tile;
+                    dsp_drain_last_tile <= operand_last_tile;
+                    dsp_drain_last_layer <= operand_last_layer;
+                    /* A first token accepted on this same edge belongs to a
+                     * newly allocated bank.  The request block below then
+                     * sets current_active for that new tile. */
+                    if (current_active && (current_bank == operand_bank))
+                        current_active <= 1'b0;
+                end
+            end
+
+            if (dsp_drain) begin
+                dsp_drain <= 1'b0;
+                if (dsp_drain_bank)
+                    for (i = 0; i < 64; i = i + 1) result_bank1[i] <= mac_sum_next[i][31:0];
+                else
+                    for (i = 0; i < 64; i = i + 1) result_bank0[i] <= mac_sum_next[i][31:0];
+                result_context[dsp_drain_bank] <= dsp_drain_context;
+                result_owner[dsp_drain_bank] <= dsp_drain_owner;
+                result_epoch[dsp_drain_bank] <= dsp_drain_epoch;
+                result_context_ordinal[dsp_drain_bank] <= dsp_drain_context_ordinal;
+                result_tile[dsp_drain_bank] <= dsp_drain_tile;
+                result_last_tile[dsp_drain_bank] <= dsp_drain_last_tile;
+                result_last_layer[dsp_drain_bank] <= dsp_drain_last_layer;
+                bank_state[dsp_drain_bank] <= BANK_READY;
+                if (dsp_drain_last_layer)
+                    final_token_done <= 1'b1;
+            end
+
+            /* Request metadata is captured after row_capture so a response
+             * and a new token can share one edge without overwriting the
+             * operand being captured. */
             if (token_fire) begin
                 pending <= 1'b1;
                 pending_first <= token_first_k;
@@ -293,48 +407,13 @@ module m11a_pw64_shared_core (
                 pending_owner <= token_owner;
                 pending_epoch <= token_epoch;
                 pending_context_ordinal <= token_context_ordinal;
+                pending_bank <= token_first_k ? alloc_bank : current_bank;
                 token_count_r <= token_count_r + 1'b1;
                 if (token_first_k) begin
-                    if (free_any) begin
-                        current_bank <= alloc_bank;
-                        current_active <= 1'b1;
-                        bank_state[alloc_bank] <= BANK_FILL;
-                    end else begin
-                        error_r <= 1'b1;
-                    end
+                    current_bank <= alloc_bank;
+                    current_active <= 1'b1;
+                    bank_state[alloc_bank] <= BANK_FILL;
                 end
-            end
-
-            if (process_fire) begin
-                pending <= 1'b0;
-                mac_count_r <= mac_count_r + 32'd64;
-                if (pending_last_k) begin
-                    /* The PREG output contains the final product only after
-                     * this edge.  Commit it on the following edge, while a
-                     * new K token may already be accepted into the same
-                     * 64-lane physical array. */
-                    dsp_drain <= 1'b1;
-                    dsp_drain_bank <= current_bank;
-                    current_active <= 1'b0;
-                end
-            end
-
-            if (dsp_drain) begin
-                dsp_drain <= 1'b0;
-                if (dsp_drain_bank)
-                    for (i = 0; i < 64; i = i + 1) result_bank1[i] <= mac_sum_next[i][31:0];
-                else
-                    for (i = 0; i < 64; i = i + 1) result_bank0[i] <= mac_sum_next[i][31:0];
-                result_context[dsp_drain_bank] <= pending_context;
-                result_owner[dsp_drain_bank] <= pending_owner;
-                result_epoch[dsp_drain_bank] <= pending_epoch;
-                result_context_ordinal[dsp_drain_bank] <= pending_context_ordinal;
-                result_tile[dsp_drain_bank] <= pending_tile;
-                result_last_tile[dsp_drain_bank] <= pending_last_tile;
-                result_last_layer[dsp_drain_bank] <= pending_last_layer;
-                bank_state[dsp_drain_bank] <= BANK_READY;
-                if (pending_last_layer)
-                    final_token_done <= 1'b1;
             end
 
             if (drain_start) begin
@@ -372,6 +451,14 @@ module m11a_pw64_shared_core (
                     drain_word <= drain_word + 1'b1;
                     drain_addr_r <= drain_addr_r + 32'd4;
                 end
+            end
+
+            /* The runtime core is a reusable layer endpoint.  Clear the
+             * completion pulse and release the endpoint after the fence so a
+             * subsequent DS2 transaction can start without global reset. */
+            if (state == ST_DONE) begin
+                done_r <= 1'b0;
+                state <= ST_IDLE;
             end
         end
     end

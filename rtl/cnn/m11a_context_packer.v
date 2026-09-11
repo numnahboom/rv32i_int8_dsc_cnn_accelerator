@@ -214,6 +214,13 @@ module m11a_context_packer (
                     emit_row_addr <= emit_row_addr + 1'b1;
                 end
             end
+
+            /* The packed-stream endpoint is reused by the next layer; make
+             * done a one-cycle pulse and return to the idle handshake. */
+            if (state == ST_DONE) begin
+                done_r <= 1'b0;
+                state <= ST_IDLE;
+            end
         end
     end
 endmodule

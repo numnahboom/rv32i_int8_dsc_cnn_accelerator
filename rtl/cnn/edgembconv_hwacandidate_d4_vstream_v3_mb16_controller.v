@@ -63,7 +63,7 @@ module edgembconv_hwacandidate_d4_vstream_v3_mb16_controller #(
     /* The arithmetic/dataflow child is an existing, independently verified
      * D4 primitive.  No old file is modified and no additional DSP island is
      * instantiated by this shell. */
-    edgembconv_hwacandidate_d4_vstream_v2_mb16_controller u_arithmetic (
+    edgembconv_hwacandidate_d4_vstream_v3_scheduler u_arithmetic (
         .clk(clk), .rst_n(rst_n), .cfg_valid(cfg_valid), .cfg_ready(cfg_ready),
         .cfg_kind(cfg_kind), .cfg_addr(cfg_addr), .cfg_data(cfg_data),
         .start_valid(start_valid), .start_ready(start_ready),
@@ -84,6 +84,12 @@ module edgembconv_hwacandidate_d4_vstream_v3_mb16_controller #(
     reg pack_valid;
     reg [15:0] pack_index_reg;
     reg [3:0] pack_epoch_reg;
+    /* Child completion can arrive on the same cycle as the final packed
+     * word.  Keep a local completion token until that word has actually
+     * drained, otherwise a stalled sink can leave the wrapper in an idle
+     * state with no clock-progressing source to release the last word. */
+    reg done_pending;
+    reg [3:0] done_pending_epoch;
     wire pack_last_byte = (child_out_index[1:0] == 2'd3);
     wire sink_fire = sink_valid && sink_ready;
 
@@ -99,8 +105,8 @@ module edgembconv_hwacandidate_d4_vstream_v3_mb16_controller #(
     assign sink_index = pack_index_reg;
     assign sink_epoch = pack_epoch_reg;
 
-    assign done_valid = child_done_valid;
-    assign done_epoch = child_done_epoch;
+    assign done_valid = done_pending && !pack_valid;
+    assign done_epoch = done_pending_epoch;
     assign out_valid = child_out_valid;
     assign out_index = child_out_index;
     assign out_data = child_out_data;
@@ -121,11 +127,19 @@ module edgembconv_hwacandidate_d4_vstream_v3_mb16_controller #(
             pack_valid <= 1'b0;
             pack_index_reg <= 16'd0;
             pack_epoch_reg <= 4'd0;
+            done_pending <= 1'b0;
+            done_pending_epoch <= 4'd0;
             word_sink_fire_count <= 32'd0;
             byte_commit_count <= 32'd0;
             sink_stall_count <= 32'd0;
             sink_protocol_errors <= 32'd0;
         end else begin
+            if (child_done_valid) begin
+                done_pending <= 1'b1;
+                done_pending_epoch <= child_done_epoch;
+            end
+            if (done_valid && done_ready)
+                done_pending <= 1'b0;
             if (sink_valid && !sink_ready)
                 sink_stall_count <= sink_stall_count + 1'b1;
             if (sink_fire)

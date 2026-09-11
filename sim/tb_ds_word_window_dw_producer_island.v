@@ -5,7 +5,8 @@
 module tb_ds_word_window_dw_producer_island #(
     parameter integer TB_CIN = 16,
     parameter integer TB_STRIDE = 1,
-    parameter integer TB_USE_QUADLOCAL = 0
+    parameter integer TB_USE_QUADLOCAL = 0,
+    parameter integer TB_OUTPUT_HEIGHT = 8
 );
     localparam integer FW = (TB_STRIDE == 2) ? 17 : 10;
     localparam integer FH = FW;
@@ -59,7 +60,7 @@ module tb_ds_word_window_dw_producer_island #(
         .MAX_IN_H(17), .MAX_IN_W(17), .MAX_CHANNEL_GROUPS(3),
         .LAYOUT_GROUPS(1), .ADDR_WIDTH(24), .WORD_COUNT_WIDTH(16),
         .VECTOR_ADDR_WIDTH(VAW), .EPOCH_WIDTH(4), .TAG_WIDTH(16), .FIFO_DEPTH(8),
-        .USE_QUADLOCAL_CORE(TB_USE_QUADLOCAL)
+        .USE_QUADLOCAL_CORE(TB_USE_QUADLOCAL), .OUTPUT_HEIGHT(TB_OUTPUT_HEIGHT)
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .fill_start_valid(fill_start_valid), .fill_start_ready(fill_start_ready),
@@ -271,7 +272,7 @@ module tb_ds_word_window_dw_producer_island #(
                 end
             end
             ready_out = 1;
-            if (out_seen !== 64 || token_count !== 576) errors = errors + 1;
+            if (out_seen !== (TB_OUTPUT_HEIGHT*8) || token_count !== (TB_OUTPUT_HEIGHT*8*9)) errors = errors + 1;
             while (compute_busy) @(negedge clk);
         end
     endtask
@@ -290,12 +291,14 @@ module tb_ds_word_window_dw_producer_island #(
             wait_fill((ti+1)&1, ti+2);
         end
         if (fill_word_count_seen !== ((TILES+1)*WORDS)) errors = errors + 1;
-        if (read_vector_count !== (TILES*FW*FH)) errors = errors + 1;
+        /* Direct mode counts accepted tap reads, not the removed footprint
+         * mirror copy.  There are nine bank reads per output pixel. */
+        if (read_vector_count !== (TILES*TB_OUTPUT_HEIGHT*8*9)) errors = errors + 1;
         if (overlap_cycles == 0) errors = errors + 1;
         if (errors == 0)
             $display("PASS ds_word_window_dw_producer_island CIN=%0d stride=%0d tiles=%0d words=%0d reads=%0d overlap=%0d cycles=%0d",TB_CIN,TB_STRIDE,TILES,fill_word_count_seen,read_vector_count,overlap_cycles,cycle_count);
         else begin
-            $display("FAIL ds_word_window_dw_producer_island CIN=%0d stride=%0d errors=%0d words=%0d/%0d reads=%0d/%0d overlap=%0d",TB_CIN,TB_STRIDE,errors,fill_word_count_seen,TILES*WORDS,read_vector_count,TILES*FW*FH,overlap_cycles);
+            $display("FAIL ds_word_window_dw_producer_island CIN=%0d stride=%0d errors=%0d words=%0d/%0d reads=%0d/%0d overlap=%0d",TB_CIN,TB_STRIDE,errors,fill_word_count_seen,TILES*WORDS,read_vector_count,TILES*TB_OUTPUT_HEIGHT*8*9,overlap_cycles);
             $fatal(1);
         end
         $finish;

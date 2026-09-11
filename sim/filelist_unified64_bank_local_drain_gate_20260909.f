@@ -1,0 +1,3 @@
+-f sim/filelist_cnn_current.f
+sim/tb_cnn_top_fullnet_sram_datapath.v
+sim/tb_unified64_bank_local_drain_gate_20260909.v

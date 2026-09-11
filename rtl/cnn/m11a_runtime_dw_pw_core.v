@@ -228,6 +228,12 @@ module m11a_runtime_dw_pw_core (
                 top_state <= TOP_RUN;
             if (pw_done)
                 top_state <= TOP_DONE;
+            else if (top_state == TOP_DONE)
+                /* The runner's layer-complete pulse is externally visible
+                 * for one cycle.  Return to idle afterwards so a
+                 * compile-time M1.1-A top can accept the next descriptor in
+                 * a multi-layer controller run. */
+                top_state <= TOP_IDLE;
         end
     end
 endmodule

@@ -3,5 +3,6 @@ rtl/cnn/edgembconv_hwacandidate_d4_vstream_elastic_rq_pool.v
 rtl/cnn/edgembconv_hwacandidate_d4_vstream_v2_datapath.v
 rtl/cnn/edgembconv_hwacandidate_d4_dw16_stream_tile.v
 rtl/cnn/edgembconv_hwacandidate_d4_vstream_v2_mb16_controller.v
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_v3_scheduler.v
 rtl/cnn/edgembconv_hwacandidate_d4_vstream_v3_mb16_controller.v
 sim/tb_edgembconv_hwacandidate_d4_vstream_v3_mb16_controller.v

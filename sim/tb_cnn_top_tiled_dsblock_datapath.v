@@ -56,6 +56,7 @@ module tb_cnn_top_tiled_dsblock_datapath;
     reg stalled_write;
     reg [31:0] stalled_addr;
     reg [31:0] stalled_wdata;
+    reg [15:0] stall_lfsr;
 
     cnn_top dut (
         .clk(clk),
@@ -101,12 +102,16 @@ module tb_cnn_top_tiled_dsblock_datapath;
             stalled_write <= 1'b0;
             stalled_addr <= 32'd0;
             stalled_wdata <= 32'd0;
+            stall_lfsr <= 16'h1ace;
         end else begin
             responder_cycle <= responder_cycle + 1;
-            case (responder_cycle % 7)
-                2, 5: mem_req_ready <= 1'b0;
-                default: mem_req_ready <= 1'b1;
-            endcase
+            // Fixed-seed pseudo-random ready/response perturbation keeps this
+            // regression reproducible while exercising arbitrary memory
+            // stalls rather than one hand-written periodic schedule.
+            stall_lfsr <= {stall_lfsr[14:0],
+                           stall_lfsr[15] ^ stall_lfsr[13] ^
+                           stall_lfsr[12] ^ stall_lfsr[10]};
+            mem_req_ready <= (stall_lfsr[2:0] != 3'b000);
 
             mem_resp_valid <= 1'b0;
             if (pending_read) begin
@@ -182,8 +187,8 @@ module tb_cnn_top_tiled_dsblock_datapath;
                     end
                     pending_read <= 1'b1;
                     pending_rdata <= mem[mem_req_addr[18:2]];
-                    response_delay <= accepted_reads % 4;
-                    delay_coverage[accepted_reads % 4] <= 1'b1;
+                    response_delay <= {1'b0, stall_lfsr[1:0]};
+                    delay_coverage[stall_lfsr[1:0]] <= 1'b1;
                     accepted_reads <= accepted_reads + 1;
                 end
             end

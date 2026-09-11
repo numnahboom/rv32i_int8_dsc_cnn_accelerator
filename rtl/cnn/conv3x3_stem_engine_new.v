@@ -155,6 +155,11 @@ module conv3x3_stem_engine_new (
     wire signed [7:0] rq_data_out;
     reg [5:0] rq_tag_pixel [0:9];
     reg [3:0] rq_tag_channel [0:9];
+`ifndef SYNTHESIS
+    /* Simulation-only semantic ledger: one registered tap group contains the
+     * three input-channel products of one 3x3 stem tap. */
+    integer sim_mac_count;
+`endif
 
     wire signed [7:0] act_value_0 = operand_act_0_q;
     wire signed [7:0] act_value_1 = operand_act_1_q;
@@ -177,6 +182,26 @@ module conv3x3_stem_engine_new (
 
     integer cfg_addr;
     integer i;
+
+    // Configuration writes arrive while the runner is streaming the source
+    // tensor.  Register the ingress payload before decoding its bank/address;
+    // this keeps the wide runner-side cfg_index fanout off the distributed
+    // memory write enables while retaining one scalar and one vector write per
+    // cycle.  The pending slots are drained and refilled on the same edge.
+    reg        cfg_pending;
+    reg [3:0]  cfg_pending_target;
+    reg [15:0] cfg_pending_index;
+    reg [31:0] cfg_pending_data;
+    reg        cfg_vec4_pending;
+    reg [15:0] cfg_vec4_pending_index;
+    reg [31:0] cfg_vec4_pending_data;
+    // Decode the byte-linear vector address at ingress.  The pending write
+    // retires one cycle later, so retaining the word/lane fields removes the
+    // divide/modulo cone from the cfg_vec4_pending_index -> input-memory
+    // write boundary without changing the one-write-per-cycle contract.
+    reg [8:0]  cfg_vec4_pending_word;
+    reg [1:0]  cfg_vec4_pending_lane;
+    reg        cfg_vec4_pending_valid;
 
     assign cfg_ready = !busy;
     assign rq_valid_in = (state == ST_RQ_ISSUE) && rq_unit_ready_in;
@@ -225,71 +250,107 @@ module conv3x3_stem_engine_new (
     );
 
     always @(posedge clk) begin
-        if (cfg_wr_en && cfg_ready) begin
-            cfg_addr = cfg_index;
-            case (cfg_target)
-                CFG_INPUT: begin
-                    if (cfg_addr < 300) begin
-                        case (cfg_addr % 3)
-                            0: input_mem_lane0[cfg_addr / 3] <= cfg_data[7:0];
-                            1: input_mem_lane1[cfg_addr / 3] <= cfg_data[7:0];
-                            default: input_mem_lane2[cfg_addr / 3] <= cfg_data[7:0];
-                        endcase
+        if (!rst_n) begin
+            cfg_pending <= 1'b0;
+            cfg_pending_target <= 4'd0;
+            cfg_pending_index <= 16'd0;
+            cfg_pending_data <= 32'd0;
+            cfg_vec4_pending <= 1'b0;
+            cfg_vec4_pending_index <= 16'd0;
+            cfg_vec4_pending_data <= 32'd0;
+            cfg_vec4_pending_word <= 9'd0;
+            cfg_vec4_pending_lane <= 2'd0;
+            cfg_vec4_pending_valid <= 1'b0;
+        end else begin
+            // Retire the previously captured scalar write.  The ingress
+            // registers, rather than the runner's live cfg bus, drive all
+            // address arithmetic and memory enables in this block.
+            if (cfg_pending) begin
+                cfg_addr = cfg_pending_index;
+                case (cfg_pending_target)
+                    CFG_INPUT: begin
+                        if (cfg_addr < 300) begin
+                            case (cfg_addr % 3)
+                                0: input_mem_lane0[cfg_addr / 3] <= cfg_pending_data[7:0];
+                                1: input_mem_lane1[cfg_addr / 3] <= cfg_pending_data[7:0];
+                                default: input_mem_lane2[cfg_addr / 3] <= cfg_pending_data[7:0];
+                            endcase
+                        end
                     end
-                end
-                CFG_WEIGHT: begin
-                    if (cfg_addr < 432) begin
-                        case (cfg_addr % 3)
-                            0: weight_mem_lane0[cfg_addr / 3] <= cfg_data[7:0];
-                            1: weight_mem_lane1[cfg_addr / 3] <= cfg_data[7:0];
-                            default: weight_mem_lane2[cfg_addr / 3] <= cfg_data[7:0];
-                        endcase
+                    CFG_WEIGHT: begin
+                        if (cfg_addr < 432) begin
+                            case (cfg_addr % 3)
+                                0: weight_mem_lane0[cfg_addr / 3] <= cfg_pending_data[7:0];
+                                1: weight_mem_lane1[cfg_addr / 3] <= cfg_pending_data[7:0];
+                                default: weight_mem_lane2[cfg_addr / 3] <= cfg_pending_data[7:0];
+                            endcase
+                        end
                     end
-                end
-                CFG_BIAS: begin
-                    if (cfg_addr < 16) begin
-                        bias_mem[cfg_addr] <= cfg_data;
+                    CFG_BIAS: begin
+                        if (cfg_addr < 16)
+                            bias_mem[cfg_addr] <= cfg_pending_data;
                     end
-                end
-                CFG_MUL: begin
-                    if (cfg_addr < 16) begin
-                        multiplier_mem[cfg_addr] <= cfg_data;
+                    CFG_MUL: begin
+                        if (cfg_addr < 16)
+                            multiplier_mem[cfg_addr] <= cfg_pending_data;
                     end
-                end
-                CFG_SHIFT: begin
-                    if (cfg_addr < 16) begin
-                        shift_mem[cfg_addr] <= cfg_data[5:0];
-                    end
-                end
-                default: begin
-                end
-            endcase
-        end
-        if (cfg_vec4_wr_en && cfg_ready) begin
-            if (cfg_vec4_index < 16'd297) begin
-                // A four-byte write can cross up to four banks.  The vector
-                // loader uses byte-linear indices, so spell out the three
-                // possible starting lanes to preserve that ABI exactly.
-                case (cfg_vec4_index % 3)
-                    0: begin
-                        input_mem_lane0[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
-                        input_mem_lane1[cfg_vec4_index / 3] <= cfg_vec4_data[15:8];
-                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[23:16];
-                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
-                    end
-                    1: begin
-                        input_mem_lane1[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
-                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[15:8];
-                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[23:16];
-                        input_mem_lane1[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
+                    CFG_SHIFT: begin
+                        if (cfg_addr < 16)
+                            shift_mem[cfg_addr] <= cfg_pending_data[5:0];
                     end
                     default: begin
-                        input_mem_lane2[cfg_vec4_index / 3] <= cfg_vec4_data[7:0];
-                        input_mem_lane0[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[15:8];
-                        input_mem_lane1[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[23:16];
-                        input_mem_lane2[(cfg_vec4_index / 3) + 1] <= cfg_vec4_data[31:24];
                     end
                 endcase
+            end
+
+            if (cfg_vec4_pending) begin
+                if (cfg_vec4_pending_valid) begin
+                    // A four-byte write can cross up to four banks.  The
+                    // vector loader uses byte-linear indices, so spell out
+                    // the three possible starting lanes exactly as before.
+                    // The word/lane decode was committed with the pending
+                    // payload; no variable divide remains on this write edge.
+                    case (cfg_vec4_pending_lane)
+                        0: begin
+                            input_mem_lane0[cfg_vec4_pending_word] <= cfg_vec4_pending_data[7:0];
+                            input_mem_lane1[cfg_vec4_pending_word] <= cfg_vec4_pending_data[15:8];
+                            input_mem_lane2[cfg_vec4_pending_word] <= cfg_vec4_pending_data[23:16];
+                            input_mem_lane0[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[31:24];
+                        end
+                        1: begin
+                            input_mem_lane1[cfg_vec4_pending_word] <= cfg_vec4_pending_data[7:0];
+                            input_mem_lane2[cfg_vec4_pending_word] <= cfg_vec4_pending_data[15:8];
+                            input_mem_lane0[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[23:16];
+                            input_mem_lane1[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[31:24];
+                        end
+                        default: begin
+                            input_mem_lane2[cfg_vec4_pending_word] <= cfg_vec4_pending_data[7:0];
+                            input_mem_lane0[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[15:8];
+                            input_mem_lane1[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[23:16];
+                            input_mem_lane2[cfg_vec4_pending_word + 9'd1] <= cfg_vec4_pending_data[31:24];
+                        end
+                    endcase
+                end
+            end
+
+            // Clear after retirement, then let a same-cycle accepted write
+            // refill the slot.  This gives the ingress an II of one even when
+            // scalar/vector writes arrive on consecutive cycles.
+            cfg_pending <= 1'b0;
+            cfg_vec4_pending <= 1'b0;
+            if (cfg_wr_en && cfg_ready) begin
+                cfg_pending <= 1'b1;
+                cfg_pending_target <= cfg_target;
+                cfg_pending_index <= cfg_index;
+                cfg_pending_data <= cfg_data;
+            end
+            if (cfg_vec4_wr_en && cfg_ready) begin
+                cfg_vec4_pending <= 1'b1;
+                cfg_vec4_pending_index <= cfg_vec4_index;
+                cfg_vec4_pending_data <= cfg_vec4_data;
+                cfg_vec4_pending_word <= cfg_vec4_index / 16'd3;
+                cfg_vec4_pending_lane <= cfg_vec4_index % 16'd3;
+                cfg_vec4_pending_valid <= (cfg_vec4_index < 16'd297);
             end
         end
     end
@@ -350,6 +411,9 @@ module conv3x3_stem_engine_new (
             out_wr_pixel_idx <= 6'd0;
             out_wr_channel_idx <= 4'd0;
             out_wr_data_int8 <= 8'sd0;
+`ifndef SYNTHESIS
+            sim_mac_count <= 0;
+`endif
         end else begin
             done <= 1'b0;
             out_wr_en <= 1'b0;
@@ -441,6 +505,9 @@ module conv3x3_stem_engine_new (
                     // registers are refilled for the following tap in the
                     // same edge, preserving one tap per cycle after fill.
                     if (operand_valid_q) begin
+`ifndef SYNTHESIS
+                        sim_mac_count <= sim_mac_count + 3;
+`endif
                         // The registered product sum is consumed one cycle
                         // later.  The first tap fills this stage; subsequent
                         // taps both consume and refill it (II=1).

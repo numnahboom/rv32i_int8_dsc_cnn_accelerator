@@ -1,0 +1,2 @@
+rtl/cnn/edgembconv_hwacandidate_d4_vstream_v6_raw_fifo.v
+sim/tb_edgembconv_hwacandidate_d4_vstream_v6_raw_fifo.v

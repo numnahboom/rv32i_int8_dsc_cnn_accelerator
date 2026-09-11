@@ -270,17 +270,41 @@ module ds_word_window_dw_pw_pair_scratch_pipeline #(
         (pack_group << 1) + (pack_base >> 1),
         pack_p[2]
     };
-    wire [2:0] row_wr_word_sel = pack_p[1:0];
+    /* stream4 emits two 4-channel words for each 4-pixel half.  Map the
+     * second word to planes 4..7 so it cannot overwrite planes 0..3. */
+    wire [2:0] row_wr_word_sel = {pack_base[0], pack_p[1:0]};
     wire [35:0] row_wr_data36 = {pack_mask, pack_data};
-    row_image_bram_store u_row_image (
+    /* Bank the image by the producer source bank.  This keeps the image
+     * being drained by PW stable while the opposite producer bank is filled
+     * and computed for the next macro. */
+    wire row_wr_ready0, row_wr_ready1;
+    wire row_rd_req_ready0, row_rd_req_ready1;
+    wire row_rd_valid0, row_rd_valid1;
+    wire [255:0] row_rd_data0, row_rd_data1;
+    wire [31:0] row_rd_mask0, row_rd_mask1;
+    row_image_bram_store u_row_image0 (
         .clk(clk), .rst_n(rst_n),
-        .wr_valid(row_wr_valid), .wr_ready(row_wr_ready),
+        .wr_valid(row_wr_valid && !active_bank), .wr_ready(row_wr_ready0),
         .wr_addr(row_wr_addr), .wr_word_sel(row_wr_word_sel),
         .wr_data36(row_wr_data36),
-        .rd_req_valid(row_rd_req_valid), .rd_req_ready(row_rd_req_ready),
-        .rd_addr(row_rd_addr), .rd_valid(row_rd_valid),
-        .rd_ready(row_rd_ready), .rd_data(row_rd_data), .rd_mask(row_rd_mask)
+        .rd_req_valid(row_rd_req_valid && !tr_bank), .rd_req_ready(row_rd_req_ready0),
+        .rd_addr(row_rd_addr), .rd_valid(row_rd_valid0),
+        .rd_ready(row_rd_ready && !tr_bank), .rd_data(row_rd_data0), .rd_mask(row_rd_mask0)
     );
+    row_image_bram_store u_row_image1 (
+        .clk(clk), .rst_n(rst_n),
+        .wr_valid(row_wr_valid && active_bank), .wr_ready(row_wr_ready1),
+        .wr_addr(row_wr_addr), .wr_word_sel(row_wr_word_sel),
+        .wr_data36(row_wr_data36),
+        .rd_req_valid(row_rd_req_valid && tr_bank), .rd_req_ready(row_rd_req_ready1),
+        .rd_addr(row_rd_addr), .rd_valid(row_rd_valid1),
+        .rd_ready(row_rd_ready && tr_bank), .rd_data(row_rd_data1), .rd_mask(row_rd_mask1)
+    );
+    assign row_wr_ready = active_bank ? row_wr_ready1 : row_wr_ready0;
+    assign row_rd_req_ready = tr_bank ? row_rd_req_ready1 : row_rd_req_ready0;
+    assign row_rd_valid = tr_bank ? row_rd_valid1 : row_rd_valid0;
+    assign row_rd_data = tr_bank ? row_rd_data1 : row_rd_data0;
+    assign row_rd_mask = tr_bank ? row_rd_mask1 : row_rd_mask0;
     reg [1:0] pack_half_seen;
     reg [2:0] pack_row;
     reg [2:0] pack_col;
@@ -439,7 +463,10 @@ module ds_word_window_dw_pw_pair_scratch_pipeline #(
                 tr_state <= TR_WRITE;
             end
             if (tr_state == TR_WRITE && c_dw_wr_r) begin
-                if (!tr_half_sel) tr_half_sel <= 1'b1;
+                if (!tr_half_sel) begin
+                    tr_half_sel <= 1'b1;
+                    tr_state <= TR_READ_REQ;
+                end
                 else begin
                     tr_half_sel <= 0;
                     if (tr_group + 1 >= tr_group_count_latched) tr_state <= TR_COMMIT;

@@ -1,0 +1,3 @@
+-f sim/filelist_cnn_current.f
+sim/tb_cnn_top_fullnet_sram_datapath.v
+sim/tb_cnn_top_fullnet_group_shared64_dw_rq_profiler_20260909.v

@@ -19,6 +19,7 @@ rtl/cnn/dw_tile_fusion_engine_new.v
 rtl/cnn/dw_tile_fusion_engine_vector4.v
 rtl/cnn/unified64_tile_engine_experiment.v
 rtl/cnn/ds_block_tile_engine_new.v
+rtl/cnn/ds_persistent_pw_row_feed.v
 rtl/cnn/conv3x3_stem_engine_new.v
 rtl/cnn/stem_weight_store_packed64.v
 rtl/cnn/stem_unified64_streaming.v

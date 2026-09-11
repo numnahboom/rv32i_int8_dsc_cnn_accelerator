@@ -122,6 +122,12 @@ module m11a_runtime_cfg_store (
     reg [11:0] prep_pw_src_addr;
     reg [11:0] prep_pw_tile_base;
     reg [63:0] prep_pw_row_buf;
+    /* Capture the two preparation loop bounds once at the fenced start.
+     * Keeping the Cin*Cout products in the per-cycle counter predicates made
+     * Vivado build a wide multiplier/comparator cone onto the counter CE pins.
+     * Both supported C0 layers use Cout=32 or 64, so these are exact shifts. */
+    reg [11:0] prep_pw_byte_last;
+    reg [8:0]  prep_pw_row_last;
 
     wire cfg_layer_ok = (cfg_layer == 2'd1) || (cfg_layer == 2'd2);
     wire [9:0] cfg_limit = (cfg_layer == 2'd1) ? 10'd308 : 10'd872;
@@ -194,6 +200,8 @@ module m11a_runtime_cfg_store (
             prep_pw_src_addr <= 12'd0;
             prep_pw_tile_base <= 12'd0;
             prep_pw_row_buf <= 64'd0;
+            prep_pw_byte_last <= 12'd0;
+            prep_pw_row_last <= 9'd0;
             prepare_busy <= 1'b0;
             prepare_done <= 1'b0;
             pw_row_valid <= 1'b0;
@@ -256,6 +264,13 @@ module m11a_runtime_cfg_store (
                 prep_pw_src_addr <= 12'd0;
                 prep_pw_tile_base <= 12'd0;
                 prep_pw_row_buf <= 64'd0;
+                if (prepare_cout == 7'd64) begin
+                    prep_pw_byte_last <= {prepare_cin, 6'b0} - 1'b1;
+                    prep_pw_row_last <= {prepare_cin, 3'b0} - 1'b1;
+                end else begin
+                    prep_pw_byte_last <= {1'b0, prepare_cin, 5'b0} - 1'b1;
+                    prep_pw_row_last <= {1'b0, prepare_cin, 2'b0} - 1'b1;
+                end
             end
 
             if (pw_row_rd_en) begin
@@ -366,7 +381,7 @@ module m11a_runtime_cfg_store (
                         end else begin
                             prep_byte_lane <= prep_byte_lane + 1'b1;
                         end
-                        if (prep_pw_byte == (prep_cin * prep_cout) - 1'b1) begin
+                        if (prep_pw_byte == prep_pw_byte_last) begin
                             prep_pw_row <= 9'd0;
                             prep_pw_tile <= 7'd0;
                             prep_pw_k <= 6'd0;
@@ -393,7 +408,7 @@ module m11a_runtime_cfg_store (
                          * word with a direct lane-7 read and [63:8] used to
                          * drop lane 0 and duplicate lane 7. */
                         pw_row_mem[prep_pw_row[7:0]] <= prep_pw_row_buf;
-                        if (prep_pw_row == ((prep_cout >> 3) * prep_cin) - 1'b1) begin
+                        if (prep_pw_row == prep_pw_row_last) begin
                             prep_state <= P_DONE;
                         end else begin
                             prep_pw_row <= prep_pw_row + 1'b1;

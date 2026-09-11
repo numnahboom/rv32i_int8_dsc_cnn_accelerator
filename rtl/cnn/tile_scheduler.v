@@ -23,6 +23,15 @@ module tile_scheduler #(
 );
     reg [7:0] cur_h;
     reg [7:0] cur_w;
+    // Tile dimensions and stride are transaction-invariant once start is
+    // asserted.  Snapshot them at that boundary so the next-tile recurrence
+    // does not form a live path from cnn_layer_runner's descriptor/stride
+    // arithmetic into cur_w/cur_h reset logic.  Besides shortening the
+    // critical control cone, this makes a tile walk immune to a producer
+    // changing its inputs while the scheduler is still draining a request.
+    reg [7:0] out_h_reg;
+    reg [7:0] out_w_reg;
+    reg [1:0] stride_reg;
 
     function [7:0] min_tile;
         input [7:0] start_pos;
@@ -46,16 +55,17 @@ module tile_scheduler #(
     always @(*) begin
         tile_h_start = cur_h;
         tile_w_start = cur_w;
-        tile_h_size = min_tile(cur_h, out_h, TILE_H[7:0]);
-        tile_w_size = min_tile(cur_w, out_w, TILE_W[7:0]);
-        if (stride == 2'd2) begin
+        tile_h_size = min_tile(cur_h, out_h_reg, TILE_H[7:0]);
+        tile_w_size = min_tile(cur_w, out_w_reg, TILE_W[7:0]);
+        if (stride_reg == 2'd2) begin
             input_tile_h = ((tile_h_size - 8'd1) << 1) + 8'd3;
             input_tile_w = ((tile_w_size - 8'd1) << 1) + 8'd3;
         end else begin
             input_tile_h = tile_h_size + 8'd2;
             input_tile_w = tile_w_size + 8'd2;
         end
-        is_last_tile = ((cur_h + tile_h_size) >= out_h) && ((cur_w + tile_w_size) >= out_w);
+        is_last_tile = ((cur_h + tile_h_size) >= out_h_reg) &&
+                       ((cur_w + tile_w_size) >= out_w_reg);
     end
 
     always @(posedge clk) begin
@@ -63,15 +73,21 @@ module tile_scheduler #(
             valid <= 1'b0;
             cur_h <= 8'd0;
             cur_w <= 8'd0;
+            out_h_reg <= 8'd0;
+            out_w_reg <= 8'd0;
+            stride_reg <= 2'd1;
         end else begin
             if (start) begin
                 valid <= 1'b1;
                 cur_h <= 8'd0;
                 cur_w <= 8'd0;
+                out_h_reg <= out_h;
+                out_w_reg <= out_w;
+                stride_reg <= stride;
             end else if (next && valid) begin
                 if (is_last_tile) begin
                     valid <= 1'b0;
-                end else if ((cur_w + TILE_W[7:0]) >= out_w) begin
+                end else if ((cur_w + TILE_W[7:0]) >= out_w_reg) begin
                     cur_w <= 8'd0;
                     cur_h <= cur_h + TILE_H[7:0];
                 end else begin
