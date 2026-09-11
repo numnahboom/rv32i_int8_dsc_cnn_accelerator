@@ -763,3 +763,49 @@ logits exact，但 OOC setup WNS `-0.838 ns`；group-published shared64 已完�
 同步 XPM BRAM 一拍读响应等价验证，隔离 DS 车辆为 `87,553` cycles、8 ns OOC
 WNS `+0.032 ns`。后者不构成 full-top closure。详细报告及保留/删除策略见
 `docs/reports/README.md`，Vivado 默认线程数为 8。
+
+## 2026-09-02：C0 软件质量审计与 D4 网络晋级
+
+软件侧对固定 C0 重新训练并验证 official CIFAR-10 test10k：FP32 70.05%、
+deployment INT8 66.16%，账本为 72,010 参数和 5,136,896 MAC。BN-fold PTQ
+将 folded FP32/INT8 提升到 88.43%/79.23%，但 INT8 仍未通过 90% 与 0.5 pp
+drop 门；随后 QAT exported INT8 为 77.61%，比 PTQ 低 1.62 pp，记录为负结果。
+
+并行的软件候选筛选比较 EdgeMBConv A/B/C/D4/D8。D4 达到 FP32 91.63%、
+INT8 91.46%，量化下降 0.17 pp；冻结账本为 204,090 参数、11,645,440 MAC、
+23,290,880 ops。D4 被选为后续网络主线，C0 保留为 control。两者不是同一
+拓扑或 ABI；`sw/model/model_quant.h` 继续属于 C0。
+
+## 2026-09-02 至 2026-09-10：D4 composite 与 vstream 演进
+
+D4 从 block shell、DW16 tile、dense128 PW、DSP/RQ pool 和 composite
+controller 演进到独立 vstream。v3 exact 周期为 43,688/44,965，v4 降到
+36,401/37,927。v5 no-BP 达到 23,843 cycles，但综合约 264,810 LUT，远超
+XC7Z020，否决。
+
+v6 引入 banked activation/weights、同步 fetch pair、16-lane BRAM raw FIFO、
+DW cursor/lookahead 和 PW operand/token stage，并以 no-BP、random BP、final
+stall、two-epoch 和事务 ledger 作为强制功能门。
+
+## 2026-09-09：C0 shared64 frozen control
+
+C0 shared64 完整网络验证得到 10/10 logits exact；no-BP 219,970 cycles、
+random BP + response-2 268,503、response-64 1,902,452。XC7Z020 8 ns full-top
+fully routed，WNS/TNS `-0.880/-482.059 ns`、WHS/THS `+0.070/0`；LUT 32,295、
+FF 45,704、BRAM tile 64.5、DSP 151、vectorless power 0.479 W。资源门通过，
+setup 和约 12.19 GOPS/W 未达目标，因此冻结为完整 control 而非达标实现。
+
+## 2026-09-11：D4 v6 retained candidate4 与项目收尾
+
+candidate1--6 的 RQ/DW 控制锥实验完成后，candidate5/6 未通过 WNS/TNS 同时
+改善门，恢复 candidate4。14-source manifest PASS；DW adapter/tile、no-BP、
+random BP、final stall 和 two-epoch 全部 exact，no-BP 24,039 cycles，8192
+bytes / 2048 words，PW/DW/RQ 与 request/response ledger 守恒，errors=0。
+
+candidate4 fresh OOC fully routed：WNS/TNS `-1.028/-1461.586 ns`、WHS/THS
+`+0.071/0`；LUT 18,000、FF 25,133、DSP 145、BRAM 28、vectorless power
+0.406 W。资源可放入，但 8 ns setup 未闭合。D4 full-network logits、完整推理
+cycles、full-top power、mJ/inference 和 GOPS/W 未建立。
+
+本阶段停止优化并提交阶段检查点。C0 作为 frozen control；D4 是唯一网络主线，
+但当前结论只到 software + standalone/OOC，不能写成完整 FPGA 部署完成。

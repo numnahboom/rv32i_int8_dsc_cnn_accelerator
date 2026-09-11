@@ -1,18 +1,47 @@
 # Verification Plan
 
-## Current gate status (2026-09-01)
+## Current gate status (2026-09-11)
 
-The complete CNN simulation path remains bit-exact, but the XC7Z020 full-top
-target is not closed. The authoritative CSA baseline is 1,003,577 cycles and
-5,136,896 MACs with post-route WNS -0.799 ns; the shared+persistent candidate
-is 695,553 cycles with exact logits but OOC WNS -0.838 ns. The strongest
-isolated DS evidence is the synchronous-read shared64 report at
-`docs/reports/ds_group_published_shared64_sync_read_equivalence_20260901.md`.
-These numbers are evidence snapshots, not a replacement for a fresh full-top
-run. See `docs/reports/README.md` for the evidence boundary and reproduction
-commands. Vivado implementation and synthesis defaults use eight threads.
+Verification now has two explicitly separate tracks:
 
-本项目采用严格的分阶段门禁：一个模块必须先有 Python golden 对照、testbench 和 Verilator 通过结果，才开始下一个模块。
+- C0 is the frozen complete-system control. Ten logits are exact; no-BP,
+  response-2 and response-64 cycles are 219,970 / 268,503 / 1,902,452. The
+  fully routed 8 ns full-top has WNS/TNS -0.880/-482.059 ns and WHS/THS
+  +0.070/0, so setup and the 20 GOPS/W gate remain open.
+- D4 is the network mainline. Software accuracy/ledger is frozen at 91.46%
+  INT8, 11,645,440 MAC and 23,290,880 ops. Retained v6 candidate4 standalone
+  regression is exact with 24,039 no-BP cycles, but OOC post-route WNS is
+  -1.028 ns and no D4 full-network/full-top exists.
+
+See `docs/reports/README.md` for the current evidence map. C0 results cannot
+be relabelled as D4; a standalone or OOC PASS cannot close a full-network or
+full-top gate.
+
+本项目采用严格的分阶段门禁：一个模块必须先有 Python/integer golden 对照、
+testbench 和 simulator PASS，才进入综合；只有资源和路径结构值得继续的候选
+才进入 place/route。项目当前已停止推进，以下入口用于复核或未来恢复。
+
+## D4 retained v6 gate
+
+Required functional checks:
+
+```text
+scripts/run_edgembconv_hwacandidate_d4_vstream_v6_dw_req_adapter_sim.sh
+scripts/run_edgembconv_hwacandidate_d4_dw16_stream_tile_sim.sh
+scripts/run_edgembconv_hwacandidate_d4_vstream_v6_mb16_controller_nobp.sh
+scripts/run_edgembconv_hwacandidate_d4_vstream_v6_mb16_controller_sim.sh
+scripts/run_edgembconv_hwacandidate_d4_vstream_v6_mb16_controller_finalstall.sh
+scripts/run_edgembconv_hwacandidate_d4_vstream_v6_mb16_controller_two_epoch.sh
+```
+
+Acceptance requires 8,192 output bytes / 2,048 sink words, PW/DW/RQ ledger
+786,432 / 73,728 / 12,288, DW request/response 4,418 / 4,418, `errors=0`,
+exactly-once under stalls, and no-BP `<=25,000 cycles`. Current candidate4
+passes these checks.
+
+Physical promotion remains separate: only a matching-source D4 full-top on
+`xc7z020clg400-1`, Vivado 2025.2, 8.000 ns can establish final timing,
+resources, power and energy efficiency. The current OOC result is not enough.
 
 ## 阶段 1：基础算术模块
 

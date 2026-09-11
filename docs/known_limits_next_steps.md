@@ -1,51 +1,58 @@
-# 当前限制与下一步（2026-09-01）
+# 当前限制与恢复条件（2026-09-11）
 
 ## 当前结论
 
-固定 EdgeDSCNet-C10 的 `cnn_top` 完整仿真路径保持 bit-exact；但 XC7Z020
-目标的完整顶层仍未同时满足时序、周期和能效目标。权威基线和实验报告索引
-位于 [`reports/README.md`](reports/README.md)。
+项目已停止继续优化。C0 冻结为完整系统 control；D4 是唯一网络主线，但当前只完成软件冻结和 retained v6 candidate4 standalone/OOC，尚未完成 D4 full-network/full-top。
 
-| 项目 | 当前权威结果 | 结论 |
-| --- | ---: | --- |
-| CSA 完整顶层 | 1,003,577 cycles；5,136,896 MAC；10/10 logits exact | 功能通过，WNS -0.799 ns，未闭合 |
-| shared unified64 完整网络 | 713,086 cycles；5,136,896 MAC；logits exact | 仅综合资源证据 |
-| shared + persistent DS 完整网络 | 695,553 cycles；5,136,896 MAC；logits exact | OOC WNS -0.838 ns，未晋级 |
-| group-published shared64 隔离 DS | 87,553 cycles；4,194,304 DS MAC | 同步读 OOC WNS +0.032 ns，非 full-top |
-
-完整网络目标为 125 MHz（8 ns）、WNS/WHS >= 0、<=2.0M cycles、LUT/FF/DSP/BRAM
-各 <70%、on-chip power <=3 W，并以 MAC=2 ops 计算 >=20 GOPS/W。当前 CSA
-基线在 125 MHz、0.234 W 下约 5.47 GOPS/W；达到 20 GOPS/W 约需 <=274k cycles。
+| 项目 | 当前权威结果 | 状态 |
+| --- | --- | --- |
+| C0 fullnet | 10/10 logits exact；no-BP 219,970 cycles；resp2 268,503；resp64 1,902,452 | 完整 control |
+| C0 full-top | WNS/TNS -0.880/-482.059 ns；WHS/THS +0.070/0；151 DSP；0.479 W | fully routed，setup/20 GOPS/W 未通过 |
+| D4 software | 204,090 参数；11,645,440 MAC；23,290,880 ops；INT8 91.46% | 已冻结 |
+| D4 candidate4 standalone | no-BP 24,039；random BP 25,389；final stall 25,421；two-epoch 25,389/25,389 | exact，全部 ledger 守恒 |
+| D4 candidate4 OOC | WNS/TNS -1.028/-1461.586 ns；WHS/THS +0.071/0；18,000 LUT、25,133 FF、145 DSP、28 BRAM、0.406 W | 资源通过，8 ns setup 未通过 |
+| D4 full-network/full-top | 无同源完整 logits/cycles/P&R/power | 未建立 |
 
 ## 证据边界
 
-- `build/reports/vivado_cnn_top_impl/runs/20260828T_stem_csa_fulltop_max2/`
-  是完整顶层 post-route 基线，报告 `docs/reports/fulltop_csa_baseline_20260828.md`
-  汇总其 timing、端点、资源、功耗和关键路径。
-- `ds_group_published_shared64_sync_read_equivalence_20260901.md` 是当前最强
-  的隔离 DS 证据：Verilator 显式模拟同步 XPM BRAM 一拍读响应，覆盖 Cin
-  16/32/64/128、tail、mask、epoch/session、descriptor fence 和 backpressure。
-- OOC 正 slack 只证明相应隔离车辆的布局布线，不证明 `cnn_top` 的全局路由、
-  完整网络周期或板级功耗。
-- Vivado power 是默认活动率下的 vectorless on-chip 估算，不是板级实测。
-- 尚无 bitstream、板级 I/O/时钟约束、硬件运行、CDC/formal 或完整功耗测量证据。
+- C0 与 D4 是不同网络、账本和部署 ABI。C0 的 `model_quant.h`、accuracy、MAC、cycles 或 PPA 不能重标为 D4。
+- D4 candidate4 的 24,039 cycles 是 mb16 standalone，不是完整十类推理。
+- OOC route/power 只属于隔离 wrapper；不能计算 D4 full inference energy 或 GOPS/W。
+- Vivado power 是 vectorless on-chip estimate，不是板级测量。
+- 历史报告的数字只属于其日期、source manifest、器件、约束和 run。
 
 ## 接口与存储限制
 
-- 外部读协议最多一个 outstanding；握手后的响应最早下一拍到达，不能同拍返回。
-- 外部写无响应；`valid && !ready` 时 write/address/data 必须保持稳定。
-- 当前仿真外存仍以“一 int8 element 一 32-bit word、低 8 位有效”为主；packed
-  NHWC 和 burst adapter 尚未成为默认生产布局。
-- `cnn_out_buffer`、feature SRAM、DW/PW tile buffer 的同步读语义必须在仿真、
-  XPM 综合和下游控制器之间保持一致。
+- C0 外部读协议最多一个 outstanding；响应最早在 accepted request 的下一拍到达。
+- 外部写无响应；`valid && !ready` 时 write/address/data 必须稳定。
+- C0 仿真外存仍大量使用一 INT8 element 对应一个 32-bit word 的布局；packed NHWC/burst adapter 尚未成为生产路径。
+- D4 当前没有独立 full-network top、firmware header 或与 C0 互斥且通过 P&R 的 generate 路径。
+- D4 shape sweep 尚未覆盖 mb32/mb16/mb8/mb4、stride 1/2 和全部 channel groups。
+- 板级 I/O/clock、bitstream、CDC/formal、活动率驱动 power 和实测功耗均未建立。
 
-## 下一步
+## 最终目标缺口
 
-1. 维持 CSA 默认生产路径，先对 shared64 的 runner 合同、同步读和 fence 做
-   集成前审查；未有 full-top 证据前不修改默认选择器。
-2. 针对 full-top 最差路径族优化：DW 参数/控制高扇出、tiled-loader 地址控制、
-   FC 配置寻址和全局布线拥塞；使用 Vivado 8 线程取得可比较的 post-route。
-3. 只有候选同时改善 cycle、WNS/TNS/WHS、失败端点、资源、功耗和 GOPS/W，才
-   进行完整顶层晋级；否则在报告索引中保留负结果和原因。
-4. 晋级后再补齐 fullnet XSim/Verilator、完整顶层 post-route、活动率功耗和硬件
-   smoke，最后才宣称目标完成。
+最终 D4 报告要求同一 source snapshot 同时具备：
+
+- official test10k INT8 accuracy；
+- exact full-network logits；
+- no-BP、random BP/resp2 和 resp64 的完整推理周期；
+- 8 ns full-top WNS/WHS `>=0`、TNS/THS `=0`；
+- LUT/FF/DSP/BRAM 各严格低于 70%，DSP `<=153`；
+- post-route estimated power `<=3 W`；
+- 完整推理 `<=2,000,000 cycles`；
+- `cycles × power_W <=145,568`，即按 23,290,880 ops 计算 `>=20 GOPS/W`。
+
+当前缺少 D4 full-network/full-top 同源证据，因此 full inference latency、mJ/inference 和 GOPS/W 必须标为“未验证”。
+
+## 如果未来恢复
+
+只有用户重新授权后才继续。恢复入口是：
+
+1. 以 `docs/reports/edgembconv_hwacandidate_d4_v6_retained_source_manifest_20260911.txt` 核对 candidate4。
+2. 先重跑 DW adapter/tile、no-BP、random BP、final stall、two-epoch 和全部 ledger。
+3. 再进行 D4 shape sweep。
+4. 集成独立 D4 top 或与 C0 互斥的 generate 路径，验证完整 logits 和三种响应模式。
+5. 最后运行 XC7Z020 8 ns full-top P&R/power，并只用同源 cycles/power 计算能效。
+
+这是一条恢复条件，不是当前待执行计划。当前接受状态详见 `reports/c0_frozen_control_closeout_20260911.md` 和 `reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`。

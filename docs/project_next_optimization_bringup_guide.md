@@ -1,5 +1,13 @@
 # 项目后续优化、上板验证与说服力补强指南
 
+> **历史路线图（2026-09-11 修订）**：本文主体记录早期 C0/streaming
+> bring-up 思路，不再代表当前执行计划。项目现已停止推进；C0 冻结为完整
+> control，D4 是唯一网络主线，但只完成软件冻结和 candidate4 standalone/OOC。
+> 当前事实以 [`project_evolution_20260911.md`](project_evolution_20260911.md)、
+> [`known_limits_next_steps.md`](known_limits_next_steps.md) 和
+> [`reports/README.md`](reports/README.md) 为准。未来如重新授权，应先根据
+> candidate4 retained manifest 重写实施计划，不能直接执行本文旧 backlog。
+
 日期：2026-06-16
 
 > **状态修订（2026-09-01）**：本文路线图保留历史分析，当前事实以

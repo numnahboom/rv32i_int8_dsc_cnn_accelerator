@@ -1,8 +1,8 @@
 # rv32i_int8_dsc_cnn_accelerator
 
-这是一个面向 RV32I/NPC 教学 CPU 的 int8 深度可分离卷积 CNN 加速器工程。当前版本的目标不是做通用 NPU，而是把一个固定形状的 EdgeDSCNet-C10 网络从 Python golden、量化导出、RTL 数据面、CPU 控制接口到 bare-metal firmware 串成可仿真的端到端闭环。
+这是一个面向 RV32I/NPC 教学 CPU 和 Xilinx XC7Z020 的 INT8 深度可分离卷积 CNN 加速器工程。项目目标不是通用 NPU，而是研究固定网络从 Python/PyTorch、量化导出、RTL 数据面、CPU 控制、完整推理到 FPGA 物理实现的闭环，并诚实记录 accuracy、integer semantics、cycles、timing、resources、power 和 energy efficiency。
 
-当前主线是：
+系统链路是：
 
 ```text
 Python/PyTorch checkpoint
@@ -13,25 +13,24 @@ Python/PyTorch checkpoint
   -> logits / argmax compare
 ```
 
-## 当前状态
+## 当前状态（2026-09-11）
 
-工程功能主线已经闭合，但 FPGA 目标尚未闭合：固定 EdgeDSCNet-C10
-可以由 `cnn_top` 完整推理并与 Python golden 对齐；当前优化停在实验候选
-整理阶段，未把任何未通过全局验证的候选接入生产默认路径。
+项目以两条严格分离的证据线收尾：
 
-当前权威快照（2026-09-01）：
+- **C0 frozen control**：当前生产 `cnn_top`/`sw/model` ABI。完整十类推理 10/10 logits exact；no-BP `219,970` cycles、BP+response-2 `268,503`、response-64 `1,902,452`。XC7Z020 8 ns full-top fully routed，WNS/TNS `-0.880/-482.059 ns`、WHS/THS `+0.070/0`；32,295 LUT、45,704 FF、64.5 BRAM tile、151 DSP、vectorless power `0.479 W`。资源门通过，但 setup 和约 `12.19 GOPS/W` 未达目标。
+- **D4 mainline**：软件网络冻结为 204,090 参数、11,645,440 semantic MAC、23,290,880 ops；official CIFAR-10 test10k FP32/INT8 top-1 为 `91.63%/91.46%`。retained v6 candidate4 standalone 六项回归 exact，no-BP `24,039` cycles；OOC post-route 为 18,000 LUT、25,133 FF、28 BRAM、145 DSP、`0.406 W`，但 WNS/TNS `-1.028/-1461.586 ns`。D4 尚未完成 full-network logits、真实完整推理周期或 full-top P&R/power。
 
-- CSA Stem 完整顶层基线：`1,003,577` cycles、`5,136,896` MAC、10/10
-  logits exact；post-route WNS `-0.799 ns`、WHS `+0.065 ns`。
-- 共享 unified64 + persistent DS 完整网络候选：`695,553` cycles、10/10
-  logits exact；OOC setup WNS `-0.838 ns`，因此没有晋级 full-top。
-- 当前最佳隔离 DS 数据面：同步 XPM BRAM 读语义等价，`87,553` cycles、
-  4,194,304 DS MAC；8 ns OOC WNS `+0.032 ns`，不是 full-top 结果。
-- 当前 Vivado 入口为 2025.2、`xc7z020clg400-1`；默认实现/综合线程数为
-  `8`。完整目标仍是 125 MHz、WNS/WHS >= 0、<=2.0M cycles、资源各 <70%、
-  on-chip power <=3 W，以及按 MAC=2 ops 计算的 >=20 GOPS/W。
+因此本项目已经得到可复现且边界明确的 C0 完整 control 和 D4 standalone/OOC 检查点，但没有达到最终 FPGA 部署目标。C0 的 accuracy/MAC/cycles/PPA 不得重标为 D4；standalone/OOC 也不得写成 full-network/full-top。
 
-权威报告索引见 [`docs/reports/README.md`](docs/reports/README.md)。
+完整目标仍为 8 ns、WNS/WHS `>=0`、TNS/THS `=0`、完整推理 `<=2,000,000 cycles`、LUT/FF/DSP/BRAM 各严格 `<70%`、DSP `<=153`、post-route estimated power `<=3 W`，以及按真实 D4 ops 计算 `>=20 GOPS/W`。
+
+阅读入口：
+
+- [项目进化史](docs/project_evolution_20260911.md)
+- [分阶段阅读与 AI 导读](docs/project_reading_guide_20260911.md)
+- [权威报告索引](docs/reports/README.md)
+- [C0 frozen control 收尾](docs/reports/c0_frozen_control_closeout_20260911.md)
+- [D4 最终阶段收尾](docs/reports/edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md)
 
 ## 目录结构
 
@@ -41,7 +40,7 @@ Python/PyTorch checkpoint
 | `rtl/cpu_if` | RV32I custom instruction 接口、NPC bridge、MMIO 寄存器接口 |
 | `rtl/npc` | NPC/RV32I CPU 工程副本和联合仿真所需 ROM/RAM 生成逻辑 |
 | `sw/firmware` | 裸机 C firmware、custom instruction wrapper、MMIO fallback、startup/linker |
-| `sw/model` | 当前导出的模型 descriptor、量化参数和权重 header |
+| `sw/model` | 当前 C0 production ABI 的 descriptor、量化参数和权重 header |
 | `python` | 训练、量化、golden 推理、vector/header 导出、报告生成脚本 |
 | `sim` | Verilator/SystemVerilog testbench |
 | `tests/vectors` | 单元级和 fullnet 级测试向量 |
@@ -49,7 +48,7 @@ Python/PyTorch checkpoint
 | `docs` | 架构、量化、验证计划、已知限制和优化 bring-up 记录 |
 | `build` | 已生成的模型、firmware、报告、仿真日志和 Verilator 产物 |
 
-## 网络结构
+## C0 生产拓扑与 D4 边界
 
 | Layer | Op | Shape | Stride | Output | Activation |
 | --- | --- | --- | --- | --- | --- |
@@ -64,21 +63,13 @@ Python/PyTorch checkpoint
 | 8 | GAP | 4x4x256 | - | 1x1x256 | none |
 | 9 | FC | 256 -> 10 | - | 10 logits | none |
 
-当前 `sw/model` 来自 PyTorch/CUDA 训练 checkpoint 的 int8 导出。最近保存的导出摘要：
+上表是当前 C0 `cnn_top` 的 9-layer 生产拓扑。C0 软件质量曾从初始 INT8 47.31% 演进到重新训练 66.16%、BN-fold PTQ 79.23%；QAT INT8 77.61% 是负结果。不同软件 checkpoint 与硬件 run 只有 manifest/hash 同源时才能组合。
 
-```text
-checkpoint_eval_acc=0.503700
-int8_eval_samples=256
-int8_eval_acc=0.464844
-sample_logits=-65,-69,13,4,39,17,24,22,-112,-85
-sample_argmax=4
-```
-
-这些数值用于功能验证，不代表最终 CIFAR-10 模型质量目标。
+D4 是独立 EdgeMBConv 主线，不能通过替换 C0 header 获得。D4 网络图、权重、量化和账本由 [`edgembconv_hwacandidate_d4_promotion_contract_20260909.md`](docs/reports/edgembconv_hwacandidate_d4_promotion_contract_20260909.md) 与 source manifest 固定；`sw/model/model_quant.h` 仍是 C0 ABI。
 
 ## 量化格式
 
-Activation 和 weight 使用 signed int8，bias 和 accumulator 使用 signed int32。硬件 v1 使用离线修正后的 bias，并与 Python golden 对齐：
+两条网络都使用 signed INT8 activation/weight 和 INT32 accumulator/bias。C0 使用其既有 asymmetric activation/zero-point ABI；D4 使用逐输出通道对称权重、nearest-away-from-zero requant 和 signed INT8 saturation。硬件与 Python golden 必须使用同一 manifest。C0 现行公式为：
 
 ```text
 acc = sum(input_int8 * weight_int8) + corrected_bias
@@ -121,7 +112,9 @@ Optional debug/control path:
 MMIO bus -> cnn_mmio_regs -> cnn_top
 ```
 
-`cnn_top` 由 descriptor 驱动，每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。Stem 使用 3 个复用 int8 MAC；DS 路径使用 BRAM buffer、DW stream 和 PW 阵列。
+`cnn_top` 是 C0 完整生产/control 路径，由 descriptor 驱动；每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。Stem 使用 3 个复用 INT8 MAC；DS 路径使用 BRAM buffer、DW stream 和 PW 阵列。
+
+D4 当前仍是独立 vstream block/OOC 路径，核心由 v6 controller、scheduler、banked storage/fetch pair、共享 datapath、DW adapter/tile、RQ/pool 和 raw FIFO 组成，尚未接入独立 D4 full-network top。
 
 当前外部 memory 仿真格式仍是“一 int8 element 一 32-bit word，低 8 位有效”。这是为了简化仿真和调试，后续需要改为 packed NHWC byte layout。读端最多一个 outstanding：请求在 ready/valid 握手后，响应可任意延迟但最早下一拍、不能同拍返回；写端没有响应。适配 AXI 或组合 RAM 时必须寄存读响应以保持这一契约。
 
@@ -162,6 +155,8 @@ MMIO bus -> cnn_mmio_regs -> cnn_top
 ## 快速开始
 
 以下脚本主要按 WSL/Linux shell 组织。Windows 下工程路径对应为 `D:\Stuff\Project`，WSL 下通常是 `/mnt/d/Stuff/Project`。
+除非命令名或报告明确标注 D4，本节的 legacy export、fullnet 和 firmware
+流程均针对当前 C0 production ABI；它们不会生成或验证 D4 deployment。
 
 ### 1. 导出模型和 firmware headers
 
@@ -275,20 +270,20 @@ SAMPLES=3 START_INDEX=0 ./scripts/run_multi_sample_rtl.sh
 
 ## 当前验证快照
 
-完整网络功能证据与实验候选必须分开阅读：
+软件、完整网络、standalone 和 OOC 证据必须分开阅读：
 
 ```text
-CSA baseline:             hw_cycles=1003577  MACs=5136896  logits=exact
-shared unified64:         hw_cycles=713086   MACs=5136896  logits=exact
-shared + persistent DS:  hw_cycles=695553   MACs=5136896  logits=exact
-DS isolated shared64:    cycles=87553      DS_MACs=4194304 outputs=86016
+C0 frozen fullnet no-BP:  cycles=219970  MACs=5136896  logits=exact
+C0 BP + response-2:       cycles=268503  logits=exact
+C0 response-64:           cycles=1902452 logits=exact
+D4 software:              INT8=91.46%  MACs=11645440  ops=23290880
+D4 v6 candidate4 no-BP:  cycles=24039  bytes=8192  words=2048  exact
 ```
 
-`shared + persistent DS` 是当前完整网络中周期最短的已验证候选，但其
-OOC 时序失败；它不应被误写为完整顶层 post-route closure。隔离
-`ds_group_published_shared64` 车辆已显式建模同步 BRAM 读响应，覆盖 Cin
-16/32/64/128、尾部、mask、epoch/session、descriptor fence 和 backpressure。
-PW stream2 slots 也已完成 2,048 个 8x8 bundle 的随机压力验证，详见报告索引。
+C0 是完整 fullnet/full-top control；D4 candidate4 只是 mb16 standalone/OOC。
+D4 功能回归同时覆盖 DW adapter/tile、no-BP、random backpressure、final-word
+stall 和 two-epoch，并检查 PW/DW/RQ、request/response 和输出事务守恒。
+这些结果不能推出 D4 完整推理周期或能效。
 
 ## 资源估算
 
@@ -303,7 +298,7 @@ cd /mnt/d/Stuff/Project
 
 - `build/reports/resource_estimate.md`
 
-当前静态估算摘要：
+历史静态估算摘要：
 
 ```text
 Total modeled local storage: 168.3 KiB
@@ -316,10 +311,14 @@ Wide requant multipliers: 4
 Conservative DSP risk estimate: 178 DSPs
 ```
 
-这只是 RTL 参数级静态估算，不能替代实现报告。权威 CSA 完整顶层
-post-route 资源为 34,831 LUT、37,052 FF、48 BRAM36、63 DSP、0.234 W；
-完整表格与路径诊断见 [`docs/reports/fulltop_csa_baseline_20260828.md`](docs/reports/fulltop_csa_baseline_20260828.md)。
-所有 OOC 数字都只属于对应隔离快照，不能替代 full-top timing 或板级功耗。
+这只是 RTL 参数级历史估算，不能替代实现报告。当前权威物理数据为：
+
+| 快照 | LUT | FF | BRAM | DSP | Power | Timing |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| C0 frozen full-top | 32,295 | 45,704 | 64.5 tile | 151 | 0.479 W | WNS -0.880 ns，WHS +0.070 ns |
+| D4 v6 candidate4 OOC | 18,000 | 25,133 | 28 tile | 145 | 0.406 W | WNS -1.028 ns，WHS +0.071 ns |
+
+两者均 fully routed，但 setup 都未闭合；D4 OOC 不能替代 D4 full-top，Vivado vectorless power 也不是板级实测。
 
 ## 关键已实现模块
 
@@ -346,32 +345,30 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 已知限制
 
-- 当前是固定 EdgeDSCNet-C10 shape 的功能型 v1，不是通用 CNN/NPU。
-- 当前模型精度足够做硬件功能验证，但不是最终 ML 质量目标。
+- 当前是固定网络研究型加速器，不是通用 CNN/NPU。
+- C0 完整系统和 D4 高精度主线是两套不同网络身份；当前 production `cnn_top`/header 仍属于 C0。
+- D4 尚无 full-network logits、完整推理周期、独立 top 或 full-top implementation。
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
-- 3-MAC Stem、同步预取 `cnn_out_buffer`（综合/XPM 为 4 BRAM）、compact/tiled loader lookahead 与 PW BRAM lookahead 已接入。
-- 普通 XSim/Verilator 使用 output buffer 的同步 behavioral model；XPM 分支仅由综合结构验证。
-- 当前已有 timing-capable XC7Z020 full-top post-route 证据，但 CSA 基线 setup
-  未闭合；隔离 OOC 的正 slack 不能代表 full-top closure。板级 I/O、bitstream
-  和实测功耗仍未验证。
-- Requant 当前优先 bit-exact 对齐 Python golden，后续仍需要根据 DSP/时序压力做位宽收敛、共享或流水化。
+- C0 full-top 与 D4 OOC 都有 timing-capable XC7Z020 post-route 证据，但 setup 未闭合。
+- 板级 I/O、bitstream、CDC/formal、活动率驱动 power 和实测功耗仍未验证。
 - 已有 NPC/RV32I 联合仿真 harness，但还不是面向 FPGA 上板的生产级 SoC top。
-- 缺少形式验证和更强的 constrained-random/backpressure 压力测试。
+- 历史报告属于各自日期和 source snapshot；不得用旧数字描述当前源码。
 
-## 下一步
+## 停止点与恢复条件
 
-1. 保持当前默认生产路径和 CSA 基线不变，先完成 shared64 候选的 runner
-   合同审查；不得仅凭隔离 OOC 正 slack 接入 full-top。
-2. 针对 full-top 的 DW 参数/控制扇出、tiled-loader 和 FC 配置寻址做物理
-   约束驱动优化，并用 8 线程重新取得完整 post-route 分布。
-3. 只有同时改善 cycle、WNS/TNS、资源、功耗和 GOPS/W，才晋级下一候选；
-   否则保留为历史实验并记录负结果。
+当前阶段已停止继续优化。若未来重新授权恢复 D4，应从 candidate4 retained
+source manifest 开始，先保持所有功能/ledger 门，再完成 shape sweep、独立 D4
+full-network logits 与三种 backpressure/response 模式，最后取得同源 8 ns
+full-top timing/resources/power。没有这些证据，不报告 D4 full inference latency、
+mJ/inference 或 GOPS/W。
 
 更多细节见：
 
 - `docs/quantization.md`
 - `docs/verification_plan.md`
 - `docs/known_limits_next_steps.md`
-- `docs/project_next_optimization_bringup_guide.md`
+- `docs/project_evolution_20260911.md`
+- `docs/project_reading_guide_20260911.md`
+- `docs/project_next_optimization_bringup_guide.md`（历史路线图）
 - `docs/streaming_engine_refactor_guide.md`
 - `docs/reports/README.md`

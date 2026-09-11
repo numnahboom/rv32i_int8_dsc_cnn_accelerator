@@ -1,9 +1,10 @@
 # Architecture and Verification Diagrams
 
-> **Snapshot (2026-09-01)**: The diagram shows the retained production data path.
-> The shared unified64 and group-published partial-K vehicles are isolated
-> experiments; they are indexed in [`reports/README.md`](reports/README.md) and
-> must not be read as the current full-top implementation.
+> **Snapshot (2026-09-11)**: The first diagrams show the C0 production/frozen
+> control path. D4 is a separate network mainline and currently exists only as
+> software-frozen plus standalone/OOC vstream RTL; it has not replaced
+> `cnn_top`. See [`project_evolution_20260911.md`](project_evolution_20260911.md)
+> and [`reports/README.md`](reports/README.md).
 
 This note keeps the project diagrams in text form so they can be versioned, reviewed, and copied into reports or slides.
 
@@ -44,6 +45,27 @@ flowchart LR
 
 Key point: DW3x3 intermediate data is not written back to external memory. The DW tile output is kept in `dw_tile_buffer`, then consumed by PW1x1.
 
+## D4 retained standalone/OOC architecture
+
+```mermaid
+flowchart LR
+    CFG[D4 mb16 shape/config] --> CTRL[v6 mb16 controller]
+    CTRL --> SCHED[v6 scheduler]
+    ACT[(Banked activation)] --> FETCH[Synchronous fetch pair]
+    WGT[(Banked weights)] --> FETCH
+    FETCH --> DP[Shared v2 datapath<br/>PW/RQ arithmetic]
+    SCHED --> DP
+    DP --> DWREQ[DW request adapter]
+    DWREQ --> DWTILE[DW16 stream tile]
+    DWTILE --> RQ[Elastic RQ/pool reg-in]
+    RQ --> FIFO[16-lane BRAM raw FIFO]
+    FIFO --> SINK[32-bit output sink<br/>valid/ready]
+```
+
+This block has exact no-BP/random/final-stall/two-epoch regressions and a
+fully routed OOC wrapper. It does not include all D4 shapes, GAP, FC, complete
+logits, firmware or a D4 full-top.
+
 ## Datapath View
 
 ```mermaid
@@ -78,6 +100,11 @@ flowchart LR
     VERILATOR --> CMP[logits compare<br/>expected vs actual]
     CMP --> FW[Firmware / CPU joint sim<br/>custom start, poll, stat]
     FW --> REPORT[accuracy + cycle reports]
+    REPORT --> IMPL[XC7Z020 synth / place / route]
+    IMPL --> PPA[timing + resources + power]
+    PPA --> ENERGY[same-source latency / energy / GOPS/W]
 ```
 
-Current full-network smoke checks compare all 10 logits element by element, then check the CPU-observed argmax path.
+Current C0 full-network checks compare all 10 logits element by element, then
+check the CPU-observed argmax path. D4 has not yet reached the full-network,
+firmware or full-top nodes in this closure graph.

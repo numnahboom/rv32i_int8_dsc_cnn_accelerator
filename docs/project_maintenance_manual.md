@@ -6,12 +6,17 @@
 2. 哪些文档已经重复、可合并或可删除。
 3. 每次更新 RTL、firmware、模型、仿真或综合结果时，应该同步维护哪些文档。
 
-## 2026-09-01 状态修订
+## 2026-09-11 状态修订
 
-`docs/reports/README.md` 现在是实验报告入口；完整顶层 CSA 基线、当前完整
-网络候选和同步读 shared64 隔离证据均以该索引列出的报告为准。Vivado 默认
-实现/综合线程数为 8。OOC 正 slack 不得写成 full-top closure；每个报告的
-日期、RTL 快照和 run 目录必须一起引用。
+`docs/reports/README.md` 是实验报告入口，`project_evolution_20260911.md` 是
+历史叙事入口，`project_reading_guide_20260911.md` 是学习入口。当前文档必须
+把 C0 frozen control 与 D4 mainline 分开：C0 有完整 fullnet/full-top 证据但
+setup/energy 未闭合；D4 只有软件冻结和 retained candidate4 standalone/OOC，
+尚无 full-network/full-top。
+
+OOC 不得写成 full-top，十个 logits exact 不得写成 official test10k accuracy，
+不同软件 checkpoint 与硬件 run 只有 manifest/hash 同源时才能合并。项目当前
+停止推进，历史优化指南只能作为历史路线图。
 
 ## 文档分层原则
 
@@ -35,9 +40,11 @@
 | `README.md` | 项目入口、当前状态、快速运行命令、最近验证快照 | 每次改变用户可见能力、运行方式、当前验证数字或下一步方向 |
 | `README.md`、模块专题文档 | RTL 模块接口、事务边界、延迟、backpressure 的现行说明 | 任意 RTL 接口、握手、延迟、buffer 容量、读写语义变化 |
 | `docs/verification_plan.md` | 分阶段验证计划和 regression 入口 | 新增/删除 testbench、修改验收标准、改变 regression 脚本参数 |
-| `docs/known_limits_next_steps.md` | 当前限制和短版优化 backlog | 完成一个限制项、发现新阻塞、改变优化优先级 |
+| `docs/known_limits_next_steps.md` | 当前限制、未达门禁和恢复条件 | 完成一个限制项、发现新阻塞、改变恢复优先级 |
 | `docs/development_log.md` | 追加式开发日志和问题定位记录 | 完成一个可验证阶段、定位重要 bug、获得重要实验结果 |
-| `docs/project_next_optimization_bringup_guide.md` | 长版优化、综合、上板、报告建设路线图 | 综合状态、上板计划、优化策略发生大变化 |
+| `docs/project_evolution_20260911.md` | 从 C0 到 D4 的项目历史、决策和证据边界 | 主线身份、权威里程碑或收尾状态变化 |
+| `docs/project_reading_guide_20260911.md` | 面向开发者和 AI 的分阶段学习入口 | 阅读顺序、权威入口或主线结构变化 |
+| `docs/project_next_optimization_bringup_guide.md` | 历史长版优化、综合和上板路线图 | 若重新授权恢复，再按新基线修订 |
 | `docs/architecture_diagrams.md` | Mermaid 架构图、数据流图、验证闭环图源文件 | datapath/control path/verification flow 改变 |
 | `docs/reports/synthesis_vivado_summary.md` | Vivado 综合结果短版汇总 | 每次新的 Vivado OOC/full-top 结果产生后 |
 | `docs/reports/synthesis_verification_report.md` | 综合验证长报告，解释资源风险和阻塞点 | 新增 full-top synthesis、timing、post-route、关键资源结论 |
@@ -228,7 +235,9 @@ README 只写当前事实：
 
 1. 静态估算：来自 `resource_estimate.md`，不是工具结果。
 2. OOC synthesis：代表模块综合结果，不等价于 full top。
-3. implementation/timing：place/route 后结果，当前尚未完成。
+3. implementation/timing：place/route 后结果；必须区分 C0 full-top 与 D4
+   OOC。当前两者均已有 fully routed 快照，但 setup 均未闭合，且 D4 尚无
+   full-top。
 
 文档里必须写清楚：
 
@@ -253,12 +262,18 @@ docs/
   isa_custom.md
   known_limits_next_steps.md
   development_log.md
+  project_evolution_20260911.md
+  project_reading_guide_20260911.md
   project_next_optimization_bringup_guide.md
   project_maintenance_manual.md
   synthesis_verification_report.md
   synthesis_vivado_summary.md
   dw_stream_engine_refactor.md
   dw_tile_buffer_bram.md
+  reports/
+    README.md
+    c0_frozen_control_closeout_20260911.md
+    edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md
 ```
 
 其余文档应逐步删除、合并、归档，或改成由脚本生成的 `build/` 产物。

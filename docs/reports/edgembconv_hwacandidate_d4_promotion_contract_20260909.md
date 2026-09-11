@@ -6,7 +6,21 @@ D4 是后续实现主线；C0 冻结为只读 control 和协议/存储基础设�
 
 权威软件冻结清单：
 `docs/reports/edgembconv_hwacandidate_d4_promotion_source_manifest_20260909.json`。
-该清单按内容哈希锁定网络图、权重、量化、test10k 与 ledger；工作树本身不是 clean release baseline。
+该清单按内容哈希锁定网络图、权重、量化、test10k 与 ledger。清单生成时的
+工作树不是 clean release baseline；2026-09-11 已由提交
+`c8c3a0b063f6790ae208dbbf9f3af114a4ef634b` 保存完整源码级检查点。
+
+## 2026-09-11 收尾修订
+
+G0--G4 验收标准保持不变。D4 v6 最终 retained 参考更新为 candidate4：
+14-source manifest PASS，no-BP `24,039` cycles，random BP `25,389`，final
+stall `25,421`，two-epoch `25,389/25,389`，全部 ledger 守恒。candidate4 OOC
+fully routed，post-route WNS/TNS `-1.028/-1461.586 ns`，WHS/THS `+0.071/0`，
+LUT 18,000、FF 25,133、DSP 145、BRAM 28、vectorless power 0.406 W。
+
+这仍是 standalone/OOC negative timing result；D4 full-network 与 full-top
+未建立。详细候选历史和 source hashes 见
+`edgembconv_hwacandidate_d4_final_stage_closeout_20260911.md`。
 
 ## G0：网络、精度与运算账本
 
@@ -79,10 +93,10 @@ D4 是后续实现主线；C0 冻结为只读 control 和协议/存储基础设�
 
 | 证据 | 可支持的结论 | 当前状态 |
 |---|---|---|
-| G0 哈希冻结 + test10k JSON | D4 软件网络身份、91.46% INT8、真实 ledger | 已建立；本轮未重跑训练/test10k |
-| block exact + true cycles | 单个 D4 block 功能与局部服务率 | v6 8,192-byte exact；24,030/25,374/25,406 cycles，no-BP `≤25,000` 已通过；two-epoch 25,374/25,375 亦 exact |
+| G0 哈希冻结 + test10k JSON | D4 软件网络身份、91.46% INT8、真实 ledger | 已建立；2026-09-11 收尾未修改网络，未重复训练/test10k |
+| block exact + true cycles | 单个 D4 block 功能与局部服务率 | candidate4 8,192-byte exact；no-BP/random/final-stall 为 24,039/25,389/25,421 cycles；two-epoch 25,389/25,389 |
 | full-network RTL 三模式 | 完整 D4 功能与真实周期 | 未建立 |
-| D4 OOC post-route | 局部物理可行性 | v6 fresh synth 资源通过：31,832 LUT、24,635 FF、144 DSP、28 BRAM tile；setup WNS/TNS `-4.533/-5,767.454 ns`，未 route，时序门失败 |
+| D4 OOC post-route | 局部物理可行性 | candidate4 fully routed；18,000 LUT、25,133 FF、145 DSP、28 BRAM；WNS/TNS `-1.028/-1461.586 ns`，0.406 W，setup 门失败 |
 | D4 full-top post-route | 8 ns、资源、功耗、能效签署 | 未建立 |
 
 旧 cycle model 的 577,585 cycles、局部 146-DSP composite OOC 和 C0 full-top 都只能用于筛选或对照，不能升级为 D4 promotion 证据。
