@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate explicitly identified ASIC evaluation sources from frozen P.
 
-This is an arithmetic/RTL portability stage, not an ASIC memory implementation.
-The full-network evaluation still uses initialized behavioral memories. The
-FPGA source and frozen input files are never overwritten.
+Select explicitly between behavioral storage, fixed logic ROMs and real
+technology-memory adapters. Actual macro views are generated separately on the
+licensed server. The FPGA source and frozen input files are never overwritten.
 """
 import argparse
 import hashlib
@@ -77,7 +77,7 @@ def logic_roms(text, sample):
     return text
 
 
-def prepare(style, feature_style, parameter_style, out):
+def prepare(style,feature_style,parameter_style,weight_style,residual_style,out):
     source = ROOT / "rtl/cnn/d4_fullnet_top.sv"
     data = source.read_bytes()
     if sha(data) != P_SHA:
@@ -87,7 +87,7 @@ def prepare(style, feature_style, parameter_style, out):
     if text.count('/residual_lut.mem') != 4:
         raise RuntimeError("Unexpected residual initialization structure")
     text = text.replace('/residual_lut.mem', '/residual_lut9.mem')
-    if feature_style == "banked":
+    if feature_style in ("banked", "asymmetric"):
         text, count = re.subn(r"reg \[127:0\] features \[0:6143\];", "", text)
         if count != 1:
             raise RuntimeError("Expected exactly one feature array")
@@ -105,8 +105,16 @@ def prepare(style, feature_style, parameter_style, out):
         .b_addr(port_b_addr),.b_wdata(result_vector),.b_rdata(fm_b)
     );
 """ + text[end:]
+        if feature_style == "asymmetric":
+            text = text.replace("d4_feature_banks feature_banks(", "d4_feature_banks_asymmetric feature_banks(")
     tables = []
+    input_hashes = {}
     for sample in sorted((ROOT / "build/d4_fullnet_vectors").glob("sample_*")):
+        expected_hashes = json.loads((sample / "artifact_sha256.json").read_text())
+        for name, expected_hash in expected_hashes.items():
+            if sha((sample / name).read_bytes()) != expected_hash:
+                raise RuntimeError("Frozen input changed: " + str(sample / name))
+        input_hashes[sample.name] = expected_hashes
         original = sample / "residual_lut.mem"
         values = [int(s, 16) for s in original.read_text().split()]
         signed = [v if v < (1 << 31) else v - (1 << 32) for v in values]
@@ -123,6 +131,40 @@ def prepare(style, feature_style, parameter_style, out):
         raise RuntimeError("Expected the complete accepted 14 input sets")
     if parameter_style == "logic-rom":
         text = logic_roms(text, ROOT / "build/d4_fullnet_vectors/sample_0")
+    if weight_style == "mask-rom":
+        if parameter_style != "logic-rom":
+            raise RuntimeError("Compiled weights require explicit constant parameter mode")
+        start=text.index("    function automatic [511:0] asic_weights(")
+        end=text.index("    endfunction\n",start)+len("    endfunction\n")
+        text=text[:start]+text[end:]
+        if text.count("reg [511:0] weight_q;")!=1 or text.count("if(issue_read) weight_q<=asic_weights(weight_addr[11:0]);")!=1:
+            raise RuntimeError("Unexpected weight memory boundary")
+        text=text.replace("reg [511:0] weight_q;","wire [511:0] weight_q;")
+        text=text.replace("        if(issue_read) weight_q<=asic_weights(weight_addr[11:0]);\n","")
+        # Keep connections after issue_read/weight_addr declarations for strict
+        # default_nettype-none frontends (Xcelium does not allow forward nets).
+        insertion=text.index("    wire [4:0] residual_lane0=")
+        text=text[:insertion]+"    d4_weight_rom_banks weight_roms(.clk(clk),.enable(issue_read),.address(weight_addr[11:0]),.data(weight_q));\n"+text[insertion:]
+    if residual_style == "mask-rom":
+        if weight_style != "mask-rom":raise RuntimeError("A3 requires compiled weights first")
+        start=text.index("    function automatic [8:0] asic_residual_lut(")
+        end=text.index("    endfunction\n",start)+len("    endfunction\n")
+        text=text[:start]+text[end:]
+        if text.count("reg signed [8:0] residual_lut")!=4:raise RuntimeError("Residual register boundary")
+        text=text.replace("reg signed [8:0] residual_lut","wire signed [8:0] residual_lut")
+        start=text.index("    always @(posedge clk) begin\n        // Each replica")
+        end=text.index("    d4_feature_banks",start)
+        if text[start:end].count("asic_residual_lut(")!=8 or "weight_q<=" in text[start:end]:
+            raise RuntimeError("Residual read boundary changed")
+        connections=["    wire [71:0] residual_rom_data;",
+                     "    d4_residual_rom_banks residual_roms(.clk(clk),",
+                     "        .enable(state==RESIDUAL_PIPE && residual_issue_chunk<4),",
+                     "        .address({residual_addr_b3,residual_addr_a3,residual_addr_b2,residual_addr_a2,residual_addr_b1,residual_addr_a1,residual_addr_b0,residual_addr_a0}),",
+                     "        .data(residual_rom_data));"]
+        for lane in range(4):
+            for side,offset in (("a",0),("b",1)):
+                connections.append("    assign residual_lut{}_{}_q=residual_rom_data[{}+:9];".format(lane,side,(lane*2+offset)*9))
+        text=text[:start]+"\n".join(connections)+"\n"+text[end:]
     if style == "native":
         text, count = re.subn(r"d4_rq_partial_multiplier_lane(?=\s+\w+\s*\()",
                               "d4_rq_native_multiplier_lane", text)
@@ -133,6 +175,10 @@ def prepare(style, feature_style, parameter_style, out):
     generated.write_bytes(text.encode("utf-8"))
     manifest = {"baseline_sha256": P_SHA, "rq_style": style, "feature_style": feature_style,
                 "parameter_style": parameter_style,
+                "weight_style": weight_style,
+                "residual_style": residual_style,
+                "frozen_input_hashes": input_hashes,
+                "generator_sha256": sha(Path(__file__).read_bytes()),
                 "fpga_attributes_removed": attributes, "generated_sha256": sha(generated.read_bytes()),
                 "residual_tables": tables,
                 "initialization": "behavioral" if parameter_style == "behavioral" else "fixed constant parameter ROM logic",
@@ -144,11 +190,16 @@ def prepare(style, feature_style, parameter_style, out):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rq-style", choices=("partial", "native"), default="partial")
-    parser.add_argument("--feature-style", choices=("array", "banked"), default="array")
+    parser.add_argument("--feature-style", choices=("array", "banked", "asymmetric"), default="array")
     parser.add_argument("--parameter-style", choices=("behavioral", "logic-rom"), default="behavioral")
+    parser.add_argument("--weight-style", choices=("logic-rom", "mask-rom"), default="logic-rom")
+    parser.add_argument("--residual-style",choices=("logic-rom","mask-rom"),default="logic-rom")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
-    tag = args.rq_style if args.feature_style == "array" else args.rq_style + "_banked"
+    tag = args.rq_style if args.feature_style == "array" else args.rq_style + "_" + args.feature_style
     if args.parameter_style == "logic-rom":
         tag += "_logic_rom"
-    prepare(args.rq_style, args.feature_style, args.parameter_style, args.out or ROOT / "build/asic_eval" / tag)
+    if args.weight_style == "mask-rom":
+        tag += "_mask_weights"
+    if args.residual_style == "mask-rom":tag += "_mask_residual"
+    prepare(args.rq_style,args.feature_style,args.parameter_style,args.weight_style,args.residual_style,args.out or ROOT / "build/asic_eval" / tag)

@@ -1,0 +1,154 @@
+# D4 ASIC development evidence (2026-10-20)
+
+ASIC migration is active. Complete-network functionality using real SMIC SRAM
+models is accepted; complete-core synthesis and physical implementation remain
+separate gates. No complete ASIC power/energy result is claimed.
+
+## Network and evaluation boundary
+
+D4 remains fixed: 204,090 parameters, 41 operators, 10 MBConv, 11,645,440 semantic
+MAC and 23,290,880 ops. INT8/INT32 arithmetic, weights, requantization and residual
+semantics are unchanged. Historical software test10k INT8 accuracy is 91.46%;
+it has not been rerun or represented as RTL test10k.
+
+The ASIC core accepts a 128-bit image stream and emits 10 raw INT32 FC values.
+Mode0 latency is 255,740 cycles, including 1,024 input transfers. This differs
+from the frozen FPGA 32-bit interface's 258,814 cycles and is not an architectural
+speedup. Per-channel FC scale and host processing remain outside this boundary.
+Frequency/latency claims require corresponding ASIC timing evidence.
+
+## Equal-condition arithmetic comparison
+
+The inherited FPGA lane uses four partial products and a registered cross/base
+merge. The ASIC candidate uses a full signed32 multiplier and delay registers.
+Valid sequence and throughput remain identical; neither truncates operands or
+products. FPGA DSP/placement attributes are removed from evaluation sources.
+
+TT conditions: SCC018UG HD RVT, 1.8 V/25 C, period 8 ns, uncertainty 0.2 ns,
+I/O max delay 0.5 ns, input transition 0.1 ns, output load 0.01 pF. Both candidates
+use the same Design Compiler flow and library.
+
+| Isolated lane | Cell area (um2) | Cells | Setup target |
+| --- | ---: | ---: | --- |
+| four partial products, TT | 76,184.728399 | 2,877 | 8 ns met |
+| native signed32, TT | 61,937.253872 | 2,715 | 8 ns met |
+| native signed32, SS 1.62 V/125 C | 62,890.597879 | 2,834 | 8 ns met |
+
+TT native lane area is 18.7012% lower, with fewer intermediate registers and a
+different combinational mapping. Setup margins are extremely small. These are
+synthesis results, not routed closure, extreme Fmax measurements or complete
+network area/energy improvements.
+
+Independent arithmetic verification covers 17,498 full-width comparisons,
+signed corners, valid gaps and 21 reset flushes. Both actual mapped TT netlists
+pass the same checks with real standard-cell functional models, without SDF.
+Complete-network partial/native evaluations each pass 84 exact inferences and
+have identical sample/mode/epoch metrics.
+
+## Activation memory and accepted A0 integration
+
+Three single-port 2048x128 banks implement the logical slots, with no concurrent
+same-bank request conflict. A behavioral candidate with unknown initial memory
+and undefined Q on writes passed 84 inferences, establishing that FPGA READ_FIRST
+output is unnecessary on writes.
+
+Actual compiler: SMIC LP1X SRAM v2.802, 2048 words x 128 bits, MUX8. Its default
+name remains `RASP2048X16M16`; shape is checked in the actual views. CEN is active
+low; WE/OE are active high. The first inverted-WE adapter failed and was corrected.
+
+One macro has datasheet area 1,504,450.238 um2; three total 4.513350714 mm2.
+TT/SS access values are 2.597/4.160 ns, separate from full-core timing. Typical,
+worst and best DBs compile. Power metadata warnings remain.
+
+A0 replaces all parameter `initial`/`$readmemh` with constant ROM logic preserving
+the frozen tables. This fixed-weight ASIC baseline includes standard-cell costs
+for weights, quantization, descriptors and residual tables in full-core mapping.
+Only activations use compiled SRAMs; weight storage is not free or blackboxed.
+
+A0 actual-macro simulation passes 14 inputs x 3 stall modes x 2 epochs = 84 exact
+inferences. Each checks 24,336 intermediate 128-bit words, 10 FC accumulators and
+the complete MAC ledger. An independent word-level memory reference checks
+reads; all metrics equal the native/behavioral-bank baseline.
+
+Root acceptance verifies the returned archive hash, 73 files, 42 functional-log
+hashes, the mapped-unit log hash and source identities. The local generator adds
+input-hash guards; its generated hardware bytes match the server's accepted RTL.
+
+## Network-shaped memory candidate A1
+
+The frozen descriptors require peak slot capacities [2048,1024,2048], at
+mb32.spatial, stem and mb32.expand. A1 uses 80 KiB rather than 96 KiB storage
+with unchanged arithmetic/schedule. All meaningful reads and all writes into
+the shallow bank must remain below word 1024. Only halo reads discarded by the
+unchanged zero-operand mask may alias.
+
+The actual 1024x128/M8 macro `D4_ACT_1024X128_M8` has datasheet area 839,232.515
+um2. Two deep and one shallow macro total 3.848132991 mm2, 14.7389% below the
+datasheet A0 macro area. Actual placement footprint includes the compiler's
+12 um boundary on each side: Liberty/LEF totals are 4.715622475 mm2 for A0 and
+4.042596591 mm2 for A1, a 14.2723% reduction. Layout accounting uses the latter.
+These are activation macro comparisons, not full-core area. All 84 real-macro
+inferences pass, including meaningful shallow-bank address checks. All metrics
+equal A0, and generated core bytes differ only in the feature-bank module name.
+
+## Real programmed ROM integration
+
+A2 replaces the 4096x512 constant weight lookup by eight 4096x64 synchronous
+compiled ROMs. A3 additionally replaces eight independent signed9 residual-table
+read ports by eight 4096x16 compiled ROMs, preserving low9 bits exactly and
+zero-filling physical spare bits. Each retains one-edge read latency. All
+storage is counted, including unused padded rows and ROM replication.
+
+The complete 4096x512 weight contents and 32,768 residual word-port reads pass
+against the frozen tables using actual compiler models. A2 and A3 each pass
+84 full-network exact inferences and legacy-shell error/restart, pipeline-reset,
+completion-reset, start-token and continuous-start probes. Legacy shell probes
+establish compatibility only; the shell is outside the ASIC physical core.
+
+A3 root acceptance independently checks 60 returned evidence files, nine
+source identities, all 42 full-network log hashes, unit/protocol logs and exact
+sample/mode/epoch agreement with accepted A1. It has 19 actual memory instances:
+three SRAMs, eight weight ROMs and eight residual ROMs, with total Liberty/LEF
+area 7.670230033 mm2. A3 synthesis/physical acceptance is a separate gate.
+
+A2 completed TT 1.8 V/25 C, 10 ns synthesis with 116,914 cells, memory area
+6.731018250 mm2 and total cell area 9.105223614 mm2. Reported setup meets 10 ns
+with slack rounded to 0.00 ns. A subsequent unsupported `check_timing -verbose`
+diagnostic stopped the original script before saving its mapped checkpoint.
+These numeric reports are retained, but A2 has no reusable mapped implementation
+and no routed claim. Later scripts save checkpoints before diagnostics and use
+the supported `check_timing` command.
+
+## Physical environment qualification
+
+The digital LEF uses METAL1..4 names while compiler LEF uses M1..4. Original GDS
+layers 61..64 agree with the digital stream map. The checked adapter changes
+only layer identifiers and verifies reversibility; original geometry, GDS and
+timing libraries are retained. Real libraries/QRC initialization and a tiny
+environment-only design complete placement, CTS, routing and extraction.
+This is tool-flow evidence, not complete-D4 timing closure.
+
+The full flow uses matched TT/SS/FF libraries and QRC, SS/TT setup, FF hold,
+10 ns clock, 0.2 ns uncertainty, flat 1.05 late/0.95 early derates and CPPR.
+Flat derating is an explicit experimental guardband, not foundry AOCV signoff.
+The CTS slew target is 0.25 ns after observing the actual SS library's 0.218 ns
+minimum viable leaf/trunk target. Core timing excludes pads, host and SoC.
+
+## Evidence and remaining gates
+
+- FPGA baseline: commit `bfb60e5`; [original P results](d4_fullnet_result_20261019.md).
+- Initial ASIC source: branch `codex/d4-asic-smic180`, commit `4bd6e7f`.
+- [Migration contract and environment](../asic_migration.md).
+- Frozen inputs: `artifacts/d4_p_portable.tar.gz`.
+- Accepted stage-2 evidence: `artifacts/d4_asic_stage2_evidence_20261020.tar.gz`,
+  SHA256 `cbd95374bbfaffe9890d11ff4a936ebd678362f9350f4c54a86a881b926ff720`.
+  It contains our reports/logs and hashes, no PDK/model/netlist/physical views.
+- Archive acceptance entry: `build/reports/d4_asic_stage2_acceptance_20261020.json`.
+- A0 constant-ROM synthesis is an optional screening baseline. No numerical
+  result is inferred from elapsed time; A3 is the selected implementation.
+- Floorplan, CTS, extraction, routing and complete timing checks remain. Matching
+  PVT QRC technology files are present on the server.
+- Power metadata, activity coverage and storage/clock costs must be established
+  before reporting complete ASIC power or GOPS/W.
+
+Commercial tools and process/generated macro views remain on the server.

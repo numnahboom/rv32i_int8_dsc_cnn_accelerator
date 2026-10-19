@@ -46,7 +46,7 @@ redirect $out/timing_max.rpt {report_timing -max_paths 20 -delay_type max}
 redirect $out/timing_min.rpt {report_timing -max_paths 20 -delay_type min}
 redirect $out/constraints.rpt {report_constraint -all_violators}
 redirect $out/check.rpt {check_design}
-redirect $out/check_timing.rpt {check_timing -verbose}
+redirect $out/check_timing.rpt {check_timing}
 redirect $out/resources.rpt {report_resources -hierarchy}
 redirect $out/power_vectorless.rpt {report_power}
 write -format ddc -hierarchy -output $out/mapped.ddc

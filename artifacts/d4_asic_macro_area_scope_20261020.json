@@ -1,0 +1,11 @@
+{
+  "datasheet_macro_area_before_um2": 4513350.714,
+  "datasheet_macro_area_after_um2": 3848132.991,
+  "datasheet_reduction_fraction": 0.1473888835929713,
+  "LEF_and_Liberty_macro_area_before_um2": 4715622.4746,
+  "LEF_and_Liberty_macro_area_after_um2": 4042596.5912000006,
+  "LEF_and_Liberty_reduction_fraction": 0.14272259643878482,
+  "reason": "LEF/Liberty include a 12um placement boundary on each side beyond datasheet width/height",
+  "layout_metrics_use": "LEF/Liberty footprint; datasheet numbers retained separately",
+  "whole_core_area_claim": false
+}

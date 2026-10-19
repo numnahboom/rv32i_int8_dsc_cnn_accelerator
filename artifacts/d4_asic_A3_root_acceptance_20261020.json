@@ -1,0 +1,27 @@
+{
+  "status": "ROOT_ACCEPTED_A3_FULL_FUNCTIONAL",
+  "archive_sha256": "12f4e4494524b1f2f360c86cebf22ecaf2a00a479ee8afa0b6df8f8ce1f84796",
+  "files": 60,
+  "source_checks": {
+    "rtl/cnn/d4_fullnet_top.sv": true,
+    "rtl/asic/d4_rq_native_multiplier_lane.sv": true,
+    "rtl/asic/d4_feature_banks_asymmetric.sv": true,
+    "rtl/asic/d4_smic180_sram.sv": true,
+    "rtl/asic/d4_weight_rom_banks.sv": true,
+    "rtl/asic/d4_residual_rom_banks.sv": true,
+    "sim/d4_asic_sram_monitor.sv": true,
+    "sim/d4_asic_asymmetric_monitor.sv": true,
+    "build/asic_eval/native_asymmetric_logic_rom_mask_weights_mask_residual/d4_fullnet_eval.sv": true
+  },
+  "exact_inferences": 84,
+  "all_sample_mode_epoch_metrics_equal_A1": true,
+  "unit_and_control_logs_verified": true,
+  "macro_instances": 19,
+  "macro_area_Liberty_LEF_um2": 7670230.0328,
+  "activation_KiB": 80,
+  "full_core_PPA_accepted": false,
+  "limits": [
+    "Macro view identities and geometry recorded by server; proprietary views stay there",
+    "No ASIC power, routed timing, full-network formal or RTL test10k claim"
+  ]
+}

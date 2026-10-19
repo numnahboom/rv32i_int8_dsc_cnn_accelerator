@@ -1,6 +1,6 @@
 # rv32i_int8_dsc_cnn_accelerator
 
-这是一个面向 RV32I/NPC 教学 CPU 和 Xilinx XC7Z020 的 INT8 深度可分离卷积 CNN 加速器工程。项目目标不是通用 NPU，而是研究固定网络从 Python/PyTorch、量化导出、RTL 数据面、CPU 控制、完整推理到 FPGA 物理实现的闭环，并诚实记录 accuracy、integer semantics、cycles、timing、resources、power 和 energy efficiency。
+这是一个从 RV32I/NPC 教学 CPU 和 Xilinx XC7Z020 起步的 INT8 深度可分离卷积 CNN 加速器工程，目前继续向 SMIC 180 nm ASIC 迁移。项目研究固定网络从 Python/PyTorch、量化导出、RTL 数据面、完整推理到物理实现的闭环，并记录 accuracy、integer semantics、cycles、timing、area/resources、power 和 energy efficiency。
 
 系统链路是：
 
@@ -13,7 +13,19 @@ Python/PyTorch checkpoint
   -> logits / argmax compare
 ```
 
-## 当前状态（2026-10-19，开发中）
+## 当前方向（2026-10-20，ASIC 迁移中）
+
+FPGA P 原型已冻结并 push（`bfb60e5`）；ASIC 工作位于 `codex/d4-asic-smic180`，
+在实验室服务器使用实际 SMIC 标准单元库和 SRAM 编译器推进。
+两种 RQ 算术实现各通过84次完整网络精确验证；等条件 TT 单路综合中，
+完整 signed32 乘法器比继承的部分积结构减少18.70%标准单元面积。
+真实编译 SRAM 下的 [2048,1024,2048] 激活 bank 通过84次完整验证，
+实际激活宏布局面积比等容量三 bank 减少14.27%。选定 A3 使用3块 SRAM、
+8块权重 ROM 和8块残差 ROM，全表、完整网络和复位/协议探针均通过。
+完整核心综合、跨角物理时序与能耗分别验收；当前未声明 ASIC 能效。
+迁移合同、复现方法和证据边界见 [ASIC 开发记录](docs/asic_migration.md)。
+
+## FPGA 基线（2026-10-19）
 
 独立 `d4_fullnet_top` 已建立完整 D4 执行链：保持冻结网络与 INT8/INT32 语义，
 十个真实类别样本和四种边界输入 × 三种流停顿模式 × 两次启动，共 84 次推理逐层 exact；

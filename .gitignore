@@ -37,5 +37,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# ASIC tool caches and session artifacts; PDK/generated macro views belong in build/.
+alib-*/
+WORK/
+work/
+*.svf
+command.log
+command.log.*
+dc_shell_command.log*
+lc_shell_command.log*
+innovus*.log*
+innovus*.cmd*
+
 .DS_Store
 .vscode/

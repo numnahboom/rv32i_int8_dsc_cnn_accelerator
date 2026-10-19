@@ -1,0 +1,20 @@
+{
+  "status": "ROOT_ACCEPTED_A1_FULL_FUNCTIONAL",
+  "archive_sha256": "f056890e8376ce1ccfe8c88cda0edcf8f259fb67594219e694f5081135921d25",
+  "files": 45,
+  "source_checks": {
+    "rtl/asic/d4_feature_banks_asymmetric.sv": true,
+    "sim/d4_asic_asymmetric_monitor.sv": true,
+    "sim/d4_asic_sram_monitor.sv": true,
+    "scripts/prepare_d4_asic.py": false,
+    "build/asic_eval/native_asymmetric_logic_rom/d4_fullnet_eval.sv": true
+  },
+  "generated_core_matches": true,
+  "helper_difference": "weight-style extension and declaration-order fix affect only A2; A1 bytes match",
+  "exact_inferences": 84,
+  "metrics_equal_A0": true,
+  "activation_KiB": 80,
+  "datasheet_macro_area_reduction_fraction": 0.1473888835929713,
+  "area_scope_supplement": "artifacts/d4_asic_macro_area_scope_20261020.json",
+  "full_core_PPA_accepted": false
+}

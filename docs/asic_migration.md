@@ -50,8 +50,9 @@ the actual 180 nm library; FPGA resource percentages no longer apply.
 FPGA source and portable inputs pushed; server clone and all 427 bundle member
 checks passed. Use `dc_shell-xg-t -64bit`, with the server's existing license
 environment; the plain `dc_shell` entry point reports DCSH-1 on this install.
-Remote SSH/SCP operations must run sequentially: additional connections may be
-closed during an existing session. Use SCP files, not terminal-pasted archives.
+Serialize short SSH/SCP connections and allow cleanup between them; rapid new
+connections may be closed before authentication. A long-running tool job can
+coexist with a read-only SSH connection. Use SCP files, not terminal-pasted archives.
 
 Both partial-product and native signed32 RQ implementations passed 84 complete
 network inferences each (14 inputs x 3 stall modes x 2 epochs), with 24,336
@@ -92,13 +93,24 @@ options: acceptance must inspect generated view contents, not just exit status.
 The real macro uses active-low CEN, active-high WE and active-high OE. A first
 adapter with inverted WE failed at the first layer; it was corrected using the
 actual model. The fixed-parameter ROM transformation separately passed six
-full-network inferences with behavioral banks. Full real-macro regression,
-mapped-gate arithmetic, slow-corner and complete-core synthesis are pending.
-All such failures are development evidence, not accepted ASIC PPA.
+full-network inferences with behavioral banks. Real-macro regression then passed
+all 84 inferences, mapped-gate arithmetic passed 17,498 comparisons, and native
+SS 8 ns synthesis passed with area 62,890.597879 um2. Root verified returned
+source/report/log identities. Full-core synthesis and physical implementation
+remain pending. See [ASIC development evidence](reports/d4_asic_development_20261020.md).
 
-The full-core synthesis baseline deliberately implements the fixed D4 parameter
+The A0 full-core synthesis baseline deliberately implements the fixed D4 parameter
 tables as standard-cell ROM logic, with all area included. This removes every
 `initial`/`$readmemh` from the synthesized core; it does not claim mask-ROM density
 or omit weight storage. Only activation memories use the three compiled SRAMs.
-The core has a 128-bit input boundary; host/pads/clock tree and physical routing
-are separate deployment costs.
+The core has a 128-bit input boundary; host and pads are separate deployment
+costs, and a complete routed result must include its clock tree.
+
+A1's descriptor-shaped [2048,1024,2048] activation banks pass the complete exact
+regression, reducing actual activation LEF/Liberty area by 14.2723%. A2 uses
+eight real 4096x64 weight ROMs; selected A3 adds eight independent 4096x16 ROMs
+for exact signed9 residual lookup. Both pass full-network and reset/protocol
+checks. A3's 19 memories total 7.670230033 mm2 of placement footprint; full-core
+mapped and routed costs are still separate acceptance gates. Source, program,
+area scopes, tool limitations and current results are maintained in the
+[development report](reports/d4_asic_development_20261020.md).

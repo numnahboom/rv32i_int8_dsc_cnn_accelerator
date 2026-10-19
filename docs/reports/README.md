@@ -1,11 +1,12 @@
 # Experiment report index
 
-本目录按实验日期和 source snapshot 保存报告，不把 C0、D4、standalone、OOC、synth-only 和 full-top 数字混成一个“当前最好结果”。当前开发状态日期为 2026-10-19；2026-09-11 的冻结报告仍保留原始结论。
+本目录按实验日期和 source snapshot 保存报告，不把 C0、D4、FPGA、ASIC、standalone、OOC、synth-only 和 full-top 数字混成一个“当前最好结果”。当前开发状态日期为 2026-10-20；旧冻结报告保留原始结论。
 
 ## 当前权威证据
 
 | 范围 | 报告 | 当前结论 |
 | --- | --- | --- |
+| D4 ASIC 迁移 | [`../asic_migration.md`](../asic_migration.md) | SMIC180实际库；RQ受控算术对照和行为bank完整功能门通过；真实宏/完整核心PPA独立验收，尚无完整ASIC能效结论 |
 | D4 P当前结果 | [`d4_fullnet_result_20261019.md`](d4_fullnet_result_20261019.md) | 125MHz同步post-route、84exact、数字reset数据流与资源/路由通过；sample0估算0.613W/18.35GOPS/W，初始20目标未过；原型边界明确 |
 | D4 完整网络开发 | [`d4_fullnet_development_20261018.md`](d4_fullnet_development_20261018.md) | K2 84次逐层exact、258,749 cycles/间隔258,751；post-route资源/hold通过、WNS -0.990；L2完整功能通过，258,813 cycles/间隔258,815；综合WNS -1.051，M启动token完整功能通过（外部258,814/间隔258,816），M post-route WNS -0.287/WHS +0.006，setup失败；N halo完整功能通过，O完整功能通过，综合WNS -1.017ns/内部+.632ns，仅1个setup失败端点，post-route WNS -0.221ns/WHS +0.049ns，setup失败；P完整功能及本地CE综合拓扑通过，综合setup+.106ns/hold-.155ns，post-route同步125MHz通过（WNS+.128/WHS+.010、各资源<70%、0routeerrors）；复位后数字overwrite-before-read通过，物理reset warning保留，sample0 native估算0.613W/18.35GOPS/W（Medium），初始20目标未过 |
 | 工程演进与验证报告 | [`../project_evolution_20260911.md`](../project_evolution_20260911.md) | 从 2026-06 初始 C0 闭环到 D4 v6 收尾 |

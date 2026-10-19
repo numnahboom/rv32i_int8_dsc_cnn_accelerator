@@ -20,3 +20,26 @@ for the complete physical implementation archive.
 ASIC experiments must identify their technology, library corner, constraints,
 memory implementation, and verification scope independently. FPGA numbers
 must never be relabeled as ASIC results.
+
+`d4_asic_stage2_evidence_20261020.tar.gz` contains accepted real-SRAM full-network
+functional logs, isolated mapped RQ reports and source/view hashes. Its SHA256 is
+`cbd95374bbfaffe9890d11ff4a936ebd678362f9350f4c54a86a881b926ff720`.
+It contains no PDK, generated macro model/library/LEF/GDS, or mapped netlist.
+It is a functional/macro integration stage, not complete ASIC PPA or energy.
+Extract it into an isolated review directory to preserve existing build files:
+
+```sh
+mkdir -p build/asic_evidence_review
+tar -xzf artifacts/d4_asic_stage2_evidence_20261020.tar.gz -C build/asic_evidence_review
+```
+
+`d4_asic_asymmetric_evidence_20261020.tar.gz` preserves the accepted A1 full
+functional comparison. `d4_asic_macro_area_scope_20261020.json` separates compiler
+datasheet area from actual LEF/Liberty placement footprint.
+
+`d4_asic_A3_functional_evidence_20261020.tar.gz` contains 60 public evidence files
+for the selected 19-macro A3 candidate. Recheck its returned source/log identities,
+84 exact inferences, unit/protocol markers, A1 metric agreement and macro-area
+arithmetic with `python3 scripts/accept_d4_asic_A3.py` after generating matching
+A3 RTL from the frozen portable inputs. Root acceptance JSON files explicitly
+keep full-core PPA, physical timing and energy as separate unaccepted gates.
