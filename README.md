@@ -13,19 +13,42 @@ Python/PyTorch checkpoint
   -> logits / argmax compare
 ```
 
-## 当前状态（2026-09-11）
+## 当前状态（2026-10-19，开发中）
+
+独立 `d4_fullnet_top` 已建立完整 D4 执行链：保持冻结网络与 INT8/INT32 语义，
+十个真实类别样本和四种边界输入 × 三种流停顿模式 × 两次启动，共 84 次推理逐层 exact；
+每次检查 24,336 个中间 128-bit 字、十个 FC accumulator 和完整 MAC 账本。
+K2历史里程碑采用连续双bank与四lane无损残差流水，通过完整回归及在途reset探针，
+实际32-bit物理接口下为 **258,749 cycles**，包含start后的全部4,096拍图像传输；
+连续启动间隔为 **258,751 cycles**。时钟结构也通过真实UNISIM测试。
+E 已完成 XC7Z020 布线：WNS -5.590 ns、
+WHS +0.033 ns，资源均低于 70%；该失败物理结果只属于 E。
+K2完整布线为20,214 LUT、11,155 FF、93 BRAM、64 DSP，0 routing errors；
+WNS -0.990 ns、WHS +0.005 ns，125MHz setup仍失败。L的精确RQ部分积流水与完成握手分离
+已通过完整功能门，latency/interval为258,813/258,815 cycles；L2数据级valid使能也通过完整功能门；同源综合18,739 LUT、9,653 FF、93 BRAM、64 DSP，WNS -1.051ns，最差路径转为外部start_valid到state CE。M寄存启动token已通过完整功能门，外部258,814 cycles/间隔258,816；完整综合18,741 LUT/9,654 FF/93 BRAM/64 DSP，WNS -0.467ns，M post-route为18,197 LUT/9,620 FF/93 BRAM/64 DSP、WNS -0.287ns、WHS +0.006ns，0 route errors，setup仍失败。N halo边界化已通过完整功能门且周期不变；O已通过84次完整exact、全部原probes及新增ready跨reset/unlock探针；454项hash已核对，同源综合18,831 LUT/9,898 FF/93 BRAM/64 DSP，WNS -1.017ns（仅1个setup失败端点）、内部+.632ns；O post-route为18,279 LUT/9,863 FF/93 BRAM/64 DSP、WNS -0.221ns、WHS +0.049ns、0 route errors，setup仍失败。P静态索引FC队列与lane本地merge_valid已通过完整功能门，周期不变；综合18,327 LUT/8,900 FF/93 BRAM/64 DSP，WNS +.106ns、WHS -.155ns；P post-route WNS +.128ns/WHS +.010ns、0route errors；17,239 LUT/8,864 FF/93 BRAM/64 DSP，全部<70%。复位后overwrite-before-read数字不变量已验收，物理BRAM异步控制warning保留；同源sample0活动估算功耗0.613W（Medium），完整窗口能效18.35GOPS/W，初始20目标未过。
+P已通过125 MHz同步post-route时序门；同源sample0活动估算为0.613W/18.35GOPS/W（Medium），20GOPS/W初始目标未通过。
+它采用 resident weights 和图像流接口，尚未接入 CPU 或外存 response adapter。
+FC 输出是带逐通道尺度 ABI 的 INT32 accumulator，不能直接按 raw 值求 argmax。
+
+当前验收表见 [完整网络结果](docs/reports/d4_fullnet_result_20261019.md)（含能效负结果与部署边界）。
+
+开发证据与设计取舍见 [D4 完整网络开发记录](docs/reports/d4_fullnet_development_20261018.md)。
+网络条件、数据流、精确值证明与时钟边界见 [D4 硬件结构](docs/d4_fullnet_architecture.md)。
+
+以下为 2026-09-11 冻结检查点，保留为历史对照：
 
 项目以两条严格分离的证据线收尾：
 
 - **C0 frozen control**：当前生产 `cnn_top`/`sw/model` ABI。完整十类推理 10/10 logits exact；no-BP `219,970` cycles、BP+response-2 `268,503`、response-64 `1,902,452`。XC7Z020 8 ns full-top fully routed，WNS/TNS `-0.880/-482.059 ns`、WHS/THS `+0.070/0`；32,295 LUT、45,704 FF、64.5 BRAM tile、151 DSP、vectorless power `0.479 W`。资源门通过，但 setup 和约 `12.19 GOPS/W` 未达目标。
 - **D4 mainline**：软件网络冻结为 204,090 参数、11,645,440 semantic MAC、23,290,880 ops；official CIFAR-10 test10k FP32/INT8 top-1 为 `91.63%/91.46%`。retained v6 candidate4 standalone 六项回归 exact，no-BP `24,039` cycles；OOC post-route 为 18,000 LUT、25,133 FF、28 BRAM、145 DSP、`0.406 W`，但 WNS/TNS `-1.028/-1461.586 ns`。D4 尚未完成 full-network logits、真实完整推理周期或 full-top P&R/power。
 
-因此本项目已经得到可复现且边界明确的 C0 完整 control 和 D4 standalone/OOC 检查点，但没有达到最终 FPGA 部署目标。C0 的 accuracy/MAC/cycles/PPA 不得重标为 D4；standalone/OOC 也不得写成 full-network/full-top。
+2026-09-11 的检查点没有达到最终 FPGA 部署目标；新完整 D4 RTL 的功能进展见上文。C0 的 accuracy/MAC/cycles/PPA 不得重标为 D4；standalone/OOC 也不得写成 full-network/full-top。
 
 完整目标仍为 8 ns、WNS/WHS `>=0`、TNS/THS `=0`、完整推理 `<=2,000,000 cycles`、LUT/FF/DSP/BRAM 各严格 `<70%`、DSP `<=153`、post-route estimated power `<=3 W`，以及按真实 D4 ops 计算 `>=20 GOPS/W`。
 
 核心文档：
 
+- [D4 完整网络开发记录](docs/reports/d4_fullnet_development_20261018.md)
 - [工程演进与验证报告](docs/project_evolution_20260911.md)
 - [权威报告索引](docs/reports/README.md)
 - [C0 frozen control 收尾](docs/reports/c0_frozen_control_closeout_20260911.md)
@@ -113,7 +136,7 @@ MMIO bus -> cnn_mmio_regs -> cnn_top
 
 `cnn_top` 是 C0 完整生产/control 路径，由 descriptor 驱动；每层 descriptor 为 32 words / 128B stride。控制器顺序 fetch descriptor，启动对应 engine，等待真实 `layer_done/layer_error`，并通过 status counter 暴露 cycle、当前层、busy/done/error。Stem 使用 3 个复用 INT8 MAC；DS 路径使用 BRAM buffer、DW stream 和 PW 阵列。
 
-D4 当前仍是独立 vstream block/OOC 路径，核心由 v6 controller、scheduler、banked storage/fetch pair、共享 datapath、DW adapter/tile、RQ/pool 和 raw FIFO 组成，尚未接入独立 D4 full-network top。
+D4 retained v6 block/OOC 路径由 controller、scheduler、banked storage/fetch pair、共享 datapath、DW adapter/tile、RQ/pool 和 raw FIFO 组成。新独立 `d4_fullnet_top` 采用共享 16×4 数据面、权重 ROM、三个激活槽和完整算子 descriptor 调度，保持与 retained v6 的对照边界；新 full-top 的物理实现尚未签署。
 
 当前外部 memory 仿真格式仍是“一 int8 element 一 32-bit word，低 8 位有效”。这是为了简化仿真和调试，后续需要改为 packed NHWC byte layout。读端最多一个 outstanding：请求在 ready/valid 握手后，响应可任意延迟但最早下一拍、不能同拍返回；写端没有响应。适配 AXI 或组合 RAM 时必须寄存读响应以保持这一契约。
 
@@ -346,7 +369,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 - 当前是固定网络研究型加速器，不是通用 CNN/NPU。
 - C0 完整系统和 D4 高精度主线是两套不同网络身份；当前 production `cnn_top`/header 仍属于 C0。
-- D4 尚无 full-network logits、完整推理周期、独立 top 或 full-top implementation。
+- 新 D4 独立 top 已有逐层 exact 与完整周期证据；同源 full-top timing/power 尚待验证。
 - 外部 memory 仍大量使用 word-per-int8 仿真布局，尚未改成 packed NHWC byte layout。
 - C0 full-top 与 D4 OOC 都有 timing-capable XC7Z020 post-route 证据，但 setup 未闭合。
 - 板级 I/O、bitstream、CDC/formal、活动率驱动 power 和实测功耗仍未验证。
@@ -355,11 +378,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 当前发布状态与后续工作
 
-当前版本冻结为可复现的阶段性研究检查点。后续 D4 工作应从 candidate4
-retained source manifest 开始，先保持所有功能/ledger 门，再完成 shape sweep、独立 D4
-full-network logits 与三种 backpressure/response 模式，最后取得同源 8 ns
-full-top timing/resources/power。没有这些证据，不报告 D4 full inference latency、
-mJ/inference 或 GOPS/W。
+2026-09-11 retained 检查点保留为对照；当前开发从新完整 D4 top 的同源快照继续，
+保持所有功能/ledger 门，取得 8 ns full-top timing/resources/activity power。
+流接口停顿回归不能替代尚未集成的外存 response adapter 验证。
+工作频率、每次推理能量与 GOPS/W 均须使用同源物理结果和连续启动间隔。
 
 更多细节见：
 

@@ -1,0 +1,56 @@
+{
+  "variants": [
+    {
+      "label": "E\nserial groups",
+      "cycles": 527355,
+      "log": "build\\reports\\d4_fullnet_affine_packed_20261018\\sample_0_mode0.log",
+      "log_sha256": "790a94e482de8b836f4a3d9105e130eecefaefa4c6c2c81346e58b15d6e216e3"
+    },
+    {
+      "label": "F/G\nresidual pipeline",
+      "cycles": 483195,
+      "log": "build\\reports\\d4_fullnet_regcontrol_20261018\\sample_0_mode0.log",
+      "log_sha256": "c89adb0c6b5c7198c36b51247b9240ac141a71fff27602044c052b13df1d032a"
+    },
+    {
+      "label": "I2\nstaged MAC/RQ",
+      "cycles": 547325,
+      "log": "build\\reports\\d4_fullnet_biased_round_20261018\\sample_0_mode0.log",
+      "log_sha256": "4aab48aa78840950034cae8d04dfb3ec601eeb7c2ae49f00ca135be293557374"
+    },
+    {
+      "label": "J\ncontinuous groups",
+      "cycles": 291133,
+      "log": "build\\reports\\d4_fullnet_continuous_groups_20261018\\sample_0_mode0.log",
+      "log_sha256": "b41f894f04e40604d793f536c4541a3be36e0385a7571309416d1d969c869117"
+    },
+    {
+      "label": "K2\n4-lane residual",
+      "cycles": 258749,
+      "log": "build\\reports\\d4_fullnet_ram_ports_20261018\\sample_0_mode0.log",
+      "log_sha256": "f6fdf612b6a8f6c01ce8dc058e264edacafd0873165f2c6736f016f7c24e85bf"
+    }
+  ],
+  "K2_parts": [
+    [
+      "Conv issue",
+      230016
+    ],
+    [
+      "Conv startup/drain",
+      416
+    ],
+    [
+      "Residual",
+      23573
+    ],
+    [
+      "GAP + FC",
+      647
+    ],
+    [
+      "Input/start",
+      4097
+    ]
+  ]
+}

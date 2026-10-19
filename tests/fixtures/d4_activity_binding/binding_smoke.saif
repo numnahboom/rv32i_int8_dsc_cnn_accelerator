@@ -1,0 +1,18 @@
+(SAIFILE
+ (TIMESCALE 1 ps)
+ (DURATION 8)
+ (INSTANCE d4_fullnet_impl_top
+   (INSTANCE u_core
+     (INSTANCE rq_mul_lanes[0]
+       (INSTANCE rq_mul
+         (NET (mul_q[0] (T0 4) (T1 4) (TX 0) (TZ 0) (TC 1)))
+       )
+     )
+     (INSTANCE rq_mul_lanes[15]
+       (INSTANCE rq_mul
+         (NET (mul_q[15] (T0 6) (T1 2) (TX 0) (TZ 0) (TC 1)))
+       )
+     )
+   )
+ )
+)

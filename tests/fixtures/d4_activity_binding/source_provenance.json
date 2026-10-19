@@ -1,0 +1,7 @@
+{
+  "fixture_type": "compact unit-test reference metadata, not current native evidence",
+  "observed_hierarchy_sha256": "510b1c68b77c7812d47637fa2f13b96c74a927747dedb26a12484c663d3a83d8",
+  "source_manifest_sha256": "61d0d2b776fc62b6f3185ea9f023cb9427a3f761072ac7cb84794e42b48d91e7",
+  "frozen_core_path": "rtl/cnn/d4_fullnet_top.sv",
+  "frozen_core_sha256": "706cf563ca1f838a337fda154341f1af33c6fdef79a071320ac3259d2f21d529"
+}
