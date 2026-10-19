@@ -1,0 +1,18 @@
+{
+  "status": "ROOT_ACCEPTED_A3_RTL_TO_MAPPED_LOGIC_PROOF_WITH_MEMORY_BOUNDARIES",
+  "archive_sha256": "d0c7f791ddf1379f2470dda397a3d6b8ea76459a72d592cc74316889d7a487ee",
+  "files": 5,
+  "binds_exact_accepted_mapping_and_regenerated_RTL": true,
+  "passing_points": 13740,
+  "failing_points": 0,
+  "all_functional_outputs": 252,
+  "all_memory_input_pins": 652,
+  "primary_and_macro_output_bits_matched": 1102,
+  "memory_contents_proved_by_formal": false,
+  "setup_warnings_and_boundary_preserved": [
+    "Synopsys auto_setup and synthesis undriven handling",
+    "3 array-index interpretation warnings: logit_queue and two bank_q selects",
+    "20 implementation undriven nets: 16 unused lane out_valid outputs and 4 unused wrapper address bits"
+  ],
+  "physical_timing_or_power_claim": false
+}

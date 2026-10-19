@@ -1,8 +1,9 @@
 # D4 ASIC development evidence (2026-10-20)
 
 ASIC migration is active. Complete-network functionality using real SMIC SRAM
-models is accepted; complete-core synthesis and physical implementation remain
-separate gates. No complete ASIC power/energy result is claimed.
+and ROM models, complete-core mapping and RTL-to-mapped logic equivalence are
+accepted. Physical implementation is a separate gate. No complete ASIC
+power/energy result is claimed.
 
 ## Network and evaluation boundary
 
@@ -116,8 +117,44 @@ A2 completed TT 1.8 V/25 C, 10 ns synthesis with 116,914 cells, memory area
 with slack rounded to 0.00 ns. A subsequent unsupported `check_timing -verbose`
 diagnostic stopped the original script before saving its mapped checkpoint.
 These numeric reports are retained, but A2 has no reusable mapped implementation
-and no routed claim. Later scripts save checkpoints before diagnostics and use
-the supported `check_timing` command.
+and no routed claim. The loaded A3 script also contained the old verbose
+diagnostic, but saved its complete mapped DDC/netlist before reaching it.
+`asic_A3_report_saved.tcl` recovers supported diagnostics directly from that DDC,
+without any compile/optimization. Corrected scripts use `check_timing`.
+
+A3 recovered TT synthesis: 107,460 cells, macro area 7.670229813 mm2, total
+cell area 9.923024308 mm2, worst setup slack +0.000192642 ns at 10 ns.
+The macro-library scalar area differs from exact LEF products by 0.2203 um2 due
+to stored numerical precision. Both are reported with their own scopes.
+A3 is about 8.98% larger than A2 under the same synthesis conditions; a compiled
+macro is not automatically denser than this particular fixed residual logic.
+This negative area comparison is retained, with A2's missing checkpoint/routing
+limit explicit. A3's complete physical flow remains pending; its saved mapping
+and RTL-to-mapped logic proof have root acceptance.
+
+![Separate measured area trade-offs](assets/d4_asic_area_tradeoffs_20261020.png)
+
+## Full-core logic equivalence
+
+Formality O-2018.06-SP1 reports `Verification SUCCEEDED` for A3 RTL versus its
+actual saved mapped netlist, using the original synthesis SVF and real standard
+cell DB. All 13,740 compare points pass: 12,836 DFF bits, 252 functional output
+bits and all 652 memory input-pin bits. No compare points or primary inputs /
+black-box outputs are unmatched. The 515 unread reference points are retained
+in the record, rather than counted as proven functional outputs.
+
+Technology memories are identical black-box boundaries in this proof; their
+actual programs and protocols are covered separately by the real-model checks.
+The setup uses Synopsys auto_setup and synthesis-style undriven handling. Three
+array-index interpretation warnings concern the logit queue and bank selection;
+valid-index behavior is exercised by the exact functional/control regressions.
+The 20 implementation undriven nets comprise 16 unused RQ out_valid outputs and
+four unused residual wrapper address bits. Inspection confirms the four effective
+ROM A[8] pins are driven low by PULLHD0 inside the mapped wrapper. The input-pin
+count independently checks as 428 SRAM +112 weight ROM +112 residual ROM =652.
+No functional output bit is omitted from the proof. Gate-level four-state
+full-inference checks provide a further independent check; they have no SDF and
+do not establish timing.
 
 ## Physical environment qualification
 
@@ -133,6 +170,19 @@ The full flow uses matched TT/SS/FF libraries and QRC, SS/TT setup, FF hold,
 Flat derating is an explicit experimental guardband, not foundry AOCV signoff.
 The CTS slew target is 0.25 ns after observing the actual SS library's 0.218 ns
 minimum viable leaf/trunk target. Core timing excludes pads, host and SoC.
+
+The 100 MHz full-core SS placement result remains strongly negative (observed
+WNS about -4.7 to -5.4 ns during optimization). TT synthesis did not predict
+this physical slow-corner closure. Preserve that failed reference point and
+qualify a lower operating frequency using actual routed setup/hold evidence;
+no Fmax is inferred from an intermediate placement slack. A 20 ns candidate
+is prepared but has no physical acceptance until the complete flow finishes.
+
+The original physical script retained the tool's default 90nm optimization
+heuristic; its actual Liberty, LEF and QRC views are consistently SMIC180. Future
+flows explicitly set `setDesignMode -process 180`. This changes the tool setting,
+not the technology identity. A resumed flow must identify its original placed
+checkpoint rather than imply an independently repeated placement.
 
 ## Evidence and remaining gates
 
@@ -150,5 +200,11 @@ minimum viable leaf/trunk target. Core timing excludes pads, host and SoC.
   PVT QRC technology files are present on the server.
 - Power metadata, activity coverage and storage/clock costs must be established
   before reporting complete ASIC power or GOPS/W.
+
+The actual libraries do declare voltage/current/time/capacitance and leakage
+units (standard-cell leakage uW, generated-macro leakage nW). DC's displayed
+Power_unit=N/A alone does not mean those unit declarations are absent. The
+compiler's missing NLPM `internal_power_calculation` metadata remains unresolved;
+it is not filled in speculatively. No complete ASIC power number is accepted.
 
 Commercial tools and process/generated macro views remain on the server.

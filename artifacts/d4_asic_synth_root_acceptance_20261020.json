@@ -1,0 +1,86 @@
+{
+  "status": "ROOT_ACCEPTED_COMPLETE_CORE_SYNTHESIS_ONLY",
+  "archive_sha256": "e1c273508f49d513187b87d19caa5072f2d0f631f3565060ca53f3d15225a2b4",
+  "files": 13,
+  "source_checks": {
+    "scripts/prepare_d4_asic.py": false,
+    "scripts/asic_A3_report_saved.tcl": true,
+    "rtl/asic/d4_rq_native_multiplier_lane.sv": true,
+    "rtl/asic/d4_feature_banks_asymmetric.sv": true,
+    "rtl/asic/d4_smic180_sram.sv": true,
+    "rtl/asic/d4_weight_rom_banks.sv": true,
+    "rtl/asic/d4_residual_rom_banks.sv": true
+  },
+  "both_regenerated_core_identities_match": true,
+  "helper_difference": "Generator docstring changed locally; both generated hardware hashes match",
+  "metrics": {
+    "scope": "full_128bit_stream_core_standard_cell_synthesis",
+    "corner": "SMIC180 SCC018UG HD RVT TT 1.8V 25C",
+    "period_ns": 10,
+    "clock_uncertainty_ns": 0.2,
+    "input_output_max_delay_ns": 1,
+    "input_output_min_delay_ns": 0.1,
+    "input_transition_ns": 0.1,
+    "output_load_pF": 0.01,
+    "post_route": false,
+    "power_claim": false,
+    "candidates": {
+      "A2": {
+        "total_cell_area_um2": 9105223.61357,
+        "macro_area_um2": 6731018.25,
+        "combinational_area_um2": 1757667.786796,
+        "noncombinational_area_um2": 616537.576775,
+        "cells": 116914,
+        "reported_rounded_setup_slack_ns": 0.0,
+        "memory_instances": 11,
+        "mapped_checkpoint_available": false,
+        "limit": "Mapping numerical reports retained; diagnostic failed before checkpoint save",
+        "generated_core_sha256": "ee0f42c227d42f960de8ce8b284f4da06839aac250cfcc05cb3e2156b85bd9b4"
+      },
+      "A3": {
+        "total_cell_area_um2": 9923024.307974,
+        "macro_area_um2": 7670229.8125,
+        "combinational_area_um2": 1640807.881991,
+        "noncombinational_area_um2": 611986.613483,
+        "cells": 107460,
+        "reported_rounded_setup_slack_ns": 0.0,
+        "memory_instances": 19,
+        "mapped_checkpoint_available": true,
+        "exact_setup_slack_ns": 0.000192642,
+        "mapped_private_identity_sha256": {
+          "mapped.v": "4604ecdcc4f4a81493d1f70c7fd4b33604d098b6d8449cf85f2b73e562a4ec2e",
+          "mapped.ddc": "3dfc8713292a2ddb3337ea16c907b4459ea3c4a3ada860486bdfdcdf348b0e22",
+          "default.svf": "32865dc4cece699c70d288fd5225d98b7ea3c5f23fddcaf515a2a374df079fa5"
+        },
+        "generated_core_sha256": "8657f5dff3ac9ad377007896a82ed756372a41d7286351ac968ef5e32ac8d665"
+      }
+    },
+    "A3_total_area_increase_fraction_vs_A2": 0.08981665131048389,
+    "note": "Same network, clock/IO/library conditions; only residual implementation changes. Not routed or energy superiority.",
+    "source_sha256": {
+      "scripts/prepare_d4_asic.py": "bc64db87163bd67db42cc2bfbbfcd5825c2c49f861bf3f763c6d73e5eade7de0",
+      "scripts/asic_A3_report_saved.tcl": "4c1da221229464df4fe8a44e950dd568e50521dcec7696d38450b4f1d93cd492",
+      "rtl/asic/d4_rq_native_multiplier_lane.sv": "4b1076d0951b636519c1eea7abe666759962b24712e6dd41026597f4717c745a",
+      "rtl/asic/d4_feature_banks_asymmetric.sv": "15659ed164d74d1d31da49a1ead84d7dd5147ff340ec95ddafcf446e74cd463f",
+      "rtl/asic/d4_smic180_sram.sv": "e2ac02672f09e6fa38dd684162caae438a09b40c65280f710e48fe91a0101de1",
+      "rtl/asic/d4_weight_rom_banks.sv": "7e052fe9c89b13e9857115e97a4c49600ee017ad0d5782f826576c18558d127a",
+      "rtl/asic/d4_residual_rom_banks.sv": "ce8fab56dbb555f7fd3678f445d5c01cc95e6a0f80b82f35d8567960e2666368"
+    },
+    "evidence_sha256": {
+      "build/reports/asic_A2_tt_20261020/check_timing.rpt": "2a3dfe5dda79223a4aa9dc315cb3d855690248640ca10b533fb3864a3c51f493",
+      "build/reports/asic_A2_tt_20261020/area.rpt": "c2bb2bad296ab26a2f4101b4c791a419d37c32698390afc028edf36ce38896a3",
+      "build/reports/asic_A2_tt_20261020/timing_max.rpt": "0872ae047a86b260bd3eee11dd0f48fccb51a21f30bf46283d660c815f5297e6",
+      "build/reports/asic_A2_tt_20261020/macro_areas.tsv": "b8c307b492f9f1c11cf1c5a8758aa0f5f1826f84e9a9d32bbad7c81bfad783eb",
+      "build/reports/asic_A3_tt_20261020/check_timing_recovered.rpt": "3827e7d66c273f1852ba180a3a3efe5a02f1f883b7e4e168b356e600ebd4d3f2",
+      "build/reports/asic_A3_tt_20261020/constraints_recovered.rpt": "dadd52a82375269b8ba8764cf0609d2e6f0506fdec24f9298d01c98969dd7a09",
+      "build/reports/asic_A3_tt_20261020/check_recovered.rpt": "4afb399a57ddef3d166445042fd1396ab85c8b3a15ba78b6128d2c414e829b6c",
+      "build/reports/asic_A3_tt_20261020/result.json": "09d9261f7d42534be451feacc58b0dc95b0971a0a9b4f5e4fcb075f796eb9109",
+      "build/reports/asic_A3_tt_20261020/report_recovery.log": "217065dfaaa0a4b0952c1015616f60f506a324cfb1fe382feb4605337378ce4c",
+      "build/reports/asic_A3_tt_20261020/area_recovered.rpt": "955eabc9c8ed1bc5bf1c8ffc85f2b47472d77fc12bedb3eda65bf59de703061f",
+      "build/reports/asic_A3_tt_20261020/timing_max_recovered.rpt": "8addd89333a6f3e79d25d72e177f0135c986d9c1792b70d1986cfd25699c7633",
+      "build/reports/asic_A3_tt_20261020/macro_areas.tsv": "e09fd09e7832ad12d43b423221d09807ff915c8abe3ccdc202eb504b3c7f952e"
+    }
+  },
+  "physical_timing_accepted": false,
+  "power_accepted": false
+}

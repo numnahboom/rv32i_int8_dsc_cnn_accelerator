@@ -48,6 +48,12 @@ dc_shell_command.log*
 lc_shell_command.log*
 innovus*.log*
 innovus*.cmd*
+formality.log
+fm_shell_command.log*
+fm_work/
+formality_svf/
+# Initial memory-compiler default-name probe; all active views live in build/.
+/RASP2048X16M16*
 
 .DS_Store
 .vscode/

@@ -43,3 +43,14 @@ for the selected 19-macro A3 candidate. Recheck its returned source/log identiti
 arithmetic with `python3 scripts/accept_d4_asic_A3.py` after generating matching
 A3 RTL from the frozen portable inputs. Root acceptance JSON files explicitly
 keep full-core PPA, physical timing and energy as separate unaccepted gates.
+
+`d4_asic_fullcore_synth_evidence_20261020.tar.gz` retains A2/A3 complete-core
+numerical reports, A3 report-only checkpoint recovery and private mapping hashes.
+`python3 scripts/accept_d4_asic_synth.py` verifies the returned reports against
+both locally regenerated RTL candidates. A2 has no saved mapped checkpoint.
+
+`d4_asic_formal_evidence_20261020.tar.gz` retains the successful A3 RTL-to-mapped
+proof with its original setup/interpretation warnings and macro-boundary report.
+`python3 scripts/accept_d4_asic_formal.py` binds it to the accepted mapping and
+RTL, checking all 252 functional output and 652 memory input-pin compare points.
+Memory contents are covered by the separate actual-model functional evidence.

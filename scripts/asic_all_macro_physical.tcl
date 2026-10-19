@@ -3,11 +3,13 @@
 proc physical_main {} {
     set root [file normalize [file join [file dirname [info script]] ..]]
     set out [pwd]
+    set period 10.0
+    if {[info exists ::env(D4_ASIC_PERIOD_NS)]} {set period $::env(D4_ASIC_PERIOD_NS)}
     set smoke [expr {[info exists ::env(D4_PHYSICAL_SMOKE)] && $::env(D4_PHYSICAL_SMOKE)==1}]
     set dk /opt/pdk/smic0.18um/DigitalIC/SCC018UG_HD_RVT_DK_V0.3a
     set libroot /opt/pdk/smic0.18um/DigitalIC
     set f [open $out/core.sdc w]
-    puts $f {create_clock -name clk -period 10 [get_ports clk]}
+    puts $f [format {create_clock -name clk -period %s [get_ports clk]} $period]
     puts $f {set_clock_uncertainty 0.2 [get_clocks clk]}
     puts $f {set_input_delay -max 1.0 -clock clk [remove_from_collection [all_inputs] [get_ports clk]]}
     puts $f {set_input_delay -min 0.1 -clock clk [remove_from_collection [all_inputs] [get_ports clk]]}
@@ -57,6 +59,7 @@ proc physical_main {} {
     set ::init_pwr_net VDD
     set ::init_gnd_net VSS
     setMultiCpuUsage -localCpu 8
+    setDesignMode -process 180
     init_design
     setAnalysisMode -analysisType onChipVariation -cppr both
     foreach corner {tt ss ff} {
