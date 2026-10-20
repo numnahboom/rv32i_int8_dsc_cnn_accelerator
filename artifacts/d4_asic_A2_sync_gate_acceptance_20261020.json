@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "status": "ACCEPTED_SOURCE_BOUND_A2_EXACT_INFERENCE_PACKAGE",
+  "archive": "artifacts/d4_asic_A2_sync_gate_evidence_20261020.tar.gz",
+  "archive_sha256": "2de713ba96506b1b59d8c4e077a28aa903768442cb6c568c8c9328ff8dfbea24",
+  "archive_members": 11,
+  "source_identity_sha256": "b5f28d47848212a0d00b36ed40b61c63ed0f3b8d506ddd33bfa761ab4673fef6",
+  "mapped_netlist_sha256": "7a42e9c61090181cee0c8212e0cf65f83693f1bdfb1027948b108290dbd5c0bd",
+  "reset_policy": "hdlin_ff_always_sync_set_reset=1",
+  "cases": 4,
+  "exact_inferences": 8,
+  "tap_words_per_epoch": 24336,
+  "logits_per_epoch": 10,
+  "macs_per_epoch": 11645440,
+  "startup_probe_sha256": "66b6cf5275093e458ec0ef8c02cc9d26ed837aa711671232910db3858abcd597",
+  "cycles": {
+    "mode0": {
+      "epoch0": 255740,
+      "epoch1": 255740
+    },
+    "mode2": {
+      "epoch0": 257890,
+      "epoch1": 257818
+    }
+  },
+  "same_sync_reset_policy_as_A3": true,
+  "timing_gate": false,
+  "post_route": false,
+  "power_claim": false,
+  "14_sample_gate": false,
+  "sdf_annotated": false,
+  "timing_checks_enabled": false,
+  "pdk_model_exported": false,
+  "mapped_netlist_exported": false,
+  "svf_exported": false,
+  "raw_logs_unmodified": true,
+  "checks": [
+    "exact archive allowlist, regular files, safe paths, and no private design suffixes",
+    "source identity and fixed A2 map/reset policy hashes verified",
+    "all four raw case logs matched lab-host SHA-256 and exact epoch metrics",
+    "startup probe raw log matched expected cycle, beat, and known-control result",
+    "timing, post-route, power, sample-coverage, and export claim limits enforced"
+  ]
+}

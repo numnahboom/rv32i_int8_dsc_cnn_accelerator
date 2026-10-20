@@ -1,0 +1,19 @@
+{
+  "status": "ROOT_ACCEPTED_A2_SYNC_RESET_EIGHT_MAPPED_EXACT_INFERENCES",
+  "archive_sha256": "2de713ba96506b1b59d8c4e077a28aa903768442cb6c568c8c9328ff8dfbea24",
+  "source_identity_sha256": "b5f28d47848212a0d00b36ed40b61c63ed0f3b8d506ddd33bfa761ab4673fef6",
+  "independent_remote_mapped_sha256": "7a42e9c61090181cee0c8212e0cf65f83693f1bdfb1027948b108290dbd5c0bd",
+  "checks": [
+    "Public allowlist/raw log metrics and hashes revalidated",
+    "Remote mapped input bytes independently match accepted map hash",
+    "Same portscoreboard and sample/mode/epoch metrics as accepted A3 gate"
+  ],
+  "timing_SDF_power_or_RTL_test10k_claim": false,
+  "limits": [
+    "Two inputs and two stall modes, two epochs each",
+    "Default library propagation, timing checks disabled, no SDF",
+    "Recorded source identity includes 19 model-file hashes; model fidelity remains a technology-library assumption"
+  ],
+  "recorded_model_file_hashes": 19,
+  "instantiated_memories": 11
+}

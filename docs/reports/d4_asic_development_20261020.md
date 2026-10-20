@@ -32,6 +32,15 @@ and A3 area is 9.967994545 mm2, including their respective macros. TT10ns
 synthesis setup slack is +0.000479698 and +0.0000429153 ns respectively. These
 new mappings must not inherit the old mappings' physical or proof acceptance.
 
+The new A2 mapping now independently passes the same eight exact mapped-gate
+inferences and startup probe. Its mode0/mode2 metrics equal A3 exactly; its
+frozen identity records the mapped netlist, scoreboard, runner, vector inputs
+and 19 loaded simulation-model file hashes. Root acceptance of
+`d4_asic_A2_sync_gate_evidence_20261020.tar.gz` binds archive SHA256
+`2de713ba96506b1b59d8c4e077a28aa903768442cb6c568c8c9328ff8dfbea24`.
+This is functional evidence without SDF/timing checks. A2's independent
+metadata-compatible logic proof and full physical comparison remain pending.
+
 The SVF incompatibility was isolated to `guide_info -file`: DC emits a
 CRC-plus-MD5 triple, while the installed older Formality accepts a pair.
 External checks verify the unchanged source MD5; the diagnostic CRC-pair file
@@ -389,7 +398,7 @@ The evidence supports technology-aware storage/arithmetic choices for this
 fixed network. A smaller standalone multiplier, descriptor-shaped activation
 capacity and compiled lookup storage affect different parts of the cost. Their
 percentage reductions cannot be added together. A3 memories occupy about 77.30%
-of its mapped area, so a local arithmetic gain has limited leverage on total
+of its original mapped area (76.95% with the reset-preserving mapping), so a local arithmetic gain has limited leverage on total
 area. The residual-ROM experiment also shows why constant-table logic should
 remain a real candidate instead of assuming every compiled macro saves area.
 

@@ -85,3 +85,8 @@ and no dont-verify points. Extract it into
 The checker also rehashes the generated A3 source in `build/asic_eval/`.
 It preserves the metadata-only adaptation, native helper-context hashes and
 prior negative evidence. Memory contents and physical timing remain separate.
+
+`d4_asic_A2_sync_gate_evidence_20261020.tar.gz` retains A2's same-policy startup
+probe and eight complete mapped inferences. Recheck with
+`python scripts/accept_d4_asic_A2_sync_gate.py`. Its sample/mode/epoch metrics
+match the accepted A3 cases; no SDF, routed timing or energy claim follows.
