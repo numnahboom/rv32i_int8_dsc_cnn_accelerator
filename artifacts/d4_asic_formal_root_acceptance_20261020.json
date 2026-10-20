@@ -14,5 +14,10 @@
     "3 array-index interpretation warnings: logit_queue and two bank_q selects",
     "20 implementation undriven nets: 16 unused lane out_valid outputs and 4 unused wrapper address bits"
   ],
+  "additional_raw_log_findings": [
+    "SVF source-checksum guidance parse error at line43; full guidance handling not established"
+  ],
+  "SVF_guidance_parse_error_retained": true,
+  "proof_without_SVF_independently_run": false,
   "physical_timing_or_power_claim": false
 }

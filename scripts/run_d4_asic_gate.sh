@@ -30,15 +30,17 @@ cd "$out/cwd"
 top=tb_d4_asic_gate
 testbench=$root/build/asic_gate_tb/tb_d4_asic_gate.sv
 extra_defines=()
+extra_sources=()
+if [[ "${D4_GATE_MEMORY_DIAG:-0}" == 1 ]];then extra_sources+=("$root/sim/d4_asic_gate_memory_watch.sv");fi
 if [[ "${D4_GATE_INTERNAL_DIAG:-0}" == 1 ]];then extra_defines+=(+define+D4_GATE_INTERNAL_DIAG);fi
 if [[ "${D4_GATE_START_PROBE:-0}" == 1 ]];then
     top=tb_d4_asic_gate_start
     testbench=$root/sim/tb_d4_asic_gate_start.sv
 fi
 if ! /opt/XCELIUM_2003/tools/bin/xrun -64bit -sv +define+functional -notimingchecks -timescale 1ns/1ps \
-    "${extra_defines[@]}" \
+    ${extra_defines[@]+"${extra_defines[@]}"} \
     -top "$top" -xmlibdirname "$out" -elaborate -l "$logs/compile$suffix.log" \
-    "$netlist" "${models[@]}" "$testbench" > "$logs/compile$suffix.console.log" 2>&1;then
+    "$netlist" "${models[@]}" "$testbench" ${extra_sources[@]+"${extra_sources[@]}"} > "$logs/compile$suffix.console.log" 2>&1;then
     tail -25 "$logs/compile$suffix.console.log";exit 1
 fi
 if [[ "${D4_GATE_START_PROBE:-0}" == 1 ]];then

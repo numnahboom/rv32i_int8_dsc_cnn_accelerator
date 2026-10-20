@@ -74,10 +74,15 @@ proc pg_probe {} {
     }
     if {$all_macros} {
         sroute -nets {VDD VSS} -connect {corePin} -corePinTarget {stripe ring} \
-            -layerChangeRange {METAL1 METAL6} -allowJogging 1 -allowLayerChange 1
+            -layerChangeRange {METAL1 METAL6} -targetViaLayerRange {METAL6 METAL6} \
+            -stripeLayerRange {METAL6 METAL6} -allowJogging 1 -allowLayerChange 1
     }
     redirect $out/connectivity_help.log {help verifyConnectivity}
-    redirect $out/physical_connectivity.rpt {verifyConnectivity -type special -error 100000 -warning 100000}
+    foreach net {VDD VSS} {
+        redirect $out/physical_connectivity_${net}.rpt {
+            verifyConnectivity -net $net -type special -error 100000 -warning 100000
+        }
+    }
     verify_drc -check_only special -ignore_trial_route -limit 100000 -report $out/one_macro_drc.rpt
     if {$all_macros && !$clear_signals} {
         verify_drc -check_only all -ignore_trial_route -limit 100000 -report $out/full_drc.rpt

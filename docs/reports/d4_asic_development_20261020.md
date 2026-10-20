@@ -255,6 +255,41 @@ A separate copy removes regular signal routes to test constructing PG first;
 any success there will be PG construction evidence only, not a routed-core
 timing/connectivity result. The original routed design is preserved throughout.
 
+Formal evidence clarification: reinspection of the retained raw A3 log found a
+source-checksum SVF guidance parse error at line43, omitted from the earlier
+concise warning list. A2 and the new reset-policy run report the same issue.
+The original A3 comparison still matches all 252 output bits and 652 memory
+input bits and ends with 13,740 passing points and zero failing/unmatched points;
+this is not evidence that complete SVF guidance was consumed or that a separate
+no-SVF proof was run. Auto-setup/RTL interpretation and identical-memory-boundary
+conditions remain. The root acceptance metadata now explicitly records the
+error; the original raw archive is unchanged and already contained it.
+
+A2's rebuilt mapping has completed its analogous comparison: 13,700 passing
+points (540 memory input pins, 252 functional outputs, 12,908 DFFs), zero failing
+and zero unmatched input/compare points. Independent input/report packaging is
+pending; no routed or energy claim follows. The 540-bit boundary independently
+equals 428 SRAM input bits plus 112 weight-ROM input bits.
+
+The reset-policy A3 mapping completes at 9.967994545 mm2, TT10ns setup slack
++0.0000429153 ns. Its actual-cell startup probe now passes at cycle34 with16
+input beats and known controls. An initial validation wrapper failure came from
+Bash4.2 empty-array `nounset` behavior; the corrected wrapper reuses the saved
+mapping only after checking every synthesis/RTL input hash. The new logic proof
+passes 13,758 compare points (652 memory pins, 252 outputs, 12,854 DFFs), with the
+same explicit SVF/RTL-interpretation limits. All four full gate cases fail at
+op0/word990 with X data; none completes an exact inference. A passive real-SRAM
+pin monitor will locate the first unknown address/data or unwritten read without
+altering DUT state. Complete functional gate/physical acceptance remains pending.
+
+The PG-before-signals experiment connects all19 macros but retains three M2
+spacing violations at SRAM edges. Restricting core-pin targets to M6 does not
+remove them. Native `editTrim` removes dangling-wire connectivity violations:
+VDD/VSS each report zero connectivity errors/warnings, while special-routing DRC
+increases to11. Thus PG construction still fails physical acceptance. These
+checkpoints intentionally lack regular signal routes and provide no routed-core
+timing or full-network deployment claim.
+
 A2 was rebuilt in `asic_A2_repro_tt_20261020` to provide its missing mapped
 checkpoint for the controlled backend comparison. It reproduces total cell area
 9.105223614 mm2 exactly, with TT10ns setup slack +0.0000772476 ns. Its full-core
