@@ -31,13 +31,19 @@ top=tb_d4_asic_gate
 testbench=$root/build/asic_gate_tb/tb_d4_asic_gate.sv
 extra_defines=()
 extra_sources=()
+cell_mode=${D4_GATE_CELL_MODE:-functional}
+case "$cell_mode" in
+    functional) extra_defines+=(+define+functional);;
+    specify) ;; # Library's default propagation arcs, no SDF/timing-check claim.
+    *) echo "Unknown D4_GATE_CELL_MODE=$cell_mode";exit 1;;
+esac
 if [[ "${D4_GATE_MEMORY_DIAG:-0}" == 1 ]];then extra_sources+=("$root/sim/d4_asic_gate_memory_watch.sv");fi
 if [[ "${D4_GATE_INTERNAL_DIAG:-0}" == 1 ]];then extra_defines+=(+define+D4_GATE_INTERNAL_DIAG);fi
 if [[ "${D4_GATE_START_PROBE:-0}" == 1 ]];then
     top=tb_d4_asic_gate_start
     testbench=$root/sim/tb_d4_asic_gate_start.sv
 fi
-if ! /opt/XCELIUM_2003/tools/bin/xrun -64bit -sv +define+functional -notimingchecks -timescale 1ns/1ps \
+if ! /opt/XCELIUM_2003/tools/bin/xrun -64bit -sv -notimingchecks -timescale 1ns/1ps \
     ${extra_defines[@]+"${extra_defines[@]}"} \
     -top "$top" -xmlibdirname "$out" -elaborate -l "$logs/compile$suffix.log" \
     "$netlist" "${models[@]}" "$testbench" ${extra_sources[@]+"${extra_sources[@]}"} > "$logs/compile$suffix.console.log" 2>&1;then
