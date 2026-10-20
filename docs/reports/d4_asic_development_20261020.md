@@ -211,6 +211,50 @@ different design/tool version and is hypothesis guidance; it is not evidence
 that this design's DRC is repaired. The installed Innovus19 command help and
 actual LEF/GDS geometry must determine a valid implementation.
 
+The subsequent LEF audit found a separate P/G omission: generated ROM ground
+pins are named `GND`, while the original global connection command matched only
+`VSS`. Thus the original connectivity report cannot establish complete macro
+power connectivity. A repair must connect both actual pin names and audit all
+19 instances before physical acceptance. ROM supply pins form M3/M4 peripheral
+rings; the controlled access probe restricts macro entry to M4 and above, with
+stripe auto-vias restricted to M5/M6. This is an experiment until DRC and physical
+connectivity are rechecked; no LEF geometry or rule is waived.
+
+The startup diagnostic narrowed `image_index[0]` to an AOI22 cone containing both
+the register and its complement. During the observed reset cycles both enables
+are 1: its Boolean result is 0, while a four-state AOI gate retains X. This
+supports reset X pessimism as a local cause, rather than a tie-cell or cell
+timescale fault. It does not close the full-network gate simulation. The
+installed DC O-2018.06 has no `compile_preserve_sync_resets` variable; it documents
+`hdlin_ff_always_sync_set_reset` (default false). A small mapped-cell experiment
+compares that supported inference policy before an independent full-core rerun.
+No simulation state is forced or initialized to bypass the failure.
+
+The real-cell counter experiment now reproduces the contrast: default inference
+fails reset with `index=000000000x`; explicit synchronous-reset inference passes
+1100 exact count checks, periodic input stalls and a second reset, starting from
+uninitialized DUT state. Root verified both raw logs and source identities in
+`artifacts/d4_asic_reset_probe_evidence_20261020.tar.gz` (SHA256
+`5034e12c53b88548860a023bc98ae0e0c8c5caaa035d3a7ce32848b60b5c0c41`).
+The independent complete mapping uses tag `asic_A3_sync_reset_tt_20261020` with
+the same generated RTL, real memories and 10ns constraints. It is in progress;
+the unit pass does not transfer full-network gate or physical acceptance.
+
+The first restricted-M4 P/G probe routed zero block ports and zero wires, so its
+zero-DRC report is explicitly rejected as repair evidence. The corrected
+instance inventory does establish 38 logical PG assignments for all 19 macros.
+A subsequent direct-stripe attempt hit mutually exclusive Innovus `-insts` and
+`-area` options; its script-end marker is likewise not acceptance. These failed
+probes remain separate on the server. Physical acceptance needs actual macro
+connections, complete connectivity/DRC checks and repaired hold timing.
+
+The single-ROM regular-M5-grid probe creates 2 M5 wires, 3 VIA45 and 19 VIA56
+objects, with zero special-routing DRC. The all-macro extension stops at a
+weight ROM with no legal generated stripe, so it is not a complete grid repair.
+A separate copy removes regular signal routes to test constructing PG first;
+any success there will be PG construction evidence only, not a routed-core
+timing/connectivity result. The original routed design is preserved throughout.
+
 A2 was rebuilt in `asic_A2_repro_tt_20261020` to provide its missing mapped
 checkpoint for the controlled backend comparison. It reproduces total cell area
 9.105223614 mm2 exactly, with TT10ns setup slack +0.0000772476 ns. Its full-core

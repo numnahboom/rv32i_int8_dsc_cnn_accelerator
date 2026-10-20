@@ -1,0 +1,9 @@
+{
+  "status": "ROOT_ACCEPTED_RESET_POLICY_UNIT_CONTRAST",
+  "archive_sha256": "5034e12c53b88548860a023bc98ae0e0c8c5caaa035d3a7ce32848b60b5c0c41",
+  "files": 8,
+  "baseline_reset_X_reproduced": true,
+  "preserved_reset_exact_checks": 1100,
+  "full_network_gate_accepted": false,
+  "physical_or_power_claim": false
+}

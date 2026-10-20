@@ -2,6 +2,16 @@
 proc synth_main {} {
     set root [file normalize [file join [file dirname [info script]] ..]]
     set out [pwd]
+    set preserve_sync_reset 0
+    if {[info exists ::env(D4_PRESERVE_SYNC_RESET)]} {
+        set preserve_sync_reset $::env(D4_PRESERVE_SYNC_RESET)
+    }
+    # O-2018.06 has no compile_preserve_sync_resets variable. This supported
+    # HDL option must precede analyze; default keeps the original A3 policy.
+    if {$preserve_sync_reset} {set_app_var hdlin_ff_always_sync_set_reset true}
+    set policy_file [open $out/reset_policy.txt w]
+    puts $policy_file "hdlin_ff_always_sync_set_reset=$preserve_sync_reset"
+    close $policy_file
     set corner tt
     if {[info exists ::env(D4_ASIC_CORNER)]} {set corner $::env(D4_ASIC_CORNER)}
     set period 10.0
@@ -86,5 +96,5 @@ proc synth_main {} {
     close $f
     puts "D4_A3_FULL_CORE_SYNTH_COMPLETE corner=$corner area_um2=$area setup_slack_ns=$slack"
 }
-if {[catch {synth_main} message]} {puts "D4_A3_FULL_CORE_SYNTH_FAIL=$message";quit}
+if {[catch {synth_main} message]} {puts "D4_A3_FULL_CORE_SYNTH_FAIL=$message";exit 1}
 quit

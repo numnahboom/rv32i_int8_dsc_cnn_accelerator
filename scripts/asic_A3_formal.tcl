@@ -4,6 +4,7 @@ proc formal_main {} {
     set root [file normalize [file join [file dirname [info script]] ..]]
     set out [pwd]
     set syn $root/build/reports/asic_A3_tt_20261020
+    if {[info exists ::env(D4_SYNTH_TAG)]} {set syn $root/build/reports/$::env(D4_SYNTH_TAG)}
     set routed [expr {[info exists ::env(D4_FORMAL_ROUTED)] && $::env(D4_FORMAL_ROUTED)==1}]
     set ::synopsys_auto_setup true
     set db /opt/pdk/smic0.18um/DigitalIC/6_SCC018UG_HD_RVT_lib_tt_v1p8_V0.3a/liberty/1.8v/scc018ug_hd_rvt_tt_v1p8_25c_basic.db

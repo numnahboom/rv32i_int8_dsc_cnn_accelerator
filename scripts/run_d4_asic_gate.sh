@@ -6,10 +6,12 @@ root=$(pwd)
 if [[ "${D4_GATE_PREPARED:-0}" != 1 ]];then python3 scripts/prepare_d4_asic_gate_tb.py;fi
 tag=asic_A3_mapped_gate_20261020
 netlist=build/reports/asic_A3_tt_20261020/mapped.v
+if [[ -n "${D4_SYNTH_TAG:-}" ]];then netlist=build/reports/$D4_SYNTH_TAG/mapped.v;fi
 if [[ "${D4_GATE_ROUTED:-0}" == 1 ]];then
     tag=asic_A3_routed_gate_20261020
     netlist=build/reports/${D4_PHYSICAL_TAG:-asic_A3_physical_20261020}/routed.v
 fi
+if [[ -n "${D4_GATE_TAG:-}" ]];then tag=$D4_GATE_TAG;fi
 logs=$root/build/reports/$tag
 case_id=${D4_GATE_CASE_ID:-}
 out=$root/build/xcelium_${tag}${case_id:+_$case_id}

@@ -47,10 +47,18 @@ keep full-core PPA, physical timing and energy as separate unaccepted gates.
 `d4_asic_fullcore_synth_evidence_20261020.tar.gz` retains A2/A3 complete-core
 numerical reports, A3 report-only checkpoint recovery and private mapping hashes.
 `python3 scripts/accept_d4_asic_synth.py` verifies the returned reports against
-both locally regenerated RTL candidates. A2 has no saved mapped checkpoint.
+both locally regenerated RTL candidates. That original A2 archive has no saved
+mapped checkpoint; a later same-area rebuild is retained separately on-server.
 
 `d4_asic_formal_evidence_20261020.tar.gz` retains the successful A3 RTL-to-mapped
 proof with its original setup/interpretation warnings and macro-boundary report.
 `python3 scripts/accept_d4_asic_formal.py` binds it to the accepted mapping and
 RTL, checking all 252 functional output and 652 memory input-pin compare points.
 Memory contents are covered by the separate actual-model functional evidence.
+
+`d4_asic_reset_probe_evidence_20261020.tar.gz` preserves the small actual-cell
+synchronous-reset contrast: default mapping retains X at reset, while explicit
+reset inference passes 1100 checks from uninitialized DUT state. Recheck both
+the negative and positive logs with `python3 scripts/accept_d4_asic_reset_probe.py`.
+It establishes the unit synthesis policy only; no full-network gate, physical
+timing, area gain or power result is inferred from it.
