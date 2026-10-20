@@ -3,11 +3,15 @@
 proc physical_main {} {
     set root [file normalize [file join [file dirname [info script]] ..]]
     set out [pwd]
+    set syntag asic_A2_tt_20261020
+    if {[info exists ::env(D4_SYNTH_TAG)]} {set syntag $::env(D4_SYNTH_TAG)}
+    set period 10.0
+    if {[info exists ::env(D4_ASIC_PERIOD_NS)]} {set period $::env(D4_ASIC_PERIOD_NS)}
     set smoke [expr {[info exists ::env(D4_PHYSICAL_SMOKE)] && $::env(D4_PHYSICAL_SMOKE)==1}]
     set dk /opt/pdk/smic0.18um/DigitalIC/SCC018UG_HD_RVT_DK_V0.3a
     set libroot /opt/pdk/smic0.18um/DigitalIC
     set f [open $out/core.sdc w]
-    puts $f {create_clock -name clk -period 10 [get_ports clk]}
+    puts $f [format {create_clock -name clk -period %s [get_ports clk]} $period]
     puts $f {set_clock_uncertainty 0.2 [get_clocks clk]}
     puts $f {set_input_delay -max 1.0 -clock clk [remove_from_collection [all_inputs] [get_ports clk]]}
     puts $f {set_input_delay -min 0.1 -clock clk [remove_from_collection [all_inputs] [get_ports clk]]}
@@ -38,7 +42,7 @@ proc physical_main {} {
     close $f
     set ::init_mmmc_file $out/views.tcl
     set ::init_top_cell d4_fullnet_top
-    set ::init_verilog $root/build/reports/asic_A2_tt_20261020/mapped.v
+    set ::init_verilog $root/build/reports/$syntag/mapped.v
     set ::init_lef_file [list $dk/lef/tf/180MSE_1833/scc018ug_6m_1tma1.lef \
         $dk/lef/macro/scc018ug_hd_rvt.lef \
         $root/build/asic_macros/act_2048x128/RASP2048X16M16_digital.lef \
@@ -62,7 +66,7 @@ proc physical_main {} {
     if {$smoke} {
         set side 150.0
     } else {
-        set f [open $root/build/reports/asic_A2_tt_20261020/result.json r];set summary [read $f];close $f
+        set f [open $root/build/reports/$syntag/result.json r];set summary [read $f];close $f
         if {![regexp {"cell_area_including_macros_um2":([0-9.eE+-]+)} $summary -> area]} {error "Missing full-core area"}
         set side [expr {max(sqrt($area/0.60),3450.0)}]
     }

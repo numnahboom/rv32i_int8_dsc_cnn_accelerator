@@ -153,8 +153,17 @@ four unused residual wrapper address bits. Inspection confirms the four effectiv
 ROM A[8] pins are driven low by PULLHD0 inside the mapped wrapper. The input-pin
 count independently checks as 428 SRAM +112 weight ROM +112 residual ROM =652.
 No functional output bit is omitted from the proof. Gate-level four-state
-full-inference checks provide a further independent check; they have no SDF and
-do not establish timing.
+full-inference checks are a separate unpassed gate; they have no SDF and do not
+establish timing. A bounded startup probe discovers X on input_ready at cycle25,
+after ten input transfers; the image-index counter already contains X/Z during
+reset. The scalar counter bit0 feeds AOI22HDVL/DQHDV0 logic; unused image_index[10]
+is not itself a functional output. Functional-mode standard-cell simulation
+reproduces the same failure. PULLHD0/PULLHD1 model definitions drive correct
+constants. No model or RTL cause is inferred before tracing the actual cone.
+Four expensive gate runs were paused with process identities and logs retained;
+they must be cleaned up and restarted after diagnosis. They are not counted as
+passing inferences. The gate scoreboard now has early X checks and a timeout
+independent of busy to prevent an unbounded input-wait loop.
 
 ## Physical environment qualification
 
@@ -184,6 +193,31 @@ flows explicitly set `setDesignMode -process 180`. This changes the tool setting
 not the technology identity. A resumed flow must identify its original placed
 checkpoint rather than imply an independently repeated placement.
 
+First A3 routed outcome: setup WNS +0.009 ns, TNS0 at10ns; hold WNS -0.001 ns,
+TNS -0.001 ns, one default-path violation. Connectivity reports zero violations
+and warnings. DRC exceeds its 1000-error report limit, including repeated
+parallel-run-length spacing between VDD special wires and weight-ROM blockages
+on METAL2/METAL3. This is a negative physical-closure result. Zero tool errors or
+script completion does not close those violations. Original routed checkpoints,
+timing and DRC reports remain on the server. P/G pin access and the remaining
+hold path require actual repair and rechecking, with no geometry-rule waiver.
+
+P/G repair will first inspect actual macro pin rectangles and the offending
+special-wire/via landing shapes, then test one macro's access policy before
+rebuilding the full grid. A [Cadence discussion of upper-layer memory P/G
+access](https://community.cadence.com/cadence_technology_forums/f/digital-implementation/56890/how-to-force-sroute-of-innovus-to-go-to-the-highest-layer-before-routing-pg-pins)
+describes targeted upper-layer stripes/vias and area control. It concerns a
+different design/tool version and is hypothesis guidance; it is not evidence
+that this design's DRC is repaired. The installed Innovus19 command help and
+actual LEF/GDS geometry must determine a valid implementation.
+
+A2 was rebuilt in `asic_A2_repro_tt_20261020` to provide its missing mapped
+checkpoint for the controlled backend comparison. It reproduces total cell area
+9.105223614 mm2 exactly, with TT10ns setup slack +0.0000772476 ns. Its full-core
+formal/physical acceptance is pending. The original A2 numerical reports remain
+separate; this rebuild was required to obtain an implementation, not to replace
+the original result.
+
 ## Evidence and remaining gates
 
 - FPGA baseline: commit `bfb60e5`; [original P results](d4_fullnet_result_20261019.md).
@@ -208,3 +242,22 @@ compiler's missing NLPM `internal_power_calculation` metadata remains unresolved
 it is not filled in speculatively. No complete ASIC power number is accepted.
 
 Commercial tools and process/generated macro views remain on the server.
+
+## What the current comparisons support
+
+The evidence supports technology-aware storage/arithmetic choices for this
+fixed network. A smaller standalone multiplier, descriptor-shaped activation
+capacity and compiled lookup storage affect different parts of the cost. Their
+percentage reductions cannot be added together. A3 memories occupy about 77.30%
+of its mapped area, so a local arithmetic gain has limited leverage on total
+area. The residual-ROM experiment also shows why constant-table logic should
+remain a real candidate instead of assuming every compiled macro saves area.
+
+A3 provides an explicit 19-macro physical reference with complete function and
+logic-proof evidence. It has not established overall PPA superiority over A2.
+An eventual equal-condition routed comparison is needed to decide whether its
+area cost earns a frequency or energy benefit. Historical 91.46% accuracy and
+the fixed MAC count establish model identity, not network-design superiority.
+A research claim about the network itself needs controlled training/quantization
+comparisons that include accuracy, semantic MAC, parameter storage, peak live
+activation and measured hardware. No such new-network claim is made here.
