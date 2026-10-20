@@ -32,7 +32,10 @@ def main():
     assert Path(git('rev-parse', '--show-toplevel')).resolve() == root
     assert git('symbolic-ref', '--short', 'HEAD') == a.branch
     assert not paths('diff', '--cached', '--name-only', '-z'), 'Preserve staged work separately'
-    git('fetch', 'origin', a.branch)
+    # Older Git with a narrow origin.fetch refspec updates only FETCH_HEAD when
+    # given a branch name. Specify the tracking destination explicitly.
+    refspec = 'refs/heads/{}:refs/remotes/origin/{}'.format(a.branch, a.branch)
+    git('fetch', 'origin', refspec)
     target = 'origin/' + a.branch
     old, new = git('rev-parse', 'HEAD'), git('rev-parse', target)
     subprocess.check_call(['git', 'merge-base', '--is-ancestor', old, new], cwd=str(root))
