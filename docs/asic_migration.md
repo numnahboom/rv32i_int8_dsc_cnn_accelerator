@@ -114,3 +114,10 @@ checks. A3's 19 memories total 7.670230033 mm2 of placement footprint; full-core
 mapped and routed costs are still separate acceptance gates. Source, program,
 area scopes, tool limitations and current results are maintained in the
 [development report](reports/d4_asic_development_20261020.md).
+
+Current checkpoints are summarized at the beginning of that report. The
+synchronous-reset A3 mapping now passes eight mapped-gate inferences under
+default library propagation, without SDF/timing checks. A shared PG construction
+component passes; full corrected routing and error-free complete formal proof
+remain separate gates. The [activity and energy contract](asic_power_contract.md)
+specifies the measurement boundary before any ASIC power claim.

@@ -1,0 +1,11 @@
+{
+  "status": "ROOT_ACCEPTED_PRECTS_PLACED_PG_COMPONENT",
+  "archive_sha256": "44df486bf524422d82b52063271a2cda3726cf80aa6a42fc20ca9fed240add36",
+  "files": 8,
+  "macro_instances": 19,
+  "PG_terminals_checked": 38,
+  "special_DRC": 0,
+  "VDD_VSS_connectivity_errors_and_warnings": 0,
+  "full_routed_core_or_new_mapping_accepted": false,
+  "power_or_frequency_claim": false
+}

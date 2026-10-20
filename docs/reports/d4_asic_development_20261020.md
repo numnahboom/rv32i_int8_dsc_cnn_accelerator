@@ -1,9 +1,49 @@
 # D4 ASIC development evidence (2026-10-20)
 
 ASIC migration is active. Complete-network functionality using real SMIC SRAM
-and ROM models, complete-core mapping and RTL-to-mapped logic equivalence are
-accepted. Physical implementation is a separate gate. No complete ASIC
-power/energy result is claimed.
+and ROM models and complete-core mapping are established. Earlier completed
+logic proofs retain an SVF metadata-parser qualification; the new proof with
+compatible metadata has not completed. Physical implementation is a separate
+gate. No complete ASIC power/energy result is claimed.
+
+## Current checkpoint after resumed execution
+
+The current A3 synchronous-reset-preserving mapping passes eight complete
+mapped-netlist inferences: two inputs (sample0 and synthetic checkerboard), two
+stall modes (0 and 2), and two epochs. Each checks 24,336 intermediate words,
+10 raw FC values and 11,645,440 semantic MAC. Mode0 takes 255,740 cycles; mode2
+takes 257,890 and 257,818 cycles. These use the real memory models and the
+standard-cell library's default specify propagation arcs, with timing checks
+disabled and no SDF. They establish functional behavior, not routed frequency.
+The earlier four failures with `+define+functional` remain negative simulation
+evidence; that mode removes propagation delays needed by the memory-model
+sampling interaction. No DUT initialization or memory-model patch was used.
+
+The shared core-first PG construction now passes on the original A3 placed,
+pre-CTS checkpoint: 19 macros and 38 PG terminals, zero special-routing DRC,
+and zero VDD/VSS connectivity errors or warnings. Root acceptance binds the
+eight-file archive to that checkpoint. This is a construction component test,
+not a routed result for the new mapping. The corrected full implementation is
+the next separate gate; the old routed hold/DRC failures remain valid negatives.
+
+Under the same reset-preserving synthesis policy, A2 area is 9.147690069 mm2
+and A3 area is 9.967994545 mm2, including their respective macros. TT10ns
+synthesis setup slack is +0.000479698 and +0.0000429153 ns respectively. These
+new mappings must not inherit the old mappings' physical or proof acceptance.
+
+The SVF incompatibility was isolated to `guide_info -file`: DC emits a
+CRC-plus-MD5 triple, while the installed older Formality accepts a pair.
+External checks verify the unchanged source MD5; the diagnostic CRC-pair file
+preserves every operative guidance paragraph byte for byte. Its native parser
+reports no errors, and all 13,758 points match with zero unmatched points.
+However, the complete proof reaches 13,634 passing and 124 unverified points,
+then hits the two-hour execution limit. This is incomplete, not equivalence
+closure. The separate no-SVF attempt is also negative (20 failed and 13,002
+unverified points); no additional functional assumptions are introduced.
+
+The resumed work is split into bounded Luna ownership for gate evidence,
+metadata-compatible formal verification, and the fixed corrected A3 physical
+flow. Root retains candidate selection, integration and final acceptance.
 
 ## Network and evaluation boundary
 
@@ -136,6 +176,10 @@ and RTL-to-mapped logic proof have root acceptance.
 
 ## Full-core logic equivalence
 
+This section retains the original, pre-reset-policy mapping's evidence. The
+current mapping and incomplete parser-compatible proof are described in the
+checkpoint at the beginning of this report.
+
 Formality O-2018.06-SP1 reports `Verification SUCCEEDED` for A3 RTL versus its
 actual saved mapped netlist, using the original synthesis SVF and real standard
 cell DB. All 13,740 compare points pass: 12,836 DFF bits, 252 functional output
@@ -152,17 +196,17 @@ The 20 implementation undriven nets comprise 16 unused RQ out_valid outputs and
 four unused residual wrapper address bits. Inspection confirms the four effective
 ROM A[8] pins are driven low by PULLHD0 inside the mapped wrapper. The input-pin
 count independently checks as 428 SRAM +112 weight ROM +112 residual ROM =652.
-No functional output bit is omitted from the proof. Gate-level four-state
-full-inference checks are a separate unpassed gate; they have no SDF and do not
-establish timing. A bounded startup probe discovers X on input_ready at cycle25,
+No functional output bit is omitted from this qualified proof. At this earlier
+checkpoint, gate-level four-state full-inference checks had not passed. They
+have no SDF and do not establish timing. A bounded startup probe discovered X on input_ready at cycle25,
 after ten input transfers; the image-index counter already contains X/Z during
 reset. The scalar counter bit0 feeds AOI22HDVL/DQHDV0 logic; unused image_index[10]
 is not itself a functional output. Functional-mode standard-cell simulation
 reproduces the same failure. PULLHD0/PULLHD1 model definitions drive correct
 constants. No model or RTL cause is inferred before tracing the actual cone.
-Four expensive gate runs were paused with process identities and logs retained;
-they must be cleaned up and restarted after diagnosis. They are not counted as
-passing inferences. The gate scoreboard now has early X checks and a timeout
+Four expensive gate runs were paused with process identities and logs retained,
+then cleaned up by verified process identity before the corrected runs. They
+are not counted as passing inferences. The gate scoreboard has early X checks and a timeout
 independent of busy to prevent an unbounded input-wait loop.
 
 ## Physical environment qualification
@@ -332,8 +376,9 @@ of its mapped area, so a local arithmetic gain has limited leverage on total
 area. The residual-ROM experiment also shows why constant-table logic should
 remain a real candidate instead of assuming every compiled macro saves area.
 
-A3 provides an explicit 19-macro physical reference with complete function and
-logic-proof evidence. It has not established overall PPA superiority over A2.
+A3 provides an explicit 19-macro implementation candidate with complete-network
+functional evidence and qualified, incomplete logic-proof closure. It has not
+established overall PPA superiority over A2.
 An eventual equal-condition routed comparison is needed to decide whether its
 area cost earns a frequency or energy benefit. Historical 91.46% accuracy and
 the fixed MAC count establish model identity, not network-design superiority.

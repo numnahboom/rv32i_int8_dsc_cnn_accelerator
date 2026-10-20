@@ -55,6 +55,9 @@ proof with its original setup/interpretation warnings and macro-boundary report.
 `python3 scripts/accept_d4_asic_formal.py` binds it to the accepted mapping and
 RTL, checking all 252 functional output and 652 memory input-pin compare points.
 Memory contents are covered by the separate actual-model functional evidence.
+The retained raw log also contains an SVF file-info parser error. The root
+acceptance explicitly records this qualification; a new parser-compatible proof
+is incomplete. This archive must not be described as unqualified proof closure.
 
 `d4_asic_reset_probe_evidence_20261020.tar.gz` preserves the small actual-cell
 synchronous-reset contrast: default mapping retains X at reset, while explicit
@@ -62,3 +65,14 @@ reset inference passes 1100 checks from uninitialized DUT state. Recheck both
 the negative and positive logs with `python3 scripts/accept_d4_asic_reset_probe.py`.
 It establishes the unit synthesis policy only; no full-network gate, physical
 timing, area gain or power result is inferred from it.
+
+`d4_asic_gate_specify_evidence_20261020.tar.gz` retains four original A3
+synchronous-reset mapped-gate logs, with two epochs each, and their source/run
+identities. `python3 scripts/accept_d4_asic_gate.py` rechecks all eight exact
+inferences and the public archive allowlist. Default library propagation arcs,
+disabled timing checks and no SDF are explicit boundaries.
+
+`d4_asic_pg_construction_evidence_20261020.tar.gz` retains the shared PG helper's
+pre-CTS placed-checkpoint component test. `python3 scripts/accept_d4_asic_pg.py`
+checks 19 macros, 38 PG terminals, zero special DRC and zero VDD/VSS connectivity
+errors/warnings. It does not accept the new mapping's full routed core or power.

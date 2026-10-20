@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "status": "ACCEPTED_SOURCE_BOUND_EXACT_INFERENCE_PACKAGE",
+  "archive": "artifacts/d4_asic_gate_specify_evidence_20261020.tar.gz",
+  "archive_sha256": "91d025fb9e456215e7f15f55428a96b241d07fa6e564ecdc2dc0b55fcb7126d1",
+  "archive_members": 9,
+  "source_identity_sha256": "d9c67decbb6e83167f7b1d3dd638aac0f398c30c9eb65d51099882a6b57329c6",
+  "cases": 4,
+  "exact_inferences": 8,
+  "tap_words_per_epoch": 24336,
+  "logits_per_epoch": 10,
+  "macs_per_epoch": 11645440,
+  "cycles": {
+    "mode0": {
+      "epoch0": 255740,
+      "epoch1": 255740
+    },
+    "mode2": {
+      "epoch0": 257890,
+      "epoch1": 257818
+    }
+  },
+  "negative_functional_define_result_preserved": true,
+  "timing_gate": false,
+  "14_sample_gate": false,
+  "sdf_annotated": false,
+  "timing_checks_enabled": false,
+  "pdk_model_exported": false,
+  "mapped_netlist_exported": false,
+  "svf_exported": false,
+  "raw_logs_unmodified": true,
+  "remote_absolute_paths_retained": true,
+  "checks": [
+    "exact archive member allowlist and no unsafe paths",
+    "server SHA-256 matched for all four raw logs",
+    "all eight two-epoch PASS records and metric ledgers parsed again",
+    "source and private mapped-netlist identity hashes recorded",
+    "timing, sample coverage, and negative-control boundaries enforced"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "status": "ROOT_ACCEPTED_EIGHT_MAPPED_EXACT_INFERENCES",
+  "accepted_package_sha256": "91d025fb9e456215e7f15f55428a96b241d07fa6e564ecdc2dc0b55fcb7126d1",
+  "source_identity_sha256": "d9c67decbb6e83167f7b1d3dd638aac0f398c30c9eb65d51099882a6b57329c6",
+  "independent_remote_rechecks": {
+    "mapped_v_sha256": "12861917f2bdd9a45fdb5fe19585a69c6262b4520795eebe7972ac2eb236f898",
+    "port_scoreboard_sha256": "2625b464314fad7a7591b4d9226d5ab49704a4e544d1767efbc9ca1496400ca5",
+    "native_compile_header": "Root read original compile_specifydiag.log: -notimingchecks, no +define+functional, exact A3sync mapped path and actual PDK model paths"
+  },
+  "checks": [
+    "Archive allowlist and all raw-log SHA/metrics revalidated with acceptance tool",
+    "Mapped input and generated scoreboard bytes independently matched remote",
+    "All four cases and eight PASS records retain MAC/tap/FC ledgers"
+  ],
+  "limits": [
+    "Recorded historical source hashes differ from current helper scripts; no current-tree identity assertion",
+    "The public package does not contain frozen per-model execution-time hashes",
+    "Two samples and two modes only; no SDF/timing-check/power claim",
+    "Earlier functional-define failure remains negative evidence"
+  ]
+}
