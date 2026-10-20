@@ -1,0 +1,53 @@
+{
+  "status": "NEGATIVE_RESULT",
+  "root_acceptance": "accepted_as_failed_experiment_only",
+  "candidate": "A3 synchronous-reset mapping; corrected PG full route plus one checkpoint hold repair",
+  "process": "SMIC180 HD RVT",
+  "clock_period_ns": 10,
+  "views": {"setup": ["CORE_ss", "CORE_tt"], "hold": ["CORE_ff"]},
+  "timing_ns": {
+    "SS_setup_WNS": 0.008, "SS_setup_TNS": 0,
+    "TT_setup_WNS": 2.313, "TT_setup_TNS": 0,
+    "FF_hold_WNS": -0.291, "FF_hold_TNS": -14.847,
+    "FF_hold_violations": 157,
+    "reg2reg_hold_WNS": -0.053, "reg2reg_hold_TNS": -0.167,
+    "reg2reg_hold_violations": 5
+  },
+  "DRC": {
+    "all_width_records": 190, "regular": 0, "special": 0,
+    "cell_width_records": 190, "additional_cell_pin_blockage_spacing": 9448,
+    "actual_loaded_LEF_single_OBS_RECT_matches": 114,
+    "MAXWIDTH_records_without_geometry_proof": 76,
+    "full_all_zero_gate_pass": false
+  },
+  "PG": {
+    "named_all_net_VDD_VSS_connectivity_errors_warnings": 0,
+    "unassigned_body_terminals": 20, "affected_buffer_instances": 10,
+    "NRIG34_warnings": 60,
+    "supply_voltage_association": "not yet established by this experiment",
+    "complete_PG_acceptance": false
+  },
+  "repair": {
+    "inserted_buffers": 0, "resized_cells": 0,
+    "hold_improved": false,
+    "optimizer_zero_repair_root_cause": "unknown"
+  },
+  "identity_SHA256": {
+    "mapped_netlist": "12861917f2bdd9a45fdb5fe19585a69c6262b4520795eebe7972ac2eb236f898",
+    "checkpoint_tree": "e0712d8b133619128c088a20945927028d696522c7deeb3c6892d06fc5bf4eb9",
+    "routed_hold_repair_netlist": "fed219431fa639f3686df585e1523c71af3c121396afb3950a520863d2728fb0",
+    "SPEF": "31c47b84e2c20b5514344f56ae3461d1b29f89af3040cbda7b502cb3309db9a8",
+    "private_173_item_evidence_manifest": "e31177a5a3be775d1fc686de00d1aec7854aa43721548715563012ef2ee0fcdf",
+    "executed_inputs_manifest": "037b8c6cbbe08726b3addb0feb942f9382d0aef704be3fa56bc98e0d331bf0c5"
+  },
+  "private_evidence_relative_directory": "build/reports/asic_A3_sync_reset_pg_physical_20261020/hold_repair_1",
+  "root_independent_checks": ["remote final-netlist SHA256", "remote evidence-manifest SHA256"],
+  "limits": [
+    "Qualified physical-prototype gate is not met",
+    "No full-rule DRC closure, LVS, IR/EM or tapeout claim",
+    "No final-netlist equivalence or SDF validation accepted for this route",
+    "No ASIC power or energy result; activity execution remains unreleased",
+    "Private technology views, geometry and netlists remain on server"
+  ],
+  "next": "Separate fixed body-PG and fast-data-branch delay ECO; independent actual-LEF geometry audit"
+}

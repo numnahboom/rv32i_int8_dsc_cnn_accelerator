@@ -122,3 +122,6 @@ component passes; the current A3 error-free formal proof also passes all 13,758
 compare points at identical memory boundaries. Full corrected routing remains
 a separate gate. The [activity and energy contract](asic_power_contract.md)
 specifies the measurement boundary before any ASIC power claim.
+The [physical prototype acceptance](asic_physical_acceptance.md) preserves
+unfiltered DRC results and defines the evidence required to distinguish macro
+OBS width diagnoses from actual routing violations.

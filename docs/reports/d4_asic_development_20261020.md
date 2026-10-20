@@ -27,6 +27,28 @@ not a routed result for the new mapping. The corrected full implementation is
 the next separate gate; its current new-mapping pre-CTS PG check also passes.
 The old routed hold/DRC failures remain valid negatives.
 
+The current mapping's first full corrected route and one checkpoint hold-repair
+attempt are now complete and both negative. SS setup is +0.008 ns/TNS0 and TT
+setup +2.313 ns; FF hold remains -0.291 ns/TNS -14.847 ns, 157 violations
+(five reg-to-reg, worst -0.053 ns). All-net and named VDD/VSS connectivity
+report zero errors/warnings. Native `all` DRC reports 190 width records, all
+attributed to macro cell blockages; `regular` and `special` report zero. The
+`cell` scope additionally reports 9,448 intra-macro Pin/Blockage spacing items.
+Only 114 of the 190 width records currently match individual rectangles in
+the actual loaded LEF OBS; 76 MAXWIDTH records remain unproved. The extra
+spacing records require separate source-geometry classification. The PG
+audit also identifies 20 genuinely unassigned VNW/VPW body terminals on ten
+inserted buffers: named-net connectivity zero does not cover these terminals.
+The prior optimizer inserted no repair cells, so its successful process exit
+does not imply timing repair. Root has selected a separate, bounded candidate
+to resolve body-PG associations from the actual PDK and add delay on the fast
+data branches, without changing RTL, cycles or timing budgets. An independent
+geometry audit runs separately. Power capture remains unreleased. The revised
+[physical prototype criterion](../asic_physical_acceptance.md) preserves every
+full-rule result and has not been satisfied by this implementation.
+The [public negative-result summary](../../artifacts/d4_asic_A3_physical_negative_20261020.json)
+binds these results to the private final checkpoint and evidence manifest.
+
 Under the same reset-preserving synthesis policy, A2 area is 9.147690069 mm2
 and A3 area is 9.967994545 mm2, including their respective macros. TT10ns
 synthesis setup slack is +0.000479698 and +0.0000429153 ns respectively. These
