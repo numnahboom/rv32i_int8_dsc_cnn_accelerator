@@ -118,6 +118,7 @@ area scopes, tool limitations and current results are maintained in the
 Current checkpoints are summarized at the beginning of that report. The
 synchronous-reset A3 mapping now passes eight mapped-gate inferences under
 default library propagation, without SDF/timing checks. A shared PG construction
-component passes; full corrected routing and error-free complete formal proof
-remain separate gates. The [activity and energy contract](asic_power_contract.md)
+component passes; the current A3 error-free formal proof also passes all 13,758
+compare points at identical memory boundaries. Full corrected routing remains
+a separate gate. The [activity and energy contract](asic_power_contract.md)
 specifies the measurement boundary before any ASIC power claim.

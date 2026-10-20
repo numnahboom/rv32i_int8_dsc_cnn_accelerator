@@ -17,7 +17,15 @@ proc formal_main {} {
     foreach path [concat $libraries [list $syn/mapped.v $syn/default.svf]] {
         if {![file readable $path]} {error "Missing same-source mapped input $path"}
     }
-    if {!$routed} {set_svf $syn/default.svf}
+    set no_svf [expr {[info exists ::env(D4_FORMAL_NO_SVF)] && $::env(D4_FORMAL_NO_SVF)==1}]
+    if {!$routed && !$no_svf} {
+        set guide $syn/default.svf
+        if {[info exists ::env(D4_SVF_OVERRIDE)]} {set guide $::env(D4_SVF_OVERRIDE)}
+        if {![file readable $guide]} {error "Missing exact verification guidance"}
+        puts "D4_FORMAL_SVF_INPUT=$guide"
+        set_svf $guide
+    }
+    if {$no_svf} {puts "D4_FORMAL_NO_SVF=1"}
     read_db -technology_library $libraries
     set sources {}
     foreach path {build/asic_eval/native_asymmetric_logic_rom_mask_weights_mask_residual/d4_fullnet_eval.sv \
@@ -41,8 +49,14 @@ proc formal_main {} {
     redirect $out/unmatched.rpt {report_unmatched_points}
     # A black-box report is diagnostic only; do not hide verification failure.
     catch {redirect $out/black_boxes.rpt {report_black_boxes}}
+    if {[info exists ::env(D4_FORMAL_MATCH_ONLY)] && $::env(D4_FORMAL_MATCH_ONLY)==1} {
+        puts "D4_A3_FORMAL_MATCH_ONLY_COMPLETE=1"
+        return
+    }
     if {![verify]} {
         redirect $out/failing.rpt {report_failing_points}
+        catch {redirect $out/unverified_points.rpt {report_unverified_points -list}}
+        catch {redirect $out/aborted_points.rpt {report_aborted_points -list}}
         catch {save_session -replace $out/failed_session}
         error "Full A3 RTL-to-mapped verification did not pass"
     }

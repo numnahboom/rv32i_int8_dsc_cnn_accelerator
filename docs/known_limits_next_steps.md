@@ -1,5 +1,12 @@
 # 当前限制与后续验证（2026-10-19）
 
+2026-10-20 主线已按用户授权迁移至 SMIC 180 nm ASIC。下文保留 FPGA P
+冻结阶段的结果与限制；ASIC 当前状态见
+[开发报告](reports/d4_asic_development_20261020.md)，功耗边界见
+[活动与能耗合同](asic_power_contract.md)。FPGA 资源百分比、125 MHz 和功耗证据
+不直接转作 ASIC 验收。当前 ASIC 优先完成同源映射的逻辑/门级/完整物理验证，
+然后进行同条件 A2/A3 存储结构比较与实际活动功耗分析。
+
 ## 当前结论
 
 C0 和 D4 retained v6 继续作为冻结对照。K2完整布线资源通过、0 routing errors，WNS -0.990ns、WHS +0.005ns，125MHz setup失败。L精确RQ部分积流水与完成握手分离已通过84次逐层exact及完整控制/reset门，latency258,813、启动间隔258,815 cycles，尚无PPA结论。L2数据级valid使能已通过同范围完整功能验证，延迟不变；完整综合18,739 LUT/9,653 FF/93 BRAM/64 DSP，WNS -1.051ns，最差已转为外部start_valid到state CE。M寄存启动token已通过完整功能门，外部latency258,814/interval258,816，综合WNS -0.467ns；M post-route WNS -0.287ns、WHS +0.006ns，setup失败。N halo已通过同周期完整功能门；O输入ready门控候选已通过完整功能门及新增ready/reset探针，同源综合资源通过，WNS -1.017ns、内部+.632ns，仅1个setup失败端点，O post-route WNS -0.221ns/WHS +0.049ns，setup仍失败；P静态FC队列/本地CE功能及综合拓扑已通过，综合setup+.106ns/hold-.155ns，完整P&R同步时序已通过（WNS+.128/WHS+.010），复位后数字内存不变量已通过，物理复位warning保留；sample0活动估算0.613W/18.35GOPS/W（Medium），初始20目标未过。E的旧布线失败结果不属于K2/L。详细证据见 [`reports/d4_fullnet_development_20261018.md`](reports/d4_fullnet_development_20261018.md)。

@@ -1,0 +1,27 @@
+{
+  "status": "ROOT_ACCEPTED_A3_SYNC_RESET_RTL_TO_MAPPED_LOGIC",
+  "archive_sha256": "b555011a2b26841442c889069e5970e16c3adf9481c34eea422685b06b4ca2b0",
+  "private_mapped_v_sha256": "12861917f2bdd9a45fdb5fe19585a69c6262b4520795eebe7972ac2eb236f898",
+  "passing": 13758,
+  "failing": 0,
+  "unmatched": 0,
+  "memory_input_compare_bits": 652,
+  "functional_output_compare_bits": 252,
+  "DFF_compare_bits": 12854,
+  "dont_verify_points": 0,
+  "identical_memory_instances": 19,
+  "native_errors_across_three_logs": 0,
+  "completion_basis": "Native Verification SUCCEEDED and final all-passing summary; no separate zero-unverified progress count is asserted",
+  "root_checks": [
+    "One-command public archive validation PASS",
+    "Independently inspected native final point table and dont_verify report",
+    "Same mapping hash as accepted eight exact gate inferences",
+    "Source MD5/operative-guidance/context hash bindings verified by tool; only source-checksum metadata changed"
+  ],
+  "limits": [
+    "Logic proof with identical technology memory blackboxes; contents/protocols covered by real-model tests",
+    "Synopsys auto_setup/RTL interpretation warnings retained",
+    "Old parser-error, isolated CRCpair timeout, noSVF negative and initial wrapper classification preserved",
+    "No routed timing or ASIC energy acceptance from this proof"
+  ]
+}

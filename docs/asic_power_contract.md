@@ -57,6 +57,14 @@ addresses and data. Report unmatched objects, defaults, propagated activity
 and unknown-state fractions separately. Overlapping annotations cannot be
 added to inflate coverage. Tool defaults remain visible.
 
+The examined SRAM's two internal-power conditions are `CEN` and `!CEN`; the
+weight ROM similarly uses `CSB` and `!CSB`. Audit enable-conditioned clock
+events against the simulation, rather than assuming pin annotation alone
+establishes conditional coverage. The SRAM table does not separately condition
+on write enable, so its read/write energy distinction is a model limitation;
+do not invent a separate write-energy table or silently claim data-dependent
+memory energy fidelity.
+
 ## Calculations
 
 For N completed networks in the same measured window of T seconds and total

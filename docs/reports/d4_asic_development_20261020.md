@@ -1,10 +1,10 @@
 # D4 ASIC development evidence (2026-10-20)
 
 ASIC migration is active. Complete-network functionality using real SMIC SRAM
-and ROM models and complete-core mapping are established. Earlier completed
-logic proofs retain an SVF metadata-parser qualification; the new proof with
-compatible metadata has not completed. Physical implementation is a separate
-gate. No complete ASIC power/energy result is claimed.
+and ROM models and complete-core mapping are established. The current A3
+reset-preserving mapping now passes an error-free native logic proof and eight
+complete mapped-gate inferences. Physical implementation is a separate gate.
+No complete ASIC power/energy result is claimed.
 
 ## Current checkpoint after resumed execution
 
@@ -19,12 +19,13 @@ The earlier four failures with `+define+functional` remain negative simulation
 evidence; that mode removes propagation delays needed by the memory-model
 sampling interaction. No DUT initialization or memory-model patch was used.
 
-The shared core-first PG construction now passes on the original A3 placed,
+The shared core-first PG construction passes on the original A3 placed,
 pre-CTS checkpoint: 19 macros and 38 PG terminals, zero special-routing DRC,
 and zero VDD/VSS connectivity errors or warnings. Root acceptance binds the
 eight-file archive to that checkpoint. This is a construction component test,
 not a routed result for the new mapping. The corrected full implementation is
-the next separate gate; the old routed hold/DRC failures remain valid negatives.
+the next separate gate; its current new-mapping pre-CTS PG check also passes.
+The old routed hold/DRC failures remain valid negatives.
 
 Under the same reset-preserving synthesis policy, A2 area is 9.147690069 mm2
 and A3 area is 9.967994545 mm2, including their respective macros. TT10ns
@@ -36,10 +37,26 @@ CRC-plus-MD5 triple, while the installed older Formality accepts a pair.
 External checks verify the unchanged source MD5; the diagnostic CRC-pair file
 preserves every operative guidance paragraph byte for byte. Its native parser
 reports no errors, and all 13,758 points match with zero unmatched points.
-However, the complete proof reaches 13,634 passing and 124 unverified points,
-then hits the two-hour execution limit. This is incomplete, not equivalence
-closure. The separate no-SVF attempt is also negative (20 failed and 13,002
-unverified points); no additional functional assumptions are introduced.
+That isolated-file attempt reaches 13,634 passing and 124 unverified points,
+then hits the two-hour limit. Reinspection finds that its relative helper
+files were absent, causing the critical architecture/multiplier guidance to
+be rejected. This incomplete attempt remains recorded separately.
+
+The completed repair keeps the metadata-only path+MD5 variant beside the
+native `d1/` helper tree. Every operative guidance byte is unchanged, the
+source MD5 matches, and the 169-file helper inventory is hashed. Native
+Formality completes in 339 seconds: `Verification SUCCEEDED`, all 13,758 points
+passing (652 memory inputs, 252 functional outputs, 12,854 DFF bits), zero
+failing/unmatched points and no dont-verify points. All three native logs have
+zero `Error:` lines. Memories remain 19 identical technology blackboxes;
+contents/protocols are covered by the real-model tests. Root accepted the
+public archive `d4_asic_formal_compat_20261020.zip`, SHA256
+`b555011a2b26841442c889069e5970e16c3adf9481c34eea422685b06b4ca2b0`.
+The original wrapper summary incorrectly required a periodic progress token
+that the short successful run never printed; it is preserved, with the
+hash-bound native post-review explaining the classification correction.
+The separate no-SVF attempt also remains negative (20 failed and 13,002
+unverified points). No additional functional assumptions were introduced.
 
 The resumed work is split into bounded Luna ownership for gate evidence,
 metadata-compatible formal verification, and the fixed corrected A3 physical
@@ -177,7 +194,7 @@ and RTL-to-mapped logic proof have root acceptance.
 ## Full-core logic equivalence
 
 This section retains the original, pre-reset-policy mapping's evidence. The
-current mapping and incomplete parser-compatible proof are described in the
+current mapping and completed parser-compatible proof are described in the
 checkpoint at the beginning of this report.
 
 Formality O-2018.06-SP1 reports `Verification SUCCEEDED` for A3 RTL versus its
@@ -377,7 +394,7 @@ area. The residual-ROM experiment also shows why constant-table logic should
 remain a real candidate instead of assuming every compiled macro saves area.
 
 A3 provides an explicit 19-macro implementation candidate with complete-network
-functional evidence and qualified, incomplete logic-proof closure. It has not
+functional evidence and completed logic proof at identical memory boundaries. It has not
 established overall PPA superiority over A2.
 An eventual equal-condition routed comparison is needed to decide whether its
 area cost earns a frequency or energy benefit. Historical 91.46% accuracy and

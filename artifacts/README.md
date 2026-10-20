@@ -76,3 +76,12 @@ disabled timing checks and no SDF are explicit boundaries.
 pre-CTS placed-checkpoint component test. `python3 scripts/accept_d4_asic_pg.py`
 checks 19 macros, 38 PG terminals, zero special DRC and zero VDD/VSS connectivity
 errors/warnings. It does not accept the new mapping's full routed core or power.
+
+`d4_asic_formal_compat_20261020.zip` retains the current A3 sync-reset mapping's
+error-free native proof: 13,758 passing points, zero failing/unmatched points,
+and no dont-verify points. Extract it into
+`artifacts/d4_asic_formal_compat_20261020`, then run
+`python scripts/accept_d4_asic_formal_compat.py --evidence-dir artifacts/d4_asic_formal_compat_20261020 --archive artifacts/d4_asic_formal_compat_20261020.zip`.
+The checker also rehashes the generated A3 source in `build/asic_eval/`.
+It preserves the metadata-only adaptation, native helper-context hashes and
+prior negative evidence. Memory contents and physical timing remain separate.
