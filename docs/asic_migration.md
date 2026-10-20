@@ -54,6 +54,13 @@ Serialize short SSH/SCP connections and allow cleanup between them; rapid new
 connections may be closed before authentication. A long-running tool job can
 coexist with a read-only SSH connection. Use SCP files, not terminal-pasted archives.
 
+The laboratory server is shared. New native jobs check load and available
+memory first and run at `nice +10`; Innovus uses at most four workers. Heavy
+simulation/implementation jobs and report-only native geometry queries are
+scheduled serially. SDF simulation starts with a short startup check, followed
+by the two selected inputs one at a time. No full-dataset simulation is implied
+by the current validation scope, and other users' processes are untouched.
+
 Both partial-product and native signed32 RQ implementations passed 84 complete
 network inferences each (14 inputs x 3 stall modes x 2 epochs), with 24,336
 intermediate words, 10 raw FC values and 11,645,440 semantic MAC per inference.

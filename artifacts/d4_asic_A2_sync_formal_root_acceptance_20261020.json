@@ -1,0 +1,39 @@
+{
+  "status": "ROOT_ACCEPTED_A2_SYNC_RESET_RTL_TO_MAPPED_LOGIC",
+  "candidate": "asic_A2_sync_reset_tt_20261020",
+  "mapped_SHA256": "7a42e9c61090181cee0c8212e0cf65f83693f1bdfb1027948b108290dbd5c0bd",
+  "archive": "d4_asic_A2_sync_formal_20261020.zip",
+  "archive_SHA256": "bfc7ca9c4e14404f0403df44e29d6c5f74e6d8719a43e1a58076f5bd9135a880",
+  "archive_bytes": 74794,
+  "native_result": "Verification SUCCEEDED",
+  "matched_and_passing_points": 13718,
+  "failing_points": 0,
+  "unmatched_points": 0,
+  "dont_verify_points": 0,
+  "point_breakdown": {"BBPin": 540, "Port": 252, "DFF": 12926, "Cut": 0, "Loop": 0, "BBNet": 0, "LAT": 0},
+  "native_Error_lines_in_three_log_streams": 0,
+  "native_runtime_seconds": 4565.172,
+  "proof_timeout_seconds": 7200,
+  "full_proof_runs": 1,
+  "memory_boundaries": {"SRAM_instances": 3, "weight_ROM_instances": 8, "identical_total": 11},
+  "reset_policy": "hdlin_ff_always_sync_set_reset=1",
+  "metadata_adapter": "source-path plus externally verified source-MD5 pair in native helper context",
+  "operative_SVF_guidance_SHA256": "f7e928e74b30e56a86807c91722d228628fc246a2ac145b8b634edc32b92f389",
+  "parent_checks": [
+    "Standalone package validator rerun PASS",
+    "Archive SHA256 independently computed",
+    "Native final status and point table read directly",
+    "Native no-unmatched and no-dont-verify reports read directly",
+    "Native logs independently scanned for Error lines"
+  ],
+  "preserved_negative_or_corrected_evidence": [
+    "Original match wrapper misread black-box type column; corrected report-only postreview retained",
+    "Packaging allowlist and validator corrections did not rerun native proof"
+  ],
+  "limits": [
+    "synopsys_auto_setup and native RTL interpretation assumptions remain explicit",
+    "Memory contents, behavior and timing are not proven inside identical black-box boundaries",
+    "Actual memory contents/protocol have separate full-network real-model regression evidence",
+    "No routed implementation, SDF timing or power conclusion follows from this logic proof"
+  ]
+}

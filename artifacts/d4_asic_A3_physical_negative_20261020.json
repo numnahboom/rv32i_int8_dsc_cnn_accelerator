@@ -22,8 +22,11 @@
   },
   "PG": {
     "named_all_net_VDD_VSS_connectivity_errors_warnings": 0,
-    "unassigned_body_terminals": 20, "affected_buffer_instances": 10,
+    "warning_named_unassigned_body_terminal_subset": 20, "warning_named_buffer_instances": 10,
     "NRIG34_warnings": 60,
+    "subsequent_complete_DB_inventory_unassigned_body_terminals": 256824,
+    "subsequent_complete_DB_inventory_standard_cells": 128412,
+    "warning_count_is_not_complete_PG_inventory": true,
     "supply_voltage_association": "not yet established by this experiment",
     "complete_PG_acceptance": false
   },

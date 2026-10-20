@@ -15,6 +15,12 @@ stall modes (0 and 2), and two epochs. Each checks 24,336 intermediate words,
 takes 257,890 and 257,818 cycles. These use the real memory models and the
 standard-cell library's default specify propagation arcs, with timing checks
 disabled and no SDF. They establish functional behavior, not routed frequency.
+The measured mode0 boundary gives 45.53625 semantic MAC per core cycle,
+71.1504% of the nominal 64-MAC-per-cycle array capacity, including image input
+and control overhead. At a hypothetical closed 100 MHz this would be
+2.5574 ms and 9.10725 GOPS; the present failed hold result does not establish
+that operating point. Power efficiency must instead use the actual full
+capture window and its completed inference count, including startup/tail time.
 The earlier four failures with `+define+functional` remain negative simulation
 evidence; that mode removes propagation delays needed by the memory-model
 sampling interaction. No DUT initialization or memory-model patch was used.
@@ -37,8 +43,14 @@ attributed to macro cell blockages; `regular` and `special` report zero. The
 Only 114 of the 190 width records currently match individual rectangles in
 the actual loaded LEF OBS; 76 MAXWIDTH records remain unproved. The extra
 spacing records require separate source-geometry classification. The PG
-audit also identifies 20 genuinely unassigned VNW/VPW body terminals on ten
-inserted buffers: named-net connectivity zero does not cover these terminals.
+warning audit identifies 20 unassigned VNW/VPW body terminals on ten inserted
+buffers. A subsequent complete database inventory finds that these are only
+the warning-named subset: all 128,412 standard cells have both bias terminals
+unassigned (256,824 total), while their VDD/VSS and all 19 macro VDD/GND pairs
+are assigned. Named-net connectivity zero does not cover unassigned terminals.
+The repair must audit full-library bias associations and distinguish logical
+mapping from geometric port connectivity; neither establishes well-tap/LVS
+or manufacturing electrical signoff.
 The prior optimizer inserted no repair cells, so its successful process exit
 does not imply timing repair. Root has selected a separate, bounded candidate
 to resolve body-PG associations from the actual PDK and add delay on the fast
@@ -61,7 +73,21 @@ and 19 loaded simulation-model file hashes. Root acceptance of
 `d4_asic_A2_sync_gate_evidence_20261020.tar.gz` binds archive SHA256
 `2de713ba96506b1b59d8c4e077a28aa903768442cb6c568c8c9328ff8dfbea24`.
 This is functional evidence without SDF/timing checks. A2's independent
-metadata-compatible logic proof and full physical comparison remain pending.
+metadata-compatible logic proof is now root accepted: 13,718 matched/passing
+points, zero failing/unmatched/don't-verify points and zero native Error lines
+across the three log streams. The native point table includes 540 memory-input
+bits, all 252 functional output bits and 12,926 DFF points, with 11 identical
+memory boundaries. The single full proof took 4,565.172 s under its 7,200 s
+limit; it was not rerun. The original match-wrapper black-box parsing failure
+and corrected post-review are preserved. Auto-setup/RTL interpretation limits
+remain; memory behavior is covered separately by the real-model tests.
+The [root acceptance](../../artifacts/d4_asic_A2_sync_formal_root_acceptance_20261020.json)
+binds archive `d4_asic_A2_sync_formal_20261020.zip` SHA256
+`bfc7ca9c4e14404f0403df44e29d6c5f74e6d8719a43e1a58076f5bd9135a880`.
+Validate with `python scripts/accept_d4_asic_A2_sync_formal.py --evidence-dir
+artifacts/d4_asic_A2_sync_formal_20261020 --archive
+artifacts/d4_asic_A2_sync_formal_20261020.zip` after extracting its evidence
+folder. The full physical A2/A3 comparison remains pending.
 
 The SVF incompatibility was isolated to `guide_info -file`: DC emits a
 CRC-plus-MD5 triple, while the installed older Formality accepts a pair.
