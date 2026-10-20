@@ -1,12 +1,77 @@
 # Shared, checked P/G construction after placement and before CTS/signal route.
 # Caller must remove trial routes first; this helper never edits regular wires.
-proc d4_build_pg_grid {out expected_macros} {
-    file mkdir $out
+proc d4_report_pg_inventory {report} {
+    set f [open $report w]
+    puts $f "INSTANCE\tCELL\tPIN\tNET"
+    array set pin_counts {}
+    array set net_counts {}
+    set inst_count 0
+    set term_count 0
+    set unassigned 0
+    set mismatched 0
+    set unknown 0
+    foreach inst [dbGet top.insts] {
+        incr inst_count
+        set inst_name [dbGet $inst.name]
+        set cell_name [dbGet $inst.cell.name]
+        set terms [dbGet $inst.pgInstTerms]
+        if {$terms eq "0x0" || $terms eq ""} {continue}
+        foreach term $terms {
+            incr term_count
+            set pin [dbGet $term.name]
+            set net [dbGet $term.net.name]
+            if {$net eq "0x0" || $net eq ""} {
+                set net UNASSIGNED
+                incr unassigned
+            }
+            incr pin_counts($pin)
+            incr net_counts([list $pin $net])
+            set expected ""
+            switch -- $pin {
+                VDD - VNW {set expected VDD}
+                VSS - VPW - GND {set expected VSS}
+                default {incr unknown}
+            }
+            if {$expected ne "" && $net ne "UNASSIGNED" && $net ne $expected} {
+                incr mismatched
+                puts $f "MISMATCH\t$inst_name\t$cell_name\t$pin\t$net\tEXPECTED=$expected"
+            } else {
+                puts $f "$inst_name\t$cell_name\t$pin\t$net"
+            }
+        }
+    }
+    puts $f "SUMMARY\tinstances=$inst_count\tpg_terms=$term_count\tunassigned=$unassigned\tmismatched=$mismatched\tunknown_pins=$unknown"
+    foreach pin [lsort [array names pin_counts]] {
+        puts $f "PIN_COUNT\t$pin\t$pin_counts($pin)"
+    }
+    foreach key [lsort [array names net_counts]] {
+        puts $f "PIN_NET_COUNT\t$key\t$net_counts($key)"
+    }
+    close $f
+    return [list $unassigned $mismatched $unknown]
+}
+
+proc d4_bind_pg_terminals {report} {
+    # The loaded SMIC Liberty assigns VNW as the n-well bias paired with VDD,
+    # and VPW as the p-well bias paired with VSS. The report runner preserves
+    # the loaded Liberty/LEF evidence and hashes alongside each A3 result.
     globalNetConnect VDD -type pgpin -pin VDD -all
+    globalNetConnect VDD -type pgpin -pin VNW -all
     globalNetConnect VSS -type pgpin -pin VSS -all
     globalNetConnect VSS -type pgpin -pin GND -all -override
+    globalNetConnect VSS -type pgpin -pin VPW -all
     globalNetConnect VDD -type tiehi -all
     globalNetConnect VSS -type tielo -all
+    lassign [d4_report_pg_inventory $report] unassigned mismatched unknown
+    if {$unassigned || $mismatched || $unknown} {
+        error "Incomplete/incorrect P/G binding: unassigned=$unassigned mismatched=$mismatched unknown_pins=$unknown"
+    }
+    puts "D4_PG_TERMINAL_BINDING_PASS inventory=$report unassigned=0 mismatched=0 unknown_pin_types=0"
+}
+
+proc d4_build_pg_grid {out expected_macros} {
+    file mkdir $out
+    d4_bind_pg_terminals [file join $out pg_terminal_inventory.rpt]
     set macros [dbGet -p2 top.insts.cell.baseClass block]
     if {$macros eq "0x0"} {set macros {}}
     if {[llength $macros]!=$expected_macros} {error "Wrong actual macro inventory for PG construction"}
